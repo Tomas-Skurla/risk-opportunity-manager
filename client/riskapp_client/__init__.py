@@ -1,0 +1,1 @@
+"""RiskApp Qt client package."""

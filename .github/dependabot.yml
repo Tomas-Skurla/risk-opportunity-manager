@@ -1,0 +1,35 @@
+version: 2
+
+# Keep this repository's own container image, Actions and Python dependencies
+# current. Nothing here is shared with or required by another repository.
+updates:
+  # Direct FROM references in this repository's Dockerfile.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "build(docker)"
+
+  # Versioned action references in this repository's workflows.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "ci(actions)"
+
+  # requirements.lock / requirements-dev.txt. Grouped so a routine refresh is
+  # one review rather than a dozen; security fixes still arrive individually.
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      python-runtime:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    commit-message:
+      prefix: "deps(python)"

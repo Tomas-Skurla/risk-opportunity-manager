@@ -1,0 +1,15 @@
+# Development / test-only dependencies.
+#
+# Separate from runtime requirements:
+# - server/requirements.txt
+# - client/requirements.txt
+
+pytest>=8,<10
+pytest-asyncio>=0.23,<2
+pytest-cov>=5,<8
+pytest-qt>=4.4,<5
+# FastAPI/Starlette's in-process TestClient is built on HTTPX.
+httpx>=0.28,<1
+
+ruff>=0.5,<1
+black>=24,<27

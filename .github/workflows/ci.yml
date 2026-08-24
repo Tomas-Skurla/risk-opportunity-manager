@@ -1,0 +1,146 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+  security-events: write   # required to upload Trivy SARIF to code scanning
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      QT_QPA_PLATFORM: offscreen
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            server/requirements.lock
+            client/requirements.lock
+            requirements-dev.txt
+
+      - name: Install headless Qt runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libegl1
+
+      - name: Install headless test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            -r server/requirements.lock \
+            -r client/requirements.lock \
+            -r requirements-dev.txt
+
+      - name: Run project checks
+        run: bash scripts/check_project.sh
+
+  container:
+    name: Container image
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Build test target
+        run: docker build --target test -t riskapp:test .
+
+      - name: Build development API image
+        run: docker build --target server -t riskapp-api:ci .
+
+      # The image no longer carries development defaults, so CI has to supply
+      # them explicitly. That is the point: anything that starts this image
+      # must state, in the open, that it is running an insecure configuration.
+      # Published to 127.0.0.1 rather than 0.0.0.0 -- Docker's published-port
+      # rules live in nat/PREROUTING and the filter FORWARD chain, so they are
+      # not covered by INPUT-chain host firewall rules.
+      - name: Start API container
+        run: |
+          docker run --detach --name riskapp-api \
+            --publish 127.0.0.1:8000:8000 \
+            --env ENV=development \
+            --env ALLOW_INSECURE_DEFAULT_SECRET=1 \
+            --env AUTO_CREATE_SCHEMA=1 \
+            --env INITIAL_SUPERUSER_EMAIL=admin@example.com \
+            --env INITIAL_SUPERUSER_PASSWORD='SuperHeslo123!' \
+            riskapp-api:ci
+
+      - name: Wait for healthy API
+        run: |
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8000/health; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs riskapp-api
+          exit 1
+
+      - name: Stop API container
+        if: always()
+        run: docker rm --force riskapp-api || true
+
+      # ---- supply-chain scanning -------------------------------------------
+      # Trivy inspects the built image: it identifies the OS package manager
+      # database (Debian, here) and every installed language dependency, then
+      # matches both against public vulnerability feeds. This covers the half
+      # of the dependency tree that requirements.lock does not -- the base
+      # image's own packages.
+      #
+      # ignore-unfixed is deliberate: Debian slim images always carry some
+      # CVEs with no released patch, and failing on those makes the gate
+      # permanently red and therefore ignored. The build fails only on issues
+      # that can actually be acted on by rebuilding.
+      #
+      # Dependabot tracks this repository's versioned action reference.
+      - name: Scan image for known vulnerabilities
+        uses: aquasecurity/trivy-action@0.36.0
+        with:
+          image-ref: riskapp-api:ci
+          scanners: vuln
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+          format: table
+
+      # Second pass: report everything, block nothing, and publish to the
+      # repository's Security tab so findings are visible over time rather
+      # than only in a failed log.
+      - name: Report all findings to code scanning
+        if: always()
+        uses: aquasecurity/trivy-action@0.36.0
+        with:
+          image-ref: riskapp-api:ci
+          scanners: vuln,secret,misconfig
+          format: sarif
+          output: trivy-results.sarif
+          exit-code: "0"
+
+      - name: Upload SARIF
+        # GitHub withholds security-events: write from Dependabot and fork PRs.
+        # Keep the blocking table scan above active, but skip only this upload
+        # when the event cannot write to code scanning.
+        if: >-
+          always() &&
+          github.actor != 'dependabot[bot]' &&
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.full_name == github.repository)
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-results.sarif

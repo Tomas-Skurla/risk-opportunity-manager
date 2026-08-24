@@ -1,0 +1,8 @@
+[Unit]
+Description=RiskApp retention prune
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/riskapp
+EnvironmentFile=/etc/riskapp/prune.env
+ExecStart=/usr/bin/python -m riskapp_server.ops.prune_job ${RISKAPP_PROJECT_ID} ${RETENTION_DAYS}

@@ -1,0 +1,12 @@
+# Run every day at 02:15.
+#
+# Export env vars in the crontab (or source a file) to avoid putting secrets
+# directly in the command.
+#
+#   RISKAPP_BASE_URL=http://127.0.0.1:8000
+#   RISKAPP_ADMIN_EMAIL=admin@example.com
+#   RISKAPP_ADMIN_PASSWORD=...
+#
+# Replace <project_id> with the UUID.
+
+15 2 * * * cd /path/to/repo && /usr/bin/python -m riskapp_server.ops.prune_job <project_id> 180 >> /var/log/riskapp-prune.log 2>&1

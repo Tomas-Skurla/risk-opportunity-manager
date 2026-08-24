@@ -1,0 +1,30 @@
+services:
+  api:
+    build:
+      context: .
+      target: server
+    image: riskapp-api:local
+    # Bound to loopback. Docker publishes ports with a DNAT rule in
+    # nat/PREROUTING and an accept rule in the filter FORWARD chain, so the
+    # packets bypass INPUT entirely -- a default-deny host firewall managed
+    # through ufw will not block a published port. Set RISKAPP_HOST_ADDR to
+    # 0.0.0.0 explicitly if you actually intend LAN exposure.
+    ports:
+      - ${RISKAPP_HOST_ADDR:-127.0.0.1}:${RISKAPP_HOST_PORT:-8000}:8000
+    # Development-only configuration. These values are intentionally kept out of
+    # the image (see Dockerfile) so the published artifact fails closed.
+    environment:
+      ENV: development
+      ALLOW_INSECURE_DEFAULT_SECRET: "1"
+      INITIAL_SUPERUSER_EMAIL: admin@example.com
+      INITIAL_SUPERUSER_PASSWORD: SuperHeslo123!
+      DATABASE_URL: sqlite+pysqlite:////data/riskapp.db
+      AUTO_CREATE_SCHEMA: "1"
+      RISKAPP_HOST: 0.0.0.0
+      RISKAPP_PORT: "8000"
+      RISKAPP_RELOAD: "0"
+    volumes:
+      - riskapp-server-data:/data
+
+volumes:
+  riskapp-server-data:

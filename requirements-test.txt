@@ -1,0 +1,6 @@
+# Canonical locked runtime dependencies plus development/test tooling.
+# Qt runs with QT_QPA_PLATFORM=offscreen in CI, but PySide6 is still required.
+
+-r server/requirements.lock
+-r client/requirements.lock
+-r requirements-dev.txt

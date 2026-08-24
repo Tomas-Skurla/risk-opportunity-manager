@@ -1,0 +1,60 @@
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+pythonpath = ["server", "client"]
+addopts = ["--strict-config", "--strict-markers", "-ra"]
+qt_api = "pyside6"
+
+[tool.coverage.run]
+branch = true
+source = ["server/riskapp_server", "client/riskapp_client"]
+omit = [
+  "client/riskapp_client/ui_v2/components/ui_*.py",
+  "client/riskapp_client/ui_v2/tabs/ui_*.py",
+  "client/riskapp_client/ui_v2/ui_*.py",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+precision = 2
+
+[tool.black]
+line-length = 88
+target-version = ["py311"]
+extend-exclude = '''
+(
+  /\.venv
+  | /\.git
+  | /__pycache__
+  | /ui_[^/]*\.py$
+)
+'''
+
+[tool.ruff]
+target-version = "py311"
+line-length = 88
+extend-exclude = [
+  ".venv",
+  ".git",
+  "__pycache__",
+  "client/riskapp_client/ui_v2/components/ui_*.py",
+  "client/riskapp_client/ui_v2/tabs/ui_*.py",
+  "client/riskapp_client/ui_v2/ui_*.py",
+]
+
+[tool.ruff.lint]
+select = [
+  "E", "F", "I", "B", "UP", "SIM", "W",
+]
+ignore = [
+  "E501",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = [
+  "S101",
+]
+
+"server/riskapp_server/api/routers/**/*.py" = ["B008"]
+"server/riskapp_server/auth/service.py" = ["B008"]

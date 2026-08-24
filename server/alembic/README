@@ -1,0 +1,10 @@
+RiskApp server database migrations.
+
+Generate revisions from the repository root with an up-to-date development
+database and AUTO_CREATE_SCHEMA=0:
+
+    python -m alembic revision --autogenerate -m "describe the change"
+
+Review every generated revision before committing it. Apply migrations with:
+
+    python -m alembic upgrade head

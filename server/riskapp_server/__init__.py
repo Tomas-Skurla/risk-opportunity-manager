@@ -1,0 +1,1 @@
+"""RiskApp FastAPI backend."""
