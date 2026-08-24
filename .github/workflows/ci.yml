@@ -110,7 +110,7 @@ jobs:
       #
       # Dependabot tracks this repository's versioned action reference.
       - name: Scan image for known vulnerabilities
-        uses: aquasecurity/trivy-action@0.36.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: riskapp-api:ci
           scanners: vuln
@@ -124,7 +124,7 @@ jobs:
       # than only in a failed log.
       - name: Report all findings to code scanning
         if: always()
-        uses: aquasecurity/trivy-action@0.36.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: riskapp-api:ci
           scanners: vuln,secret,misconfig
