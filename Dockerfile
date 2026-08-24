@@ -15,6 +15,7 @@ ENV QT_QPA_PLATFORM=offscreen
 RUN apt-get update \
     && apt-get install --no-install-recommends -y \
         bash \
+        libdbus-1-3 \
         libegl1 \
         libfontconfig1 \
         libgl1 \
