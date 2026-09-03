@@ -7,7 +7,7 @@ flowchart TD
     UI[PySide6 UI] --> Facade[Offline-first facade]
     Facade --> Services[Domain services]
     Services --> Store[(Local SQLite)]
-    Services --> Outbox[Transactional outbox]
+    Services --> Outbox[Persistent outbox]
     Outbox --> API[FastAPI API]
     API --> Auth[Auth and RBAC]
     API --> Sync[Sync engine]
@@ -25,13 +25,13 @@ flowchart TD
 | API routers | Transport validation and authorization boundary | `server/riskapp_server/api/routers/` |
 | Server core | Configuration, permissions, scoring, and queries | `server/riskapp_server/core/` |
 | Persistence | SQLAlchemy models and session lifecycle | `server/riskapp_server/db/` |
-| Synchronization | Pull cursors, optimistic concurrency, idempotency, audit | `server/riskapp_server/sync/` |
+| Synchronization | Pull cursors, version checks, receipt deduplication, audit | `server/riskapp_server/sync/` |
 
 ## Offline synchronization invariants
 
-- Local mutations and their outbox replacement are atomic.
+- Outbox replacement and change coalescing are atomic. Local entity mutation and outbox enqueue currently use separate transactions.
 - At most one pending or blocked change exists per project/entity pair.
-- Every change has a stable `change_id`; the server stores receipts so retries are idempotent.
+- Every change has a stable `change_id`; retained server receipts deduplicate push retries for that identifier.
 - Updates carry `base_version`; stale writes become explicit conflicts instead of silently overwriting server state.
 - Parent items are applied before child actions and assessments during pull.
 - Project-id promotion updates the complete local graph in one deferred-FK transaction and leaves foreign-key enforcement enabled.

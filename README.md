@@ -1,11 +1,11 @@
 # Offline Risk & Opportunity Manager
 
-RiskApp is an offline-first risk and opportunity manager: a FastAPI/SQLAlchemy API and a PySide6 desktop client with a local SQLite cache, transactional outbox, optimistic conflict detection, project RBAC, audit receipts, and secure token rotation.
+RiskApp is an offline-first risk and opportunity manager: a FastAPI/SQLAlchemy API and a PySide6 desktop client with a local SQLite cache, persistent synchronization outbox, version-based conflict detection, project RBAC, audit receipts, and hashed rotating refresh tokens.
 
 ## What this repository demonstrates
 
 - layered desktop architecture with domain services behind UI-independent adapters;
-- resilient offline writes and idempotent two-way synchronization;
+- offline operation with persistent queued writes and bidirectional synchronization using server receipt deduplication plus incremental cursor pulls;
 - authorization enforced consistently across REST and sync paths;
 - bounded request/response handling, literal search escaping, and safe CSV export;
 - isolated API and client-core tests plus Ruff, compile, and dependency checks;
