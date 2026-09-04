@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 
 def test_outbox_recovery_helpers_handle_invalid_and_missing_inputs(tmp_path) -> None:
     from riskapp_client.adapters.local_storage.sqlite_data_store import LocalStore
@@ -52,10 +54,15 @@ def test_outbox_recovery_helpers_handle_invalid_and_missing_inputs(tmp_path) -> 
 
         outbox.block_outbox_id(change_id, "unstructured server error")
         assert outbox.blocked_count() == 1
+        assert outbox.conflict_count() == 0
+        assert outbox.error_count() == 1
         blocked = outbox.get_blocked_changes(limit=0)
         assert len(blocked) == 1
         assert blocked[0]["title"] == "Queued risk"
         assert blocked[0]["reason"] == "unstructured server error"
+
+        with pytest.raises(ValueError, match="Unknown outbox failure kind"):
+            outbox.block_outbox_id(change_id, "bad", failure_kind="unknown")
 
         assert outbox.requeue_conflict_with_new_id("missing", server_version=4) is None
         outbox.delete_outbox_ids([])

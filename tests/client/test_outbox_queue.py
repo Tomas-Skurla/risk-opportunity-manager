@@ -123,13 +123,18 @@ def test_get_blocked_changes_exposes_conflict_reason_and_title(tmp_path) -> None
                 f'{{"change_id": "{change_id}", "reason": "Server version changed", '
                 '"server_version": 9}'
             ),
+            failure_kind="conflict",
         )
+        assert outbox.blocked_count("p1") == 1
+        assert outbox.conflict_count("p1") == 1
+        assert outbox.error_count("p1") == 0
         blocked = outbox.get_blocked_changes("p1")
         assert len(blocked) == 1
         assert blocked[0]["entity"] == "risk"
         assert blocked[0]["title"] == "Server race"
         assert blocked[0]["reason"] == "Server version changed"
         assert blocked[0]["server_version"] == 9
+        assert blocked[0]["failure_kind"] == "conflict"
     finally:
         store.close()
 

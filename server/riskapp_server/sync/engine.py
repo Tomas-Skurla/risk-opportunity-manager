@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, update
 from sqlalchemy.inspection import inspect as sa_inspect
 from sqlalchemy.orm import Session
 
@@ -147,7 +147,7 @@ def _naive_utc(dt: datetime) -> datetime:
 
 
 def _parse_cursor(
-    cur: str | None, *, default_since: datetime
+    cur: str | None, *, default_since: datetime, snapshot_time: datetime
 ) -> tuple[datetime, uuid.UUID]:
     if not cur:
         return default_since, uuid.UUID(int=0)
@@ -156,6 +156,8 @@ def _parse_cursor(
         ts = datetime.fromisoformat(ts_s)
         if getattr(ts, "tzinfo", None) is not None:
             ts = ts.astimezone(UTC).replace(tzinfo=None)
+        if ts > snapshot_time:
+            raise ValueError("cursor is beyond snapshot")
         return ts, uuid.UUID(id_s)
     except (ValueError, KeyError, TypeError) as exc:
         raise HTTPException(status_code=400, detail="Invalid cursor") from exc
@@ -172,7 +174,18 @@ def pull_since(
     *,
     limit_per_entity: int | None = None,
     cursors: dict[str, str] | None = None,
+    snapshot_time: datetime | None = None,
 ) -> dict[str, Any]:
+
+    request_time = _naive_utc(utcnow())
+    since = _naive_utc(since)
+    snapshot_time = (
+        _naive_utc(snapshot_time) if snapshot_time is not None else request_time
+    )
+    if snapshot_time < since:
+        raise HTTPException(status_code=400, detail="snapshot_time precedes since")
+    if snapshot_time > request_time:
+        raise HTTPException(status_code=400, detail="snapshot_time is in the future")
 
     # Cap the response size unless paginating.
     if limit_per_entity is None:
@@ -182,17 +195,19 @@ def pull_since(
         hard_cap = None
         lim = limit_per_entity  # enables cursor pagination when set
 
-    since = _naive_utc(since)
     cursors = cursors or {}
 
     def item_page(item_type: str, key: str):
-        ts, last_id = _parse_cursor(cursors.get(key), default_since=since)
+        ts, last_id = _parse_cursor(
+            cursors.get(key), default_since=since, snapshot_time=snapshot_time
+        )
         base_cur = _encode_cursor(ts, last_id)
         q = (
             select(Item)
             .where(
                 Item.project_id == project_id,
                 Item.type == item_type,
+                Item.updated_at <= snapshot_time,
                 or_(
                     Item.updated_at > ts,
                     (Item.updated_at == ts) & (Item.id > last_id),
@@ -216,13 +231,18 @@ def pull_since(
     def _paginate_joined(
         Model: Any, cursor_key: str, project_filter: Any
     ) -> tuple[list, bool, str]:
-        ts, last_id = _parse_cursor(cursors.get(cursor_key), default_since=since)
+        ts, last_id = _parse_cursor(
+            cursors.get(cursor_key),
+            default_since=since,
+            snapshot_time=snapshot_time,
+        )
         base_cur = _encode_cursor(ts, last_id)
         q = (
             select(Model, Item.type)
             .join(Item, Model.item_id == Item.id)
             .where(
                 project_filter,
+                Model.updated_at <= snapshot_time,
                 or_(
                     Model.updated_at > ts,
                     (Model.updated_at == ts) & (Model.id > last_id),
@@ -270,12 +290,17 @@ def pull_since(
     def _paginate_simple(
         Model: Any, cursor_key: str, project_filter: Any
     ) -> tuple[list, bool, str]:
-        ts, last_id = _parse_cursor(cursors.get(cursor_key), default_since=since)
+        ts, last_id = _parse_cursor(
+            cursors.get(cursor_key),
+            default_since=since,
+            snapshot_time=snapshot_time,
+        )
         base_cur = _encode_cursor(ts, last_id)
         q = (
             select(Model)
             .where(
                 project_filter,
+                Model.updated_at <= snapshot_time,
                 or_(
                     Model.updated_at > ts,
                     (Model.updated_at == ts) & (Model.id > last_id),
@@ -317,7 +342,7 @@ def pull_since(
         assessments_out.append(d)
 
     out: dict[str, Any] = {
-        "server_time": utcnow(),
+        "server_time": snapshot_time,
         "risks": [model_to_dict(r) for r in risks],
         "opportunities": [model_to_dict(o) for o in opportunities],
         "actions": actions_out,
@@ -358,9 +383,32 @@ class ConflictError(Exception):
         )
 
 
+def _begin_push_transaction(db: Session) -> None:
+    """Acquire SQLite's writer reservation before reading entity versions.
+
+    PostgreSQL conditional updates lock and re-check matching rows naturally.
+    SQLite WAL transactions need to begin as writers to avoid a stale read
+    transaction failing later with SQLITE_BUSY_SNAPSHOT instead of producing a
+    deterministic version conflict.
+    """
+    get_bind = getattr(db, "get_bind", None)
+    if not callable(get_bind):
+        return
+    bind = get_bind()
+    if getattr(getattr(bind, "dialect", None), "name", None) != "sqlite":
+        return
+    if db.in_transaction():
+        # Authentication/authorization may already have opened a read-only
+        # transaction. No mutations occur before push_changes is entered.
+        db.rollback()
+    db.connection().exec_driver_sql("BEGIN IMMEDIATE")
+
+
 def push_changes(
     db: Session, user_id: uuid.UUID, project_id: uuid.UUID, changes: list[SyncChange]
 ) -> dict[str, Any]:
+    if changes:
+        _begin_push_transaction(db)
     role = ensure_member(db, project_id, user_id)
 
     accepted = duplicates = 0
@@ -709,24 +757,88 @@ def _fetch_obj(db: Session, entity: str, entity_id: uuid.UUID, project_id: uuid.
     )
 
 
-def _check_base_version(obj: Any, base_version: Any, entity_id: uuid.UUID) -> None:
+def _check_base_version(
+    obj: Any, base_version: Any, entity_id: uuid.UUID
+) -> int:
+    server_version = getattr(obj, "version", None)
     if base_version is None:
-        return
+        raise ConflictError("base_version_required", entity_id, server_version)
     try:
         bv = int(base_version)
-    except Exception as exc:
+    except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail="base_version must be int") from exc
-    if bv == 0:
-        return
-    if getattr(obj, "version", None) != bv:
+    if bv < 1:
+        raise ConflictError("base_version_required", entity_id, server_version)
+    if server_version != bv:
+        raise ConflictError("version_mismatch", entity_id, server_version)
+    return bv
+
+
+def _version_scope(
+    entity: str,
+    entity_id: uuid.UUID,
+    project_id: uuid.UUID,
+    user_id: uuid.UUID,
+) -> tuple[Any, list[Any]]:
+    Model = ENTITY_MODELS[entity]
+    where: list[Any] = [Model.id == entity_id]
+    if entity in {"risk", "opportunity"}:
+        where.extend((Model.project_id == project_id, Model.type == entity))
+    elif entity == "assessment":
+        where.extend(
+            (
+                Model.assessor_user_id == user_id,
+                Model.item_id.in_(
+                    select(Item.id).where(Item.project_id == project_id)
+                ),
+            )
+        )
+    else:
+        where.append(Model.project_id == project_id)
+    return Model, where
+
+
+def _current_server_version(
+    db: Session,
+    entity: str,
+    entity_id: uuid.UUID,
+    project_id: uuid.UUID,
+    user_id: uuid.UUID,
+) -> int | None:
+    Model, where = _version_scope(entity, entity_id, project_id, user_id)
+    value = db.execute(select(Model.version).where(*where)).scalar()
+    return int(value) if value is not None else None
+
+
+def _claim_base_version(
+    db: Session,
+    entity: str,
+    entity_id: uuid.UUID,
+    project_id: uuid.UUID,
+    user_id: uuid.UUID,
+    base_version: int,
+) -> None:
+    """Atomically advance one row only when its version still matches."""
+    Model, where = _version_scope(entity, entity_id, project_id, user_id)
+    result = db.execute(
+        update(Model)
+        .where(*where, Model.version == base_version)
+        .values(version=Model.version + 1, updated_at=utcnow())
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount != 1:
         raise ConflictError(
-            "version_mismatch", entity_id, getattr(obj, "version", None)
+            "version_mismatch",
+            entity_id,
+            _current_server_version(
+                db, entity, entity_id, project_id, user_id
+            ),
         )
 
 
 def _validate_existing_obj(
     obj: Any, entity: str, entity_id: uuid.UUID, user_id: uuid.UUID, base_version: Any
-) -> None:
+) -> int:
     """Validate access and version checks."""
     if entity in {"risk", "opportunity"} and getattr(obj, "type", None) != entity:
         raise ConflictError("type_mismatch", entity_id, getattr(obj, "version", None))
@@ -736,7 +848,7 @@ def _validate_existing_obj(
             status_code=403, detail="Cannot modify another user's assessment"
         )
 
-    _check_base_version(obj, base_version, entity_id)
+    return _check_base_version(obj, base_version, entity_id)
 
 
 def _apply_upsert(
@@ -766,8 +878,18 @@ def _apply_upsert(
         )
         return entity_id
 
-    _validate_existing_obj(obj, entity, entity_id, user_id, base_version)
+    expected_version = _validate_existing_obj(
+        obj, entity, entity_id, user_id, base_version
+    )
     before = model_to_dict(obj)
+    _claim_base_version(
+        db,
+        entity,
+        entity_id,
+        project_id,
+        user_id,
+        expected_version,
+    )
     _update_existing(db, user_id, project_id, entity, obj, record)
     _audit(
         db,
@@ -797,8 +919,18 @@ def _apply_delete(
     if not obj:
         return entity_id
 
-    _validate_existing_obj(obj, entity, entity_id, user_id, base_version)
+    expected_version = _validate_existing_obj(
+        obj, entity, entity_id, user_id, base_version
+    )
     before = model_to_dict(obj)
+    _claim_base_version(
+        db,
+        entity,
+        entity_id,
+        project_id,
+        user_id,
+        expected_version,
+    )
     obj.soft_delete(utcnow())
     _audit(
         db,

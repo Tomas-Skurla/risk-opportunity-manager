@@ -32,8 +32,9 @@ flowchart TD
 - Outbox replacement and change coalescing are atomic. Local entity mutation and outbox enqueue currently use separate transactions.
 - At most one pending or blocked change exists per project/entity pair.
 - Every change has a stable `change_id`; retained server receipts deduplicate push retries for that identifier.
-- Updates carry `base_version`; stale writes become explicit conflicts instead of silently overwriting server state.
+- Existing-row sync updates and deletes require `base_version` and claim it with a conditional version increment. SQLite begins each push with `BEGIN IMMEDIATE`; databases with row-level locking rely on the conditional update. A stale concurrent writer therefore becomes an explicit conflict.
 - Parent items are applied before child actions and assessments during pull.
+- Every pull uses an application-time upper bound that remains fixed across all pagination pages. This closes the between-page watermark gap; a database-backed monotonic change sequence would additionally remove reliance on `updated_at` tracking commit order.
 - Project-id promotion updates the complete local graph in one deferred-FK transaction and leaves foreign-key enforcement enabled.
 
 ## Security model

@@ -19,42 +19,42 @@ def _empty_pull() -> dict[str, object]:
     }
 
 
-def test_retry_errors_are_counted_and_blocked() -> None:
+def test_conflicts_are_blocked_without_automatic_retry() -> None:
     store, outbox, remote = Mock(), Mock(), Mock()
     service = SyncService(store, outbox, remote)
-    remote.sync_push.side_effect = [
-        {
-            "conflicts": [{"change_id": "old", "server_version": 4}],
-            "errors": [],
-        },
-        {
-            "conflicts": [],
-            "errors": [{"change_id": "retry", "reason": "invalid"}],
-        },
-    ]
+    remote.sync_push.return_value = {
+        "conflicts": [{"change_id": "old", "server_version": 4}],
+        "errors": [],
+    }
     remote.sync_pull.return_value = _empty_pull()
-    outbox.get_pending_changes.side_effect = [
-        [{"change_id": "old"}],
-        [{"change_id": "retry"}],
-    ]
-    outbox.requeue_conflict_with_new_id.return_value = "retry"
-    outbox.get_blocked_changes.return_value = [{"change_id": "retry"}]
+    outbox.get_pending_changes.return_value = [{"change_id": "old"}]
+    outbox.get_blocked_changes.return_value = [{"change_id": "old"}]
     store.get_last_server_time.return_value = "since"
 
     summary = service.sync_project("project-1")
 
     assert summary["conflicts"] == 1
-    assert summary["errors"] == 1
+    assert summary["errors"] == 0
     assert summary["blocked"] == 1
     outbox.block_outbox_id.assert_called_once()
+    outbox.requeue_conflict_with_new_id.assert_not_called()
+    remote.sync_push.assert_called_once()
 
 
 def test_malformed_conflict_version_is_blocked_instead_of_crashing() -> None:
     outbox = Mock()
-    service = SyncService(Mock(), outbox, Mock())
+    remote = Mock()
+    service = SyncService(Mock(), outbox, remote)
     conflict = {"change_id": "bad-version", "server_version": "not-an-int"}
+    remote.sync_push.return_value = {"conflicts": [conflict], "errors": []}
 
-    assert service._requeue_conflicts([conflict]) == []
+    processed, conflicts, errors = service._process_push(
+        "project-1", [{"change_id": "bad-version"}]
+    )
+
+    assert processed == 0
+    assert conflicts == [conflict]
+    assert errors == []
     outbox.block_outbox_id.assert_called_once()
     outbox.requeue_conflict_with_new_id.assert_not_called()
 
@@ -79,6 +79,41 @@ def test_paginated_pull_rejects_a_cursor_that_does_not_advance() -> None:
         service._pull_paginated("project-1", "since")
 
     assert remote.sync_pull.call_count == 2
+
+
+@pytest.mark.parametrize(
+    ("pages", "message"),
+    [
+        (
+            [{**_empty_pull(), "server_time": ""}],
+            "omitted server_time",
+        ),
+        (
+            [
+                {
+                    **_empty_pull(),
+                    "server_time": "snapshot-1",
+                    "has_more": {"risks": True},
+                    "cursors": {"risks": "cursor-1"},
+                },
+                {
+                    **_empty_pull(),
+                    "server_time": "snapshot-2",
+                    "has_more": {"risks": False},
+                    "cursors": {},
+                },
+            ],
+            "snapshot changed",
+        ),
+    ],
+)
+def test_paginated_pull_requires_one_stable_snapshot(pages, message) -> None:
+    remote = Mock()
+    service = SyncService(Mock(), Mock(), remote)
+    remote.sync_pull.side_effect = pages
+
+    with pytest.raises(RuntimeError, match=message):
+        service._pull_paginated("project-1", "since")
 
 
 @pytest.mark.parametrize(

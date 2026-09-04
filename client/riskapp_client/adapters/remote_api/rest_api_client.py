@@ -593,8 +593,11 @@ class ApiBackend:
         *,
         limit_per_entity: int | None = None,
         cursors: dict[str, str] | None = None,
+        snapshot_time: str | None = None,
     ):
         body: dict[str, object] = {"project_id": project_id, "since": since_iso}
+        if snapshot_time is not None:
+            body["snapshot_time"] = snapshot_time
         if limit_per_entity is not None:
             body["limit_per_entity"] = int(limit_per_entity)
             if cursors:

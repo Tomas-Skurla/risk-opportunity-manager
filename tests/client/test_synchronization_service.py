@@ -20,11 +20,18 @@ def test_sync_service_delegates_counts_and_requires_a_remote() -> None:
     service, _store, outbox = _service()
     outbox.pending_count.return_value = 3
     outbox.blocked_count.return_value = 2
+    outbox.conflict_count.return_value = 1
+    outbox.error_count.return_value = 1
     outbox.get_blocked_changes.return_value = [{"change_id": "blocked-1"}]
+    _store.get_last_server_time.return_value = "2026-08-10T08:00:00Z"
 
     assert service.can_sync() is False
     assert service.pending_count("project-1") == 3
     assert service.blocked_count() == 2
+    assert service.conflict_count("project-1") == 1
+    assert service.error_count("project-1") == 1
+    assert service.last_sync_time("project-1") == "2026-08-10T08:00:00Z"
+    assert service.last_sync_time(None) is None
     assert service.blocked_details("project-1") == [{"change_id": "blocked-1"}]
     outbox.pending_count.assert_called_once_with("project-1")
     outbox.blocked_count.assert_called_once_with(None)
@@ -50,9 +57,7 @@ def test_process_push_removes_successes_and_blocks_failures() -> None:
         {},
     ]
 
-    processed, conflicts, errors = service._process_push(
-        "project-1", changes, block_conflicts=True
-    )
+    processed, conflicts, errors = service._process_push("project-1", changes)
 
     assert processed == 2
     assert conflicts[0]["change_id"] == "conflict-1"
@@ -63,10 +68,23 @@ def test_process_push_removes_successes_and_blocks_failures() -> None:
     }
     assert outbox.block_outbox_id.call_count == 2
     assert outbox.block_outbox_id.call_args_list[0].args[0] == "conflict-1"
+    assert outbox.block_outbox_id.call_args_list[0].kwargs == {
+        "failure_kind": "conflict"
+    }
     assert outbox.block_outbox_id.call_args_list[1].args[0] == "error-1"
+    assert outbox.block_outbox_id.call_args_list[1].kwargs == {
+        "failure_kind": "error"
+    }
 
 
-def test_process_push_leaves_conflicts_pending_for_requeue() -> None:
+def test_last_sync_time_hides_uninitialized_watermark() -> None:
+    service, store, _outbox = _service(remote=Mock())
+    store.get_last_server_time.return_value = "1970-01-01T00:00:00"
+
+    assert service.last_sync_time("project-1") is None
+
+
+def test_process_push_blocks_conflicts_for_explicit_resolution() -> None:
     remote = Mock()
     remote.sync_push.return_value = {
         "conflicts": [{"change_id": "conflict-1"}],
@@ -75,43 +93,21 @@ def test_process_push_leaves_conflicts_pending_for_requeue() -> None:
     service, _store, outbox = _service(remote=remote)
 
     processed, _conflicts, _errors = service._process_push(
-        "project-1",
-        [{"change_id": "conflict-1"}],
-        block_conflicts=False,
+        "project-1", [{"change_id": "conflict-1"}]
     )
 
     assert processed == 0
     outbox.delete_outbox_ids.assert_not_called()
-    outbox.block_outbox_id.assert_not_called()
+    outbox.block_outbox_id.assert_called_once()
+    assert outbox.block_outbox_id.call_args.args[0] == "conflict-1"
 
 
-def test_requeue_conflicts_handles_unusable_and_retryable_records() -> None:
-    service, _store, outbox = _service(remote=Mock())
-    outbox.requeue_conflict_with_new_id.side_effect = ["retry-1", None]
-    conflicts = [
-        {},
-        {"change_id": "blocked-1"},
-        {"change_id": "old-1", "server_version": 7},
-        {"change_id": "old-2", "server_version": 8},
-    ]
-
-    assert service._requeue_conflicts(conflicts) == ["retry-1"]
-    assert outbox.block_outbox_id.call_args.args[0] == "blocked-1"
-    assert outbox.requeue_conflict_with_new_id.call_args_list == [
-        call("old-1", 7),
-        call("old-2", 8),
-    ]
-
-
-def test_sync_project_retries_conflict_then_applies_pull_in_parent_order() -> None:
+def test_sync_project_blocks_conflict_then_applies_pull_in_parent_order() -> None:
     remote = Mock()
-    remote.sync_push.side_effect = [
-        {
-            "conflicts": [{"change_id": "old-2", "server_version": 4}],
-            "errors": [{"change_id": "bad-1", "reason": "invalid"}],
-        },
-        {"conflicts": [], "errors": []},
-    ]
+    remote.sync_push.return_value = {
+        "conflicts": [{"change_id": "old-2", "server_version": 4}],
+        "errors": [{"change_id": "bad-1", "reason": "invalid"}],
+    }
     remote.sync_pull.return_value = {
         "server_time": "2026-08-10T08:00:00Z",
         "risks": [{"id": "risk-1"}],
@@ -121,36 +117,36 @@ def test_sync_project_retries_conflict_then_applies_pull_in_parent_order() -> No
         "helpdesk_tickets": [{"id": "ticket-1"}],
     }
     service, store, outbox = _service(remote=remote)
-    outbox.get_pending_changes.side_effect = [
-        [
-            {"change_id": "ok-1"},
-            {"change_id": "old-2"},
-            {"change_id": "bad-1"},
-        ],
-        [{"change_id": "retry-2"}, {"change_id": "unrelated"}],
+    outbox.get_pending_changes.return_value = [
+        {"change_id": "ok-1"},
+        {"change_id": "old-2"},
+        {"change_id": "bad-1"},
     ]
-    outbox.requeue_conflict_with_new_id.return_value = "retry-2"
-    outbox.get_blocked_changes.return_value = [{"change_id": "bad-1"}]
+    outbox.get_blocked_changes.return_value = [
+        {"change_id": "old-2"},
+        {"change_id": "bad-1"},
+    ]
     store.get_last_server_time.return_value = "2026-08-09T08:00:00Z"
 
     summary = service.sync_project("project-1")
 
     assert summary == {
-        "pushed": 2,
+        "pushed": 1,
         "conflicts": 1,
         "errors": 1,
-        "blocked": 1,
-        "blocked_details": [{"change_id": "bad-1"}],
+        "blocked": 2,
+        "blocked_details": [
+            {"change_id": "old-2"},
+            {"change_id": "bad-1"},
+        ],
         "pulled_risks": 1,
         "pulled_opportunities": 1,
         "pulled_actions": 1,
         "pulled_assessments": 1,
         "pulled_helpdesk_tickets": 1,
     }
-    assert remote.sync_push.call_args_list[1].args == (
-        "project-1",
-        [{"change_id": "retry-2"}],
-    )
+    remote.sync_push.assert_called_once()
+    outbox.requeue_conflict_with_new_id.assert_not_called()
     store.apply_pull_risks.assert_called_once()
     store.apply_pull_opportunities.assert_called_once()
     store.apply_pull_actions.assert_called_once()
@@ -171,13 +167,13 @@ def test_sync_project_falls_back_to_paginated_pull_only_for_413() -> None:
     remote.sync_pull.side_effect = [
         PullError(413),
         {
-            "server_time": "first",
+            "server_time": "snapshot",
             "risks": [{"id": "risk-1"}],
             "has_more": {"risks": True},
             "cursors": {"risks": "cursor-1"},
         },
         {
-            "server_time": "second",
+            "server_time": "snapshot",
             "risks": [{"id": "risk-2"}],
             "opportunities": [{"id": "opportunity-1"}],
             "has_more": {"risks": False},
@@ -198,12 +194,14 @@ def test_sync_project_falls_back_to_paginated_pull_only_for_413() -> None:
         "since",
         limit_per_entity=2000,
         cursors=None,
+        snapshot_time=None,
     )
     assert remote.sync_pull.call_args_list[2] == call(
         "project-1",
         "since",
         limit_per_entity=2000,
         cursors={"risks": "cursor-1"},
+        snapshot_time="snapshot",
     )
 
     remote.sync_pull.side_effect = PullError(500)

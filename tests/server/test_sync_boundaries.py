@@ -58,8 +58,41 @@ def test_sync_pull_cursor_paginates_and_rejects_malformed_requests(
         page = first_page.json()
         assert page["has_more"]["risks"] is True
         assert len(page["risks"]) == 1
+        snapshot_time = page["server_time"]
+
+        # A row created after page one belongs to the next pull, not to a later
+        # page in this already-open snapshot.
+        third_risk = _create_risk(client, headers, project_id, "Third")
 
         second_page = client.post(
+            f"/projects/{project_id}/sync/pull",
+            json={
+                "project_id": project_id,
+                "since": "2000-01-01T00:00:00",
+                "limit_per_entity": 1,
+                "cursors": page["cursors"],
+                "snapshot_time": snapshot_time,
+            },
+            headers=headers,
+        )
+        assert second_page.status_code == 200, second_page.text
+        second = second_page.json()
+        assert second["server_time"] == snapshot_time
+        assert second["has_more"]["risks"] is False
+        assert {page["risks"][0]["id"], second["risks"][0]["id"]} == {
+            first_risk["id"],
+            second_risk["id"],
+        }
+
+        next_pull = client.post(
+            f"/projects/{project_id}/sync/pull",
+            json={"project_id": project_id, "since": snapshot_time},
+            headers=headers,
+        )
+        assert next_pull.status_code == 200, next_pull.text
+        assert [row["id"] for row in next_pull.json()["risks"]] == [third_risk["id"]]
+
+        missing_snapshot = client.post(
             f"/projects/{project_id}/sync/pull",
             json={
                 "project_id": project_id,
@@ -69,13 +102,7 @@ def test_sync_pull_cursor_paginates_and_rejects_malformed_requests(
             },
             headers=headers,
         )
-        assert second_page.status_code == 200, second_page.text
-        second = second_page.json()
-        assert second["has_more"]["risks"] is False
-        assert {page["risks"][0]["id"], second["risks"][0]["id"]} == {
-            first_risk["id"],
-            second_risk["id"],
-        }
+        assert missing_snapshot.status_code == 422
 
         malformed_cursor = client.post(
             f"/projects/{project_id}/sync/pull",
@@ -84,11 +111,24 @@ def test_sync_pull_cursor_paginates_and_rejects_malformed_requests(
                 "since": "2000-01-01T00:00:00",
                 "limit_per_entity": 1,
                 "cursors": {"risks": "not-a-cursor"},
+                "snapshot_time": snapshot_time,
             },
             headers=headers,
         )
         assert malformed_cursor.status_code == 400
         assert malformed_cursor.json()["detail"] == "Invalid cursor"
+
+        future_snapshot = client.post(
+            f"/projects/{project_id}/sync/pull",
+            json={
+                "project_id": project_id,
+                "since": "2000-01-01T00:00:00",
+                "snapshot_time": "2999-01-01T00:00:00Z",
+            },
+            headers=headers,
+        )
+        assert future_snapshot.status_code == 400
+        assert future_snapshot.json()["detail"] == "snapshot_time is in the future"
 
         another_project = str(uuid.uuid4())
         pull_mismatch = client.post(

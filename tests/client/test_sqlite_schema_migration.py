@@ -124,3 +124,33 @@ def test_project_id_migration_is_atomic_and_keeps_foreign_keys_enabled(tmp_path)
     finally:
         store.conn.rollback()
         store.close()
+
+
+def test_existing_outbox_gains_failure_kind_column(tmp_path) -> None:
+    db_file = tmp_path / "legacy-outbox.db"
+    conn = sqlite3.connect(db_file)
+    conn.execute("""
+        CREATE TABLE outbox (
+            change_id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            entity TEXT NOT NULL,
+            op TEXT NOT NULL,
+            entity_id TEXT NOT NULL,
+            base_version INTEGER,
+            record_json TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            last_error TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
+        );
+    """)
+    conn.commit()
+    conn.close()
+
+    from riskapp_client.adapters.local_storage.sqlite_data_store import LocalStore
+
+    with LocalStore(str(db_file)) as store:
+        columns = {
+            str(row[1])
+            for row in store.conn.execute("PRAGMA table_info(outbox);").fetchall()
+        }
+        assert "failure_kind" in columns

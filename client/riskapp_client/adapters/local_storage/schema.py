@@ -279,6 +279,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
                 record_json TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'pending', -- pending|blocked
                 last_error TEXT NOT NULL DEFAULT '',
+                failure_kind TEXT NOT NULL DEFAULT '', -- conflict|error
                 created_at TEXT NOT NULL
             );
             """,
@@ -327,6 +328,11 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             ("score", "INTEGER NOT NULL DEFAULT 0"),
             ("opportunity_id", "TEXT"),
         ],
+    )
+    ensure_columns(
+        conn,
+        "outbox",
+        [("failure_kind", "TEXT NOT NULL DEFAULT ''")],
     )
     _exec_many(
         conn,

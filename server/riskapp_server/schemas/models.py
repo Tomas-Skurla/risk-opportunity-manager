@@ -407,6 +407,15 @@ class SyncPullRequest(BaseModel):
     # Optional per-entity pagination.
     limit_per_entity: int | None = Field(default=None, ge=1, le=50000)
     cursors: dict[str, str] | None = None
+    snapshot_time: datetime | None = None
+
+    @model_validator(mode="after")
+    def _validate_pagination_snapshot(self):
+        if self.cursors and self.limit_per_entity is None:
+            raise ValueError("cursors require limit_per_entity")
+        if self.cursors and self.snapshot_time is None:
+            raise ValueError("cursors require snapshot_time")
+        return self
 
 
 class SyncPullResponse(BaseModel):

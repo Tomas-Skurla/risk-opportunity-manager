@@ -500,6 +500,15 @@ class OfflineFirstBackend(Backend):
     def blocked_count(self, project_id: str | None = None) -> int:
         return self._sync.blocked_count(project_id)
 
+    def conflict_count(self, project_id: str | None = None) -> int:
+        return self._sync.conflict_count(project_id)
+
+    def error_count(self, project_id: str | None = None) -> int:
+        return self._sync.error_count(project_id)
+
+    def last_sync_time(self, project_id: str | None = None) -> str | None:
+        return self._sync.last_sync_time(project_id)
+
     def can_sync(self) -> bool:
         return self._sync.can_sync()
 

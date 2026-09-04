@@ -94,9 +94,17 @@ def test_project_sync_status_and_blocked_details(qtbot) -> None:
             assert project_id == "project-1"
             return 4
 
-        def blocked_count(self, project_id):
+        def conflict_count(self, project_id):
             assert project_id == "project-1"
             return 2
+
+        def error_count(self, project_id):
+            assert project_id == "project-1"
+            return 1
+
+        def last_sync_time(self, project_id):
+            assert project_id == "project-1"
+            return "2026-08-10T08:09:00-04:00"
 
         def can_sync(self):
             return True
@@ -108,7 +116,15 @@ def test_project_sync_status_and_blocked_details(qtbot) -> None:
     host._update_sync_status()
 
     assert host.sync_btn.isEnabled()
-    assert host.sync_status.text() == "ONLINE · pending changes: 4 · blocked: 2"
+    assert host.sync_status.text() == (
+        "ONLINE · pending: 4 · conflicts: 2 · errors: 1 "
+        "· last sync: 2026-08-10 12:09 UTC"
+    )
+    assert host._format_last_sync_time(None) == "never"
+    assert host._format_last_sync_time("not-a-time") == "unknown"
+    assert host._format_last_sync_time("2026-08-10T08:09:00") == (
+        "2026-08-10 08:09 UTC"
+    )
     assert host._format_blocked_sync_details({}) == ""
     assert host._format_blocked_sync_details({"blocked_details": "invalid"}) == ""
     details = host._format_blocked_sync_details(
@@ -134,8 +150,14 @@ def test_project_sync_status_falls_back_when_backend_queries_fail(qtbot) -> None
         def pending_count(self, _project_id):
             raise RuntimeError("offline")
 
-        def blocked_count(self, _project_id):
+        def conflict_count(self, _project_id):
             raise AttributeError("unsupported")
+
+        def error_count(self, _project_id):
+            raise RuntimeError("offline")
+
+        def last_sync_time(self, _project_id):
+            raise RuntimeError("offline")
 
         def can_sync(self):
             raise RuntimeError("offline")
@@ -147,7 +169,9 @@ def test_project_sync_status_falls_back_when_backend_queries_fail(qtbot) -> None
     host._update_sync_status()
 
     assert not host.sync_btn.isEnabled()
-    assert host.sync_status.text() == "OFFLINE · pending changes: 0"
+    assert host.sync_status.text() == (
+        "OFFLINE · pending: 0 · conflicts: 0 · errors: 0 · last sync: never"
+    )
 
 
 def test_sync_now_migrates_project_refreshes_and_reports(monkeypatch, qtbot) -> None:
@@ -189,6 +213,7 @@ def test_sync_now_migrates_project_refreshes_and_reports(monkeypatch, qtbot) -> 
     assert host._load_projects_calls == ["server-project-1"]
     assert host._refresh_calls == ["risk-1"]
     assert "Pushed: 2" in messages[-1]
+    assert "Conflicts blocked: 1" in messages[-1]
     assert "Risk 'risk-2' · delete · Permission denied" in messages[-1]
 
 
@@ -220,15 +245,23 @@ def test_sync_now_handles_missing_project_unsupported_and_failed_backend(
         def pending_count(self, _project_id):
             return 1
 
-        def blocked_count(self, _project_id):
+        def conflict_count(self, _project_id):
             return 0
+
+        def error_count(self, _project_id):
+            return 0
+
+        def last_sync_time(self, _project_id):
+            return None
 
         def can_sync(self):
             return False
 
     host.backend = BrokenBackend()
     host._sync_now()
-    assert host.sync_status.text() == "OFFLINE · pending changes: 1"
+    assert host.sync_status.text() == (
+        "OFFLINE · pending: 1 · conflicts: 0 · errors: 0 · last sync: never"
+    )
 
 
 def test_project_list_labels_local_state_owner_and_selection(qtbot) -> None:

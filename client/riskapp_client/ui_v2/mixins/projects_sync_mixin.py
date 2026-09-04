@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+from datetime import UTC, datetime
 
 from PySide6.QtCore import Qt  # pylint: disable=no-name-in-module
 from PySide6.QtWidgets import (  # pylint: disable=no-name-in-module
@@ -203,6 +204,21 @@ class ProjectsSyncMixin:
             return False
         return bool(project is not None and not project.created_by)
 
+    @staticmethod
+    def _format_last_sync_time(value: object) -> str:
+        raw = str(value or "").strip()
+        if not raw or raw.startswith("1970-01-01"):
+            return "never"
+        try:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return "unknown"
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        else:
+            parsed = parsed.astimezone(UTC)
+        return parsed.strftime("%Y-%m-%d %H:%M UTC")
+
     def _update_sync_status(self) -> None:
         pid = self.current_project_id
         if self._is_unsyncable_local_project(pid):
@@ -210,18 +226,30 @@ class ProjectsSyncMixin:
             self.sync_status.setText("Sync: local-only project, cannot be synced")
             return
         pending = 0
-        blocked = 0
+        conflicts = 0
+        errors = 0
+        last_sync: object = None
         can_sync = False
         if hasattr(self.backend, "pending_count"):
             try:
                 pending = self.backend.pending_count(pid)  # type: ignore[attr-defined]
             except (AttributeError, RuntimeError):
                 pending = 0
-        if hasattr(self.backend, "blocked_count"):
+        if hasattr(self.backend, "conflict_count"):
             try:
-                blocked = self.backend.blocked_count(pid)  # type: ignore[attr-defined]
+                conflicts = self.backend.conflict_count(pid)  # type: ignore[attr-defined]
             except (AttributeError, RuntimeError):
-                blocked = 0
+                conflicts = 0
+        if hasattr(self.backend, "error_count"):
+            try:
+                errors = self.backend.error_count(pid)  # type: ignore[attr-defined]
+            except (AttributeError, RuntimeError):
+                errors = 0
+        if hasattr(self.backend, "last_sync_time"):
+            try:
+                last_sync = self.backend.last_sync_time(pid)  # type: ignore[attr-defined]
+            except (AttributeError, RuntimeError):
+                last_sync = None
         if hasattr(self.backend, "can_sync"):
             try:
                 can_sync = bool(self.backend.can_sync())  # type: ignore[attr-defined]
@@ -229,8 +257,11 @@ class ProjectsSyncMixin:
                 can_sync = False
         self.sync_btn.setEnabled(bool(pid) and can_sync)
         mode = "ONLINE" if can_sync else "OFFLINE"
-        extra = f" · blocked: {blocked}" if blocked else ""
-        self.sync_status.setText(f"{mode} · pending changes: {pending}{extra}")
+        formatted_last_sync = self._format_last_sync_time(last_sync)
+        self.sync_status.setText(
+            f"{mode} · pending: {pending} · conflicts: {conflicts} "
+            f"· errors: {errors} · last sync: {formatted_last_sync}"
+        )
 
     def _sync_now(self) -> None:
         pid = self.current_project_id
@@ -256,7 +287,7 @@ class ProjectsSyncMixin:
             self,
             "Sync complete",
             f"Pushed: {summary.get('pushed')}\n"
-            f"Conflicts rebased: {summary.get('conflicts')}\n"
+            f"Conflicts blocked: {summary.get('conflicts')}\n"
             f"Errors blocked: {summary.get('errors')}\n"
             f"Still blocked: {summary.get('blocked', 0)}\n"
             f"Pulled risks: {summary.get('pulled_risks')}"

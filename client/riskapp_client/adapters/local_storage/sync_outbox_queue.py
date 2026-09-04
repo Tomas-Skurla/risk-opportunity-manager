@@ -65,6 +65,35 @@ class OutboxStore:
         """Count changes that are blocked due to sync errors/conflicts."""
         return self._count_by_status(STATUS_BLOCKED, project_id)
 
+    def _count_blocked_kind(
+        self, failure_kind: str, project_id: str | None = None
+    ) -> int:
+        where = "status=?"
+        params: list[object] = [STATUS_BLOCKED]
+        if failure_kind == "conflict":
+            where += " AND failure_kind=?"
+            params.append("conflict")
+        else:
+            # Rows created before failure_kind was introduced are sync errors
+            # unless they were explicitly classified as conflicts.
+            where += " AND failure_kind<>?"
+            params.append("conflict")
+        if project_id:
+            where += " AND project_id=?"
+            params.append(project_id)
+        row = self.conn.execute(
+            f"SELECT COUNT(*) AS c FROM outbox WHERE {where};", params
+        ).fetchone()
+        return int(row["c"]) if row else 0
+
+    def conflict_count(self, project_id: str | None = None) -> int:
+        """Count blocked changes that need an explicit conflict decision."""
+        return self._count_blocked_kind("conflict", project_id)
+
+    def error_count(self, project_id: str | None = None) -> int:
+        """Count blocked non-conflict synchronization errors."""
+        return self._count_blocked_kind("error", project_id)
+
     def _safe_json_loads(self, raw: str | None) -> dict[str, Any]:
         """Best-effort decode of `last_error` payloads stored in the outbox."""
         if not raw:
@@ -83,7 +112,8 @@ class OutboxStore:
         if project_id:
             rows = self.conn.execute(
                 """
-                SELECT change_id, entity, op, entity_id, base_version, record_json, last_error
+                SELECT change_id, entity, op, entity_id, base_version, record_json,
+                       last_error, failure_kind
                 FROM outbox
                 WHERE project_id=? AND status=?
                 ORDER BY created_at ASC
@@ -94,7 +124,8 @@ class OutboxStore:
         else:
             rows = self.conn.execute(
                 """
-                SELECT change_id, entity, op, entity_id, base_version, record_json, last_error
+                SELECT change_id, entity, op, entity_id, base_version, record_json,
+                       last_error, failure_kind
                 FROM outbox
                 WHERE status=?
                 ORDER BY created_at ASC
@@ -131,6 +162,7 @@ class OutboxStore:
                         or "Blocked by sync error"
                     ),
                     "server_version": err.get("server_version"),
+                    "failure_kind": str(row["failure_kind"] or "error"),
                     "detail": err,
                 }
             )
@@ -408,10 +440,15 @@ class OutboxStore:
         self.conn.execute(f"DELETE FROM outbox WHERE change_id IN ({q});", change_ids)
         self.conn.commit()
 
-    def block_outbox_id(self, change_id: str, err: str) -> None:
+    def block_outbox_id(
+        self, change_id: str, err: str, *, failure_kind: str = "error"
+    ) -> None:
+        if failure_kind not in {"conflict", "error"}:
+            raise ValueError(f"Unknown outbox failure kind: {failure_kind!r}")
         self.conn.execute(
-            "UPDATE outbox SET status=?, last_error=? WHERE change_id=?;",
-            (STATUS_BLOCKED, err[:500], change_id),
+            "UPDATE outbox SET status=?, last_error=?, failure_kind=? "
+            "WHERE change_id=?;",
+            (STATUS_BLOCKED, err[:500], failure_kind, change_id),
         )
         self.conn.commit()
 

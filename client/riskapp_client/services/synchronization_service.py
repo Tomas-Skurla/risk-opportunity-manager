@@ -25,6 +25,20 @@ class SyncService:
     def blocked_count(self, project_id: str | None = None) -> int:
         return self._outbox.blocked_count(project_id)
 
+    def conflict_count(self, project_id: str | None = None) -> int:
+        return self._outbox.conflict_count(project_id)
+
+    def error_count(self, project_id: str | None = None) -> int:
+        return self._outbox.error_count(project_id)
+
+    def last_sync_time(self, project_id: str | None) -> str | None:
+        if not project_id:
+            return None
+        value = self._store.get_last_server_time(project_id)
+        if not value or str(value).startswith("1970-01-01"):
+            return None
+        return str(value)
+
     def blocked_details(self, project_id: str | None = None) -> list[dict[str, Any]]:
         return self._outbox.get_blocked_changes(project_id)
 
@@ -51,11 +65,7 @@ class SyncService:
         return self._remote.sync_push(project_id, changes)
 
     def _process_push(
-        self,
-        project_id: str,
-        changes: list[dict[str, Any]],
-        *,
-        block_conflicts: bool,
+        self, project_id: str, changes: list[dict[str, Any]]
     ) -> tuple[int, list[dict[str, Any]], list[dict[str, Any]]]:
         resp = self._push_once(project_id, changes)
         sent_ids = [
@@ -73,37 +83,20 @@ class SyncService:
         if processed:
             self._outbox.delete_outbox_ids(list(processed))
 
-        if block_conflicts:
-            for c in conflicts:
-                cid = str(c.get("change_id") or "")
-                if cid:
-                    self._outbox.block_outbox_id(cid, self._json_snippet(c))
+        for c in conflicts:
+            cid = str(c.get("change_id") or "")
+            if cid:
+                self._outbox.block_outbox_id(
+                    cid, self._json_snippet(c), failure_kind="conflict"
+                )
         for e in errors:
             cid = str(e.get("change_id") or "")
             if cid:
-                self._outbox.block_outbox_id(cid, self._json_snippet(e))
+                self._outbox.block_outbox_id(
+                    cid, self._json_snippet(e), failure_kind="error"
+                )
 
         return (len(processed), conflicts, errors)
-
-    def _requeue_conflicts(self, conflicts: list[dict[str, Any]]) -> list[str]:
-        new_ids: list[str] = []
-        for c in conflicts:
-            cid = str(c.get("change_id") or "")
-            sv = c.get("server_version")
-            if not cid:
-                continue
-            if sv is None:
-                self._outbox.block_outbox_id(cid, self._json_snippet(c))
-                continue
-            try:
-                server_version = int(sv)
-            except (TypeError, ValueError):
-                self._outbox.block_outbox_id(cid, self._json_snippet(c))
-                continue
-            new_id = self._outbox.requeue_conflict_with_new_id(cid, server_version)
-            if new_id:
-                new_ids.append(new_id)
-        return new_ids
 
     def sync_project(self, project_id: str) -> dict[str, Any]:
         if not self._remote:
@@ -135,34 +128,12 @@ class SyncService:
 
         changes = self._outbox.get_pending_changes(effective_project_id, limit=100)
         if changes:
-            pushed1, conflicts1, errors1 = self._process_push(
-                effective_project_id,
-                changes,
-                block_conflicts=False,
+            pushed, conflicts, errors = self._process_push(
+                effective_project_id, changes
             )
-            summary["pushed"] += pushed1
-            summary["errors"] += len(self._extract_change_ids(errors1))
-
-            requeued_new_ids = self._requeue_conflicts(conflicts1)
-            summary["conflicts"] += len(requeued_new_ids)
-
-            if requeued_new_ids:
-                retry_changes = self._outbox.get_pending_changes(
-                    effective_project_id, limit=100
-                )
-                retry_set = set(requeued_new_ids)
-                retry_changes = [
-                    c for c in retry_changes if str(c.get("change_id")) in retry_set
-                ]
-
-                if retry_changes:
-                    pushed2, _conflicts2, errors2 = self._process_push(
-                        effective_project_id,
-                        retry_changes,
-                        block_conflicts=True,
-                    )
-                    summary["pushed"] += pushed2
-                    summary["errors"] += len(self._extract_change_ids(errors2))
+            summary["pushed"] += pushed
+            summary["conflicts"] += len(self._extract_change_ids(conflicts))
+            summary["errors"] += len(self._extract_change_ids(errors))
 
         since = self._store.get_last_server_time(effective_project_id)
 
@@ -249,6 +220,7 @@ class SyncService:
 
         limit = 2000
         cursors: dict[str, str] = {}
+        snapshot_time: str | None = None
 
         merged: dict[str, Any] = {
             "server_time": None,
@@ -265,8 +237,16 @@ class SyncService:
                 since,
                 limit_per_entity=limit,
                 cursors=cursors or None,
+                snapshot_time=snapshot_time,
             )
-            merged["server_time"] = resp.get("server_time") or merged["server_time"]
+            page_snapshot = str(resp.get("server_time") or "")
+            if not page_snapshot:
+                raise RuntimeError("Sync pagination response omitted server_time")
+            if snapshot_time is None:
+                snapshot_time = page_snapshot
+                merged["server_time"] = page_snapshot
+            elif page_snapshot != snapshot_time:
+                raise RuntimeError("Sync pagination snapshot changed between pages")
             for key in (
                 "risks",
                 "opportunities",
