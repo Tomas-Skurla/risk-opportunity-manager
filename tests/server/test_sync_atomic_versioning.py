@@ -205,9 +205,8 @@ def test_all_existing_sync_entity_types_require_and_claim_base_version(
     ],
 )
 def test_version_claim_sql_is_conditional_for_every_entity(entity, table) -> None:
-    from sqlalchemy.dialects import sqlite
-
     from riskapp_server.sync import engine
+    from sqlalchemy.dialects import sqlite
 
     db = Mock()
     db.execute.return_value = SimpleNamespace(rowcount=1)
