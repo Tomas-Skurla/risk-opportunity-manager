@@ -277,9 +277,13 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
                 entity_id TEXT NOT NULL,
                 base_version INTEGER,
                 record_json TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'pending', -- pending|blocked
+                status TEXT NOT NULL DEFAULT 'pending', -- pending|retry|blocked
                 last_error TEXT NOT NULL DEFAULT '',
-                failure_kind TEXT NOT NULL DEFAULT '', -- conflict|error
+                failure_kind TEXT NOT NULL DEFAULT '',
+                result_json TEXT NOT NULL DEFAULT '',
+                retry_count INTEGER NOT NULL DEFAULT 0,
+                next_retry_at TEXT NOT NULL DEFAULT '',
+                last_attempt_at TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL
             );
             """,
@@ -332,7 +336,13 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     ensure_columns(
         conn,
         "outbox",
-        [("failure_kind", "TEXT NOT NULL DEFAULT ''")],
+        [
+            ("failure_kind", "TEXT NOT NULL DEFAULT ''"),
+            ("result_json", "TEXT NOT NULL DEFAULT ''"),
+            ("retry_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("next_retry_at", "TEXT NOT NULL DEFAULT ''"),
+            ("last_attempt_at", "TEXT NOT NULL DEFAULT ''"),
+        ],
     )
     _exec_many(
         conn,
@@ -341,6 +351,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             "CREATE INDEX IF NOT EXISTS opps_project_idx ON opportunities(project_id, is_deleted, updated_at);",
             "CREATE INDEX IF NOT EXISTS actions_project_idx ON actions(project_id, is_deleted, updated_at);",
             "CREATE INDEX IF NOT EXISTS outbox_pending_idx ON outbox(project_id, status, created_at);",
+            "CREATE INDEX IF NOT EXISTS outbox_retry_idx ON outbox(project_id, status, next_retry_at);",
             "CREATE INDEX IF NOT EXISTS outbox_entity_idx ON outbox(project_id, entity, entity_id);",
             "CREATE INDEX IF NOT EXISTS assessments_item_idx ON assessments(project_id, item_id, item_type, is_deleted);",
             "CREATE INDEX IF NOT EXISTS assessments_risk_idx ON assessments(project_id, risk_id, is_deleted);",

@@ -17,6 +17,7 @@ class ProjectHost(ProjectsSyncMixin):
         self.project_list = QListWidget()
         self.sync_btn = QPushButton()
         self.sync_status = QLabel()
+        self.conflicts_btn = QPushButton()
         self.current_project_id: str | None = None
         self._cached_members = []
 
@@ -40,6 +41,7 @@ def test_duplicate_check_uses_original_name_not_decorated_label(
     qtbot.addWidget(host.project_list)
     qtbot.addWidget(host.sync_btn)
     qtbot.addWidget(host.sync_status)
+    qtbot.addWidget(host.conflicts_btn)
     host._load_projects()
     assert host.project_list.item(0).text() == "Private  (local only)"
 
@@ -85,10 +87,13 @@ def test_local_only_status_cannot_be_reenabled_by_online_backend(qtbot) -> None:
     qtbot.addWidget(host.project_list)
     qtbot.addWidget(host.sync_btn)
     qtbot.addWidget(host.sync_status)
+    qtbot.addWidget(host.conflicts_btn)
 
     host._update_sync_status()
 
     assert not host.sync_btn.isEnabled()
+    assert not host.conflicts_btn.isEnabled()
+    assert host.conflicts_btn.text() == "Conflicts (0)"
     assert host.sync_status.text() == "Sync: local-only project, cannot be synced"
     backend.pending_count.assert_not_called()
     backend.blocked_count.assert_not_called()

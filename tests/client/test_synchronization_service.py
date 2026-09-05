@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import Mock, call
 
@@ -12,7 +13,9 @@ from riskapp_client.services.synchronization_service import SyncService
 
 def _service(*, remote=None):
     store = Mock()
+    store.write_transaction.side_effect = nullcontext
     outbox = Mock()
+    outbox.next_retry_at.return_value = None
     return SyncService(store, outbox, remote), store, outbox
 
 
@@ -22,6 +25,7 @@ def test_sync_service_delegates_counts_and_requires_a_remote() -> None:
     outbox.blocked_count.return_value = 2
     outbox.conflict_count.return_value = 1
     outbox.error_count.return_value = 1
+    outbox.deferred_count.return_value = 4
     outbox.get_blocked_changes.return_value = [{"change_id": "blocked-1"}]
     _store.get_last_server_time.return_value = "2026-08-10T08:00:00Z"
 
@@ -30,9 +34,18 @@ def test_sync_service_delegates_counts_and_requires_a_remote() -> None:
     assert service.blocked_count() == 2
     assert service.conflict_count("project-1") == 1
     assert service.error_count("project-1") == 1
+    assert service.deferred_count("project-1") == 4
+    assert service.next_retry_at("project-1") is None
     assert service.last_sync_time("project-1") == "2026-08-10T08:00:00Z"
     assert service.last_sync_time(None) is None
     assert service.blocked_details("project-1") == [{"change_id": "blocked-1"}]
+    outbox.get_blocked_changes.return_value = [
+        {"change_id": "conflict-1", "failure_kind": "conflict"},
+        {"change_id": "error-1", "failure_kind": "validation"},
+    ]
+    assert service.conflict_details("project-1") == [
+        {"change_id": "conflict-1", "failure_kind": "conflict"}
+    ]
     outbox.pending_count.assert_called_once_with("project-1")
     outbox.blocked_count.assert_called_once_with(None)
 
@@ -68,13 +81,108 @@ def test_process_push_removes_successes_and_blocks_failures() -> None:
     }
     assert outbox.block_outbox_id.call_count == 2
     assert outbox.block_outbox_id.call_args_list[0].args[0] == "conflict-1"
+    assert outbox.block_outbox_id.call_args_list[0].args[1] == {
+        "change_id": "conflict-1",
+        "reason": "stale",
+    }
     assert outbox.block_outbox_id.call_args_list[0].kwargs == {
         "failure_kind": "conflict"
     }
     assert outbox.block_outbox_id.call_args_list[1].args[0] == "error-1"
     assert outbox.block_outbox_id.call_args_list[1].kwargs == {
-        "failure_kind": "error"
+        "failure_kind": "validation"
     }
+
+
+@pytest.mark.parametrize(
+    ("status", "failure_kind", "retryable"),
+    [
+        (0, "transient", True),
+        (408, "transient", True),
+        (429, "transient", True),
+        (503, "transient", True),
+        (401, "authentication", False),
+        (403, "permission", False),
+        (422, "validation", False),
+    ],
+)
+def test_push_request_failures_follow_retry_state_machine(
+    status: int, failure_kind: str, retryable: bool
+) -> None:
+    class RequestError(RuntimeError):
+        def __init__(self, code: int) -> None:
+            super().__init__(f"status {code}")
+            self.status = code
+            self.detail = "request failed"
+
+    remote = Mock()
+    remote.sync_push.side_effect = RequestError(status)
+    service, _store, outbox = _service(remote=remote)
+
+    processed, conflicts, errors = service._process_push(
+        "project-1", [{"change_id": "change-1"}]
+    )
+
+    assert processed == 0
+    assert conflicts == []
+    assert errors[0]["failure_kind"] == failure_kind
+    assert errors[0]["retryable"] is retryable
+    assert errors[0]["request_failed"] is True
+    if retryable:
+        outbox.defer_outbox_id.assert_called_once_with("change-1", errors[0])
+        outbox.block_outbox_id.assert_not_called()
+    else:
+        outbox.block_outbox_id.assert_called_once_with(
+            "change-1", errors[0], failure_kind=failure_kind
+        )
+        outbox.defer_outbox_id.assert_not_called()
+
+
+def test_retryable_per_change_result_is_deferred_not_blocked() -> None:
+    remote = Mock()
+    remote.sync_push.return_value = {
+        "results": [
+            {
+                "change_id": "change-1",
+                "status": "error",
+                "reason": "internal_error",
+                "failure_kind": "transient",
+                "retryable": True,
+            }
+        ]
+    }
+    service, _store, outbox = _service(remote=remote)
+
+    processed, conflicts, errors = service._process_push(
+        "project-1", [{"change_id": "change-1"}]
+    )
+
+    assert processed == 0
+    assert conflicts == []
+    outbox.defer_outbox_id.assert_called_once_with("change-1", errors[0])
+    outbox.block_outbox_id.assert_not_called()
+
+
+def test_request_level_push_failure_stops_pull_and_returns_retry_state() -> None:
+    class OfflineError(RuntimeError):
+        status = 0
+        detail = "network unavailable"
+
+    remote = Mock()
+    remote.sync_push.side_effect = OfflineError()
+    service, store, outbox = _service(remote=remote)
+    outbox.get_pending_changes.return_value = [{"change_id": "change-1"}]
+    outbox.get_blocked_changes.return_value = []
+    outbox.next_retry_at.return_value = "2026-09-04T12:00:02"
+
+    summary = service.sync_project("project-1")
+
+    assert summary["state"] == "retry_wait"
+    assert summary["deferred"] == 1
+    assert summary["errors"] == 0
+    assert summary["next_retry_at"] == "2026-09-04T12:00:02"
+    remote.sync_pull.assert_not_called()
+    store.set_last_server_time.assert_not_called()
 
 
 def test_last_sync_time_hides_uninitialized_watermark() -> None:
@@ -100,6 +208,50 @@ def test_process_push_blocks_conflicts_for_explicit_resolution() -> None:
     outbox.delete_outbox_ids.assert_not_called()
     outbox.block_outbox_id.assert_called_once()
     assert outbox.block_outbox_id.call_args.args[0] == "conflict-1"
+
+
+def test_process_push_uses_replayed_receipt_status_not_duplicate_flag() -> None:
+    remote = Mock()
+    remote.sync_push.return_value = {
+        "duplicates": 3,
+        "duplicate_change_ids": ["accepted-1", "conflict-1", "error-1"],
+        "results": [
+            {
+                "change_id": "accepted-1",
+                "status": "accepted",
+                "replayed": True,
+            },
+            {
+                "change_id": "conflict-1",
+                "status": "conflict",
+                "replayed": True,
+                "reason": "version_mismatch",
+                "server_version": 4,
+            },
+            {
+                "change_id": "error-1",
+                "status": "error",
+                "replayed": True,
+                "reason": "http_error",
+            },
+        ],
+    }
+    service, _store, outbox = _service(remote=remote)
+
+    processed, conflicts, errors = service._process_push(
+        "project-1",
+        [
+            {"change_id": "accepted-1"},
+            {"change_id": "conflict-1"},
+            {"change_id": "error-1"},
+        ],
+    )
+
+    assert processed == 1
+    outbox.delete_outbox_ids.assert_called_once_with(["accepted-1"])
+    assert conflicts[0]["change_id"] == "conflict-1"
+    assert errors[0]["change_id"] == "error-1"
+    assert outbox.block_outbox_id.call_count == 2
 
 
 def test_sync_project_blocks_conflict_then_applies_pull_in_parent_order() -> None:
@@ -131,9 +283,11 @@ def test_sync_project_blocks_conflict_then_applies_pull_in_parent_order() -> Non
     summary = service.sync_project("project-1")
 
     assert summary == {
+        "state": "attention_required",
         "pushed": 1,
         "conflicts": 1,
         "errors": 1,
+        "deferred": 0,
         "blocked": 2,
         "blocked_details": [
             {"change_id": "old-2"},
@@ -144,6 +298,7 @@ def test_sync_project_blocks_conflict_then_applies_pull_in_parent_order() -> Non
         "pulled_actions": 1,
         "pulled_assessments": 1,
         "pulled_helpdesk_tickets": 1,
+        "next_retry_at": None,
     }
     remote.sync_push.assert_called_once()
     outbox.requeue_conflict_with_new_id.assert_not_called()
@@ -205,8 +360,10 @@ def test_sync_project_falls_back_to_paginated_pull_only_for_413() -> None:
     )
 
     remote.sync_pull.side_effect = PullError(500)
-    with pytest.raises(PullError, match="status 500"):
-        service.sync_project("project-1")
+    failed = service.sync_project("project-1")
+    assert failed["state"] == "retry_wait"
+    assert failed["sync_error"]["failure_kind"] == "transient"
+    assert failed["sync_error"]["retryable"] is True
 
 
 def test_promote_local_project_renames_collision_and_migrates_cache() -> None:
@@ -231,7 +388,7 @@ def test_promote_local_project_renames_collision_and_migrates_cache() -> None:
         "UPDATE projects SET name = ? WHERE id = ?;",
         ("Local Project (3)", "local-1"),
     )
-    store.conn.commit.assert_called_once()
+    store.write_transaction.assert_called_once_with()
     store.migrate_project_id.assert_called_once_with(
         old_project_id="local-1", new_project_id="server-1"
     )

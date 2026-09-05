@@ -15,6 +15,9 @@ from PySide6.QtWidgets import (  # pylint: disable=no-name-in-module
     QListWidgetItem,
     QMessageBox,
 )
+from riskapp_client.ui_v2.components.conflict_center_dialog import (
+    ConflictCenterDialog,
+)
 from riskapp_client.ui_v2.components.custom_gui_widgets import NewProjectDialog
 
 _PROJECT_NAME_ROLE = int(Qt.UserRole) + 1
@@ -224,8 +227,12 @@ class ProjectsSyncMixin:
         if self._is_unsyncable_local_project(pid):
             self.sync_btn.setEnabled(False)
             self.sync_status.setText("Sync: local-only project, cannot be synced")
+            if hasattr(self, "conflicts_btn"):
+                self.conflicts_btn.setText("Conflicts (0)")
+                self.conflicts_btn.setEnabled(False)
             return
         pending = 0
+        deferred = 0
         conflicts = 0
         errors = 0
         last_sync: object = None
@@ -240,6 +247,11 @@ class ProjectsSyncMixin:
                 conflicts = self.backend.conflict_count(pid)  # type: ignore[attr-defined]
             except (AttributeError, RuntimeError):
                 conflicts = 0
+        if hasattr(self.backend, "deferred_count"):
+            try:
+                deferred = self.backend.deferred_count(pid)  # type: ignore[attr-defined]
+            except (AttributeError, RuntimeError):
+                deferred = 0
         if hasattr(self.backend, "error_count"):
             try:
                 errors = self.backend.error_count(pid)  # type: ignore[attr-defined]
@@ -259,9 +271,55 @@ class ProjectsSyncMixin:
         mode = "ONLINE" if can_sync else "OFFLINE"
         formatted_last_sync = self._format_last_sync_time(last_sync)
         self.sync_status.setText(
-            f"{mode} · pending: {pending} · conflicts: {conflicts} "
+            f"{mode} · queued: {pending} · retrying: {deferred} "
+            f"· conflicts: {conflicts} "
             f"· errors: {errors} · last sync: {formatted_last_sync}"
         )
+        if hasattr(self, "conflicts_btn"):
+            self.conflicts_btn.setText(f"Conflicts ({conflicts})")
+            self.conflicts_btn.setEnabled(bool(pid) and conflicts > 0)
+
+    def _open_conflict_center(self) -> None:
+        pid = self.current_project_id
+        if not pid:
+            QMessageBox.information(self, "Synchronization conflicts", "No project selected.")
+            return
+        if not hasattr(self.backend, "conflict_details") or not hasattr(
+            self.backend, "resolve_conflict"
+        ):
+            QMessageBox.information(
+                self,
+                "Synchronization conflicts",
+                "This backend does not support interactive conflict resolution.",
+            )
+            return
+        conflicts = self._call_backend(
+            "Could not load conflicts",
+            self.backend.conflict_details,  # type: ignore[attr-defined]
+            pid,
+        )
+        if conflicts is None:
+            self._update_sync_status()
+            return
+        if not isinstance(conflicts, list) or not conflicts:
+            QMessageBox.information(
+                self,
+                "Synchronization conflicts",
+                "There are no unresolved conflicts for this project.",
+            )
+            self._update_sync_status()
+            return
+
+        dialog = ConflictCenterDialog(
+            conflicts,
+            self.backend.resolve_conflict,  # type: ignore[attr-defined]
+            parent=self,
+        )
+        dialog.conflict_resolved.connect(
+            lambda _change_id, _resolution: self._update_sync_status()
+        )
+        dialog.exec()
+        self._refresh_all_views(select_id=self.current_risk_id)
 
     def _sync_now(self) -> None:
         pid = self.current_project_id
@@ -283,13 +341,25 @@ class ProjectsSyncMixin:
         # refresh UI from local store after sync
         self._refresh_all_views(select_id=self.current_risk_id)
         blocked_details = self._format_blocked_sync_details(summary)
-        QMessageBox.information(
-            self,
-            "Sync complete",
+        state = str(summary.get("state") or "complete")
+        sync_error = summary.get("sync_error")
+        error_detail = ""
+        if isinstance(sync_error, dict):
+            error_detail = f"\n\n{sync_error.get('detail') or sync_error.get('reason')}"
+        message = (
             f"Pushed: {summary.get('pushed')}\n"
             f"Conflicts blocked: {summary.get('conflicts')}\n"
             f"Errors blocked: {summary.get('errors')}\n"
+            f"Retries scheduled: {summary.get('deferred', 0)}\n"
             f"Still blocked: {summary.get('blocked', 0)}\n"
             f"Pulled risks: {summary.get('pulled_risks')}"
-            f"{blocked_details}",
+            f"{blocked_details}{error_detail}"
+        )
+        if state == "complete":
+            QMessageBox.information(self, "Sync complete", message)
+            return
+        QMessageBox.warning(
+            self,
+            "Sync needs attention" if state != "retry_wait" else "Sync retry scheduled",
+            message,
         )

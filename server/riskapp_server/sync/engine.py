@@ -124,6 +124,22 @@ def model_to_dict(obj: Any) -> dict[str, Any]:
     return out
 
 
+def model_to_sync_dict(db: Session, entity: str, obj: Any) -> dict[str, Any]:
+    """Serialize one entity with unambiguous parent aliases for the client."""
+    out = model_to_dict(obj)
+    if entity not in {"action", "assessment"}:
+        return out
+    item_id = out.get("item_id")
+    item_type = (
+        db.execute(select(Item.type).where(Item.id == obj.item_id)).scalar()
+        if item_id
+        else None
+    )
+    out["risk_id"] = item_id if item_type == "risk" else None
+    out["opportunity_id"] = item_id if item_type == "opportunity" else None
+    return out
+
+
 def _maybe_recalculate_scores(obj: Any) -> None:
 
     if all(hasattr(obj, a) for a in ("probability", "impact", "score")):
@@ -373,13 +389,21 @@ def pull_since(
 
 class ConflictError(Exception):
     def __init__(
-        self, reason: str, entity_id: uuid.UUID | None, server_version: int | None
+        self,
+        reason: str,
+        entity_id: uuid.UUID | None,
+        server_version: int | None,
+        server_record: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(reason)
-        self.reason, self.entity_id, self.server_version = (
-            reason,
-            entity_id,
-            server_version,
+        self.reason = reason
+        self.entity_id = entity_id
+        self.server_version = server_version
+        self.server_record = server_record
+        self.server_updated_at = (
+            str(server_record.get("updated_at"))
+            if server_record and server_record.get("updated_at") is not None
+            else None
         )
 
 
@@ -404,6 +428,91 @@ def _begin_push_transaction(db: Session) -> None:
     db.connection().exec_driver_sql("BEGIN IMMEDIATE")
 
 
+def _change_result(
+    *,
+    change_id: uuid.UUID,
+    status: str,
+    entity: str,
+    op: str,
+    entity_id: uuid.UUID | str | None,
+    response: dict[str, Any] | None = None,
+    replayed: bool = False,
+) -> dict[str, Any]:
+    """Build the stable per-change result returned for new and replayed work."""
+    payload = response if isinstance(response, dict) else {}
+    stored_entity_id = payload.get("entity_id") or entity_id
+    result: dict[str, Any] = {
+        "change_id": str(change_id),
+        "status": status,
+        "replayed": bool(replayed),
+        "entity": entity,
+        "op": op,
+        "entity_id": str(stored_entity_id) if stored_entity_id else None,
+    }
+    for key in (
+        "reason",
+        "detail",
+        "server_version",
+        "server_record",
+        "server_updated_at",
+        "failure_kind",
+        "retryable",
+    ):
+        if key in payload:
+            result[key] = payload[key]
+    return result
+
+
+def _receipt_result(receipt: SyncReceipt) -> dict[str, Any]:
+    return _change_result(
+        change_id=receipt.change_id,
+        status=receipt.status,
+        entity=receipt.entity,
+        op=receipt.op,
+        entity_id=receipt.entity_id,
+        response=receipt.response,
+        replayed=True,
+    )
+
+
+def _append_legacy_outcome(
+    result: dict[str, Any],
+    conflicts: list[dict[str, Any]],
+    errors: list[dict[str, Any]],
+) -> None:
+    """Populate the original aggregate fields for backwards compatibility."""
+    status = result.get("status")
+    if status == "conflict":
+        conflict = {
+            "change_id": result["change_id"],
+            "entity": result.get("entity"),
+            "id": result.get("entity_id"),
+            "reason": result.get("reason"),
+            "server_version": result.get("server_version"),
+            "server_record": result.get("server_record"),
+            "server_updated_at": result.get("server_updated_at"),
+            "failure_kind": result.get("failure_kind") or "conflict",
+            "retryable": bool(result.get("retryable")),
+        }
+        if result.get("replayed"):
+            conflict["replayed"] = True
+        conflicts.append(conflict)
+    elif status == "error":
+        error = {
+            "change_id": result["change_id"],
+            "entity": result.get("entity"),
+            "op": result.get("op"),
+            "reason": result.get("reason"),
+            "failure_kind": result.get("failure_kind") or "error",
+            "retryable": bool(result.get("retryable")),
+        }
+        if result.get("detail") is not None:
+            error["detail"] = result["detail"]
+        if result.get("replayed"):
+            error["replayed"] = True
+        errors.append(error)
+
+
 def push_changes(
     db: Session, user_id: uuid.UUID, project_id: uuid.UUID, changes: list[SyncChange]
 ) -> dict[str, Any]:
@@ -415,6 +524,8 @@ def push_changes(
     dup_ids: list[str] = []
     conflicts: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
+    results: list[dict[str, Any]] = []
+    batch_results: dict[uuid.UUID, dict[str, Any]] = {}
     wrote = 0
 
     def _evict_if_needed() -> None:
@@ -426,9 +537,9 @@ def push_changes(
 
     ids = [c.change_id for c in changes]
     if ids:
-        seen_change_ids = set(
+        receipt_rows = (
             db.execute(
-                select(SyncReceipt.change_id).where(
+                select(SyncReceipt).where(
                     SyncReceipt.change_id.in_(ids),
                     SyncReceipt.project_id == project_id,
                     SyncReceipt.user_id == user_id,
@@ -437,13 +548,24 @@ def push_changes(
             .scalars()
             .all()
         )
+        existing_receipts = {
+            receipt.change_id: receipt for receipt in receipt_rows
+        }
     else:
-        seen_change_ids = set()
+        existing_receipts = {}
+
+    seen_change_ids = set(existing_receipts)
 
     for ch in changes:
         if ch.change_id in seen_change_ids:
             duplicates += 1
             dup_ids.append(str(ch.change_id))
+            if ch.change_id in existing_receipts:
+                replay = _receipt_result(existing_receipts[ch.change_id])
+            else:
+                replay = {**batch_results[ch.change_id], "replayed": True}
+            results.append(replay)
+            _append_legacy_outcome(replay, conflicts, errors)
             continue
         # A receipt is not visible to the query above until this transaction is
         # flushed. Track IDs from the current request as well so a malformed
@@ -456,12 +578,32 @@ def push_changes(
             (ch.record or {}),
         )
         if entity not in ENTITY_MODELS:
-            _receipt_err(db, errors, ch, user_id, project_id, "unknown_entity")
+            result = _receipt_err(
+                db,
+                errors,
+                ch,
+                user_id,
+                project_id,
+                "unknown_entity",
+                failure_kind="validation",
+            )
+            results.append(result)
+            batch_results[ch.change_id] = result
             wrote += 1
             _evict_if_needed()
             continue
         if op not in OPS:
-            _receipt_err(db, errors, ch, user_id, project_id, "unknown_op")
+            result = _receipt_err(
+                db,
+                errors,
+                ch,
+                user_id,
+                project_id,
+                "unknown_op",
+                failure_kind="validation",
+            )
+            results.append(result)
+            batch_results[ch.change_id] = result
             wrote += 1
             _evict_if_needed()
             continue
@@ -473,9 +615,17 @@ def push_changes(
                 try:
                     ensure_role_at_least(role, "manager")
                 except HTTPException:
-                    _receipt_err(
-                        db, errors, ch, user_id, project_id, "insufficient_permissions"
+                    result = _receipt_err(
+                        db,
+                        errors,
+                        ch,
+                        user_id,
+                        project_id,
+                        "insufficient_permissions",
+                        failure_kind="permission",
                     )
+                    results.append(result)
+                    batch_results[ch.change_id] = result
                     wrote += 1
                     _evict_if_needed()
                     continue
@@ -483,9 +633,17 @@ def push_changes(
         try:
             ensure_role_at_least(role, _min_role_for_change(entity, op))
         except HTTPException:
-            _receipt_err(
-                db, errors, ch, user_id, project_id, "insufficient_permissions"
+            result = _receipt_err(
+                db,
+                errors,
+                ch,
+                user_id,
+                project_id,
+                "insufficient_permissions",
+                failure_kind="permission",
             )
+            results.append(result)
+            batch_results[ch.change_id] = result
             wrote += 1
             _evict_if_needed()
             continue
@@ -526,10 +684,28 @@ def push_changes(
                 )
                 db.flush()
             accepted += 1
+            result = _change_result(
+                change_id=ch.change_id,
+                status="accepted",
+                entity=entity,
+                op=op,
+                entity_id=eid,
+                response={"entity_id": str(eid)},
+            )
+            results.append(result)
+            batch_results[ch.change_id] = result
             wrote += 1
             _evict_if_needed()
 
         except ConflictError as exc:
+            conflict_response = {
+                "reason": exc.reason,
+                "server_version": exc.server_version,
+                "server_record": exc.server_record,
+                "server_updated_at": exc.server_updated_at,
+                "failure_kind": "conflict",
+                "retryable": False,
+            }
             _store_receipt(
                 db,
                 ch.change_id,
@@ -539,34 +715,59 @@ def push_changes(
                 exc.entity_id,
                 op,
                 "conflict",
-                {"reason": exc.reason, "server_version": exc.server_version},
+                conflict_response,
             )
-            conflicts.append(
-                {
-                    "change_id": str(ch.change_id),
-                    "entity": entity,
-                    "id": str(exc.entity_id) if exc.entity_id else None,
-                    "reason": exc.reason,
-                    "server_version": exc.server_version,
-                }
+            result = _change_result(
+                change_id=ch.change_id,
+                status="conflict",
+                entity=entity,
+                op=op,
+                entity_id=exc.entity_id,
+                response=conflict_response,
             )
+            results.append(result)
+            batch_results[ch.change_id] = result
+            _append_legacy_outcome(result, conflicts, errors)
             wrote += 1
             _evict_if_needed()
 
         except HTTPException as exc:
-            _receipt_err(
-                db, errors, ch, user_id, project_id, "http_error", str(exc.detail)
+            failure_kind, retryable = _classify_http_failure(exc.status_code)
+            result = _receipt_err(
+                db,
+                errors,
+                ch,
+                user_id,
+                project_id,
+                "http_error",
+                str(exc.detail),
+                failure_kind=failure_kind,
+                retryable=retryable,
+                store_receipt=not retryable,
             )
-            wrote += 1
-            _evict_if_needed()
+            results.append(result)
+            batch_results[ch.change_id] = result
+            if not retryable:
+                wrote += 1
+                _evict_if_needed()
 
         except Exception:
             logging.getLogger("riskapp_server.sync").exception(
                 "Unexpected error processing sync change %s", ch.change_id
             )
-            _receipt_err(db, errors, ch, user_id, project_id, "internal_error")
-            wrote += 1
-            _evict_if_needed()
+            result = _receipt_err(
+                db,
+                errors,
+                ch,
+                user_id,
+                project_id,
+                "internal_error",
+                failure_kind="transient",
+                retryable=True,
+                store_receipt=False,
+            )
+            results.append(result)
+            batch_results[ch.change_id] = result
 
     try:
         db.commit()
@@ -581,6 +782,7 @@ def push_changes(
         "duplicate_change_ids": dup_ids,
         "conflicts": conflicts,
         "errors": errors,
+        "results": results,
         "server_time": utcnow(),
     }
 
@@ -611,6 +813,18 @@ def _store_receipt(
     )
 
 
+def _classify_http_failure(status_code: int) -> tuple[str, bool]:
+    """Map an operation-level HTTP failure to a stable client action."""
+    status = int(status_code or 0)
+    if status == 401:
+        return "authentication", False
+    if status == 403:
+        return "permission", False
+    if status in {408, 425, 429} or status >= 500:
+        return "transient", True
+    return "validation", False
+
+
 def _receipt_err(
     db: Session,
     errors: list[dict[str, Any]],
@@ -619,28 +833,47 @@ def _receipt_err(
     project_id: uuid.UUID,
     reason: str,
     detail: str | None = None,
-) -> None:
+    *,
+    failure_kind: str = "error",
+    retryable: bool = False,
+    store_receipt: bool = True,
+) -> dict[str, Any]:
     entity = (ch.entity or "").strip().lower()
     op = (ch.op or "").strip().lower()
     entity_id = _maybe_entity_id(ch.record or {})
-    resp: dict[str, Any] = {"reason": reason}
+    resp: dict[str, Any] = {
+        "reason": reason,
+        "failure_kind": failure_kind,
+        "retryable": bool(retryable),
+    }
     if detail:
         resp["detail"] = detail
 
-    with db.begin_nested():
-        _store_receipt(
-            db, ch.change_id, user_id, project_id, entity, entity_id, op, "error", resp
-        )
-        db.flush()
+    if store_receipt:
+        with db.begin_nested():
+            _store_receipt(
+                db,
+                ch.change_id,
+                user_id,
+                project_id,
+                entity,
+                entity_id,
+                op,
+                "error",
+                resp,
+            )
+            db.flush()
 
-    e = {"change_id": str(ch.change_id), "reason": reason}
-    if entity:
-        e["entity"] = entity
-    if op:
-        e["op"] = op
-    if detail:
-        e["detail"] = detail
-    errors.append(e)
+    result = _change_result(
+        change_id=ch.change_id,
+        status="error",
+        entity=entity,
+        op=op,
+        entity_id=entity_id,
+        response=resp,
+    )
+    _append_legacy_outcome(result, [], errors)
+    return result
 
 
 def _maybe_entity_id(record: dict[str, Any]) -> uuid.UUID | None:
@@ -758,19 +991,28 @@ def _fetch_obj(db: Session, entity: str, entity_id: uuid.UUID, project_id: uuid.
 
 
 def _check_base_version(
-    obj: Any, base_version: Any, entity_id: uuid.UUID
+    obj: Any,
+    base_version: Any,
+    entity_id: uuid.UUID,
+    server_record: dict[str, Any],
 ) -> int:
     server_version = getattr(obj, "version", None)
     if base_version is None:
-        raise ConflictError("base_version_required", entity_id, server_version)
+        raise ConflictError(
+            "base_version_required", entity_id, server_version, server_record
+        )
     try:
         bv = int(base_version)
     except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail="base_version must be int") from exc
     if bv < 1:
-        raise ConflictError("base_version_required", entity_id, server_version)
+        raise ConflictError(
+            "base_version_required", entity_id, server_version, server_record
+        )
     if server_version != bv:
-        raise ConflictError("version_mismatch", entity_id, server_version)
+        raise ConflictError(
+            "version_mismatch", entity_id, server_version, server_record
+        )
     return bv
 
 
@@ -798,16 +1040,30 @@ def _version_scope(
     return Model, where
 
 
-def _current_server_version(
+def _current_server_state(
     db: Session,
     entity: str,
     entity_id: uuid.UUID,
     project_id: uuid.UUID,
     user_id: uuid.UUID,
-) -> int | None:
+) -> tuple[int | None, dict[str, Any] | None]:
     Model, where = _version_scope(entity, entity_id, project_id, user_id)
-    value = db.execute(select(Model.version).where(*where)).scalar()
-    return int(value) if value is not None else None
+    obj = (
+        db.execute(
+            select(Model)
+            .where(*where)
+            .execution_options(populate_existing=True)
+        )
+        .scalars()
+        .first()
+    )
+    if obj is None:
+        return None, None
+    version = getattr(obj, "version", None)
+    return (
+        int(version) if version is not None else None,
+        model_to_sync_dict(db, entity, obj),
+    )
 
 
 def _claim_base_version(
@@ -827,28 +1083,46 @@ def _claim_base_version(
         .execution_options(synchronize_session=False)
     )
     if result.rowcount != 1:
+        server_version, server_record = _current_server_state(
+            db, entity, entity_id, project_id, user_id
+        )
         raise ConflictError(
             "version_mismatch",
             entity_id,
-            _current_server_version(
-                db, entity, entity_id, project_id, user_id
-            ),
+            server_version,
+            server_record,
         )
 
 
 def _validate_existing_obj(
-    obj: Any, entity: str, entity_id: uuid.UUID, user_id: uuid.UUID, base_version: Any
+    db: Session,
+    obj: Any,
+    entity: str,
+    entity_id: uuid.UUID,
+    project_id: uuid.UUID,
+    user_id: uuid.UUID,
+    base_version: Any,
 ) -> int:
     """Validate access and version checks."""
     if entity in {"risk", "opportunity"} and getattr(obj, "type", None) != entity:
-        raise ConflictError("type_mismatch", entity_id, getattr(obj, "version", None))
+        raise ConflictError(
+            "type_mismatch",
+            entity_id,
+            getattr(obj, "version", None),
+            model_to_sync_dict(db, entity, obj),
+        )
 
     if entity == "assessment" and getattr(obj, "assessor_user_id", None) != user_id:
         raise HTTPException(
             status_code=403, detail="Cannot modify another user's assessment"
         )
 
-    return _check_base_version(obj, base_version, entity_id)
+    return _check_base_version(
+        obj,
+        base_version,
+        entity_id,
+        model_to_sync_dict(db, entity, obj),
+    )
 
 
 def _apply_upsert(
@@ -879,7 +1153,7 @@ def _apply_upsert(
         return entity_id
 
     expected_version = _validate_existing_obj(
-        obj, entity, entity_id, user_id, base_version
+        db, obj, entity, entity_id, project_id, user_id, base_version
     )
     before = model_to_dict(obj)
     _claim_base_version(
@@ -920,7 +1194,7 @@ def _apply_delete(
         return entity_id
 
     expected_version = _validate_existing_obj(
-        obj, entity, entity_id, user_id, base_version
+        db, obj, entity, entity_id, project_id, user_id, base_version
     )
     before = model_to_dict(obj)
     _claim_base_version(

@@ -85,3 +85,10 @@ def test_push_with_stale_base_version_returns_conflict(tmp_path, isolated_app_fa
         assert len(result["conflicts"]) == 1
         assert result["conflicts"][0]["reason"] == "version_mismatch"
         assert result["conflicts"][0]["server_version"] == 2
+        assert result["conflicts"][0]["server_record"]["id"] == risk_id
+        assert result["conflicts"][0]["server_record"]["title"] == "V2"
+        assert result["conflicts"][0]["server_record"]["version"] == 2
+        assert result["conflicts"][0]["server_updated_at"]
+        assert result["results"][0]["server_record"] == result["conflicts"][0][
+            "server_record"
+        ]

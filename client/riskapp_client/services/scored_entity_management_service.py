@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import Callable, Mapping, MutableMapping
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from typing import Any, TypeVar
 
@@ -37,6 +38,7 @@ class ScoredEntityWiring:
     discard_pending_changes_fn: Callable[[str, str], None]
 
     soft_delete_local_fn: Callable[[str], tuple[str, int]]
+    write_transaction_fn: Callable[[], AbstractContextManager[Any]]
 
     next_code_fn: Callable[[str], str] | None = None
 
@@ -83,10 +85,11 @@ class ScoredEntityService:
             project_id, record.get("code"), existing=None
         )
 
-        self._upsert_local(
-            project_id=project_id, entity_id=entity_id, record=record, version=0
-        )
-        self._w.queue_upsert_fn(project_id, record)
+        with self._w.write_transaction_fn():
+            self._upsert_local(
+                project_id=project_id, entity_id=entity_id, record=record, version=0
+            )
+            self._w.queue_upsert_fn(project_id, record)
         return self._w.model_cls(project_id=project_id, version=0, **record)
 
     def update(
@@ -151,24 +154,29 @@ class ScoredEntityService:
             project_id, record.get("code"), existing=_existing("code")
         )
 
-        self._upsert_local(
-            project_id=project_id, entity_id=entity_id, record=record, version=version
-        )
-        self._w.queue_upsert_fn(project_id, record)
+        with self._w.write_transaction_fn():
+            self._upsert_local(
+                project_id=project_id,
+                entity_id=entity_id,
+                record=record,
+                version=version,
+            )
+            self._w.queue_upsert_fn(project_id, record)
         return self._w.model_cls(project_id=project_id, version=version, **record)
 
     def delete(self, entity_id: str) -> None:
         """Delete item."""
-        project_id, version = self._w.soft_delete_local_fn(entity_id)
+        with self._w.write_transaction_fn():
+            project_id, version = self._w.soft_delete_local_fn(entity_id)
 
-        # Entity was never synced to the server. Remote net effect should be
-        # no-op, so remove any queued local upsert/delete instead of sending a
-        # delete for an unknown remote entity.
-        if int(version) < 1:
-            self._w.discard_pending_changes_fn(project_id, entity_id)
-            return
+            # Entity was never synced to the server. Remote net effect should be
+            # no-op, so remove any queued local upsert/delete instead of sending a
+            # delete for an unknown remote entity.
+            if int(version) < 1:
+                self._w.discard_pending_changes_fn(project_id, entity_id)
+                return
 
-        self._w.queue_delete_fn(project_id, entity_id)
+            self._w.queue_delete_fn(project_id, entity_id)
 
     def _ensure_code(self, project_id: str, code: Any, *, existing: Any) -> str | None:
         c = None

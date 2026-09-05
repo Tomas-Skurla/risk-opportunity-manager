@@ -6,6 +6,7 @@ from unittest.mock import Mock
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QDialog,
     QLabel,
     QListWidget,
     QMessageBox,
@@ -98,6 +99,10 @@ def test_project_sync_status_and_blocked_details(qtbot) -> None:
             assert project_id == "project-1"
             return 2
 
+        def deferred_count(self, project_id):
+            assert project_id == "project-1"
+            return 3
+
         def error_count(self, project_id):
             assert project_id == "project-1"
             return 1
@@ -110,14 +115,18 @@ def test_project_sync_status_and_blocked_details(qtbot) -> None:
             return True
 
     host = ProjectSyncHost(Backend())
+    host.conflicts_btn = QPushButton()
     qtbot.addWidget(host.sync_btn)
     qtbot.addWidget(host.sync_status)
+    qtbot.addWidget(host.conflicts_btn)
 
     host._update_sync_status()
 
     assert host.sync_btn.isEnabled()
+    assert host.conflicts_btn.isEnabled()
+    assert host.conflicts_btn.text() == "Conflicts (2)"
     assert host.sync_status.text() == (
-        "ONLINE · pending: 4 · conflicts: 2 · errors: 1 "
+        "ONLINE · queued: 4 · retrying: 3 · conflicts: 2 · errors: 1 "
         "· last sync: 2026-08-10 12:09 UTC"
     )
     assert host._format_last_sync_time(None) == "never"
@@ -145,6 +154,106 @@ def test_project_sync_status_and_blocked_details(qtbot) -> None:
     assert "server version: 8" in details
 
 
+def test_open_conflict_center_resolves_through_backend(
+    monkeypatch, qtbot
+) -> None:
+    conflict = {
+        "change_id": "change-1",
+        "project_id": "project-1",
+        "entity": "risk",
+        "entity_id": "risk-1",
+        "failure_kind": "conflict",
+    }
+
+    class Backend:
+        def conflict_details(self, project_id):
+            assert project_id == "project-1"
+            return [conflict]
+
+        def resolve_conflict(self, change_id, resolution):
+            return {"change_id": change_id, "resolution": resolution, "resolved": True}
+
+        def pending_count(self, _project_id):
+            return 0
+
+        def conflict_count(self, _project_id):
+            return 0
+
+        def deferred_count(self, _project_id):
+            return 0
+
+        def error_count(self, _project_id):
+            return 0
+
+        def last_sync_time(self, _project_id):
+            return None
+
+        def can_sync(self):
+            return True
+
+    dialogs = []
+
+    class FakeSignal:
+        def __init__(self):
+            self.slot = None
+
+        def connect(self, slot):
+            self.slot = slot
+
+    class FakeDialog:
+        def __init__(self, conflicts, resolver, parent):
+            self.conflicts = conflicts
+            self.resolver = resolver
+            self.parent = parent
+            self.conflict_resolved = FakeSignal()
+            dialogs.append(self)
+
+        def exec(self):
+            self.conflict_resolved.slot("change-1", "keep_mine")
+            return QDialog.Accepted
+
+    monkeypatch.setattr(
+        "riskapp_client.ui_v2.mixins.projects_sync_mixin.ConflictCenterDialog",
+        FakeDialog,
+    )
+    host = ProjectSyncHost(Backend())
+    host.conflicts_btn = QPushButton()
+    qtbot.addWidget(host.sync_btn)
+    qtbot.addWidget(host.sync_status)
+    qtbot.addWidget(host.conflicts_btn)
+
+    host._open_conflict_center()
+
+    assert dialogs[0].conflicts == [conflict]
+    assert dialogs[0].parent is host
+    assert host._refresh_calls == ["risk-1"]
+    assert host.conflicts_btn.text() == "Conflicts (0)"
+    assert not host.conflicts_btn.isEnabled()
+
+
+def test_open_conflict_center_reports_when_no_conflicts(
+    monkeypatch, qtbot
+) -> None:
+    class Backend:
+        def conflict_details(self, project_id):
+            assert project_id == "project-1"
+            return []
+
+        def resolve_conflict(self, *_args):
+            raise AssertionError("must not resolve")
+
+    information = Mock()
+    monkeypatch.setattr(QMessageBox, "information", information)
+    host = ProjectSyncHost(Backend())
+    qtbot.addWidget(host.sync_btn)
+    qtbot.addWidget(host.sync_status)
+
+    host._open_conflict_center()
+
+    assert "no unresolved conflicts" in information.call_args.args[2].lower()
+    assert host._refresh_calls == []
+
+
 def test_project_sync_status_falls_back_when_backend_queries_fail(qtbot) -> None:
     class BrokenBackend:
         def pending_count(self, _project_id):
@@ -170,7 +279,8 @@ def test_project_sync_status_falls_back_when_backend_queries_fail(qtbot) -> None
 
     assert not host.sync_btn.isEnabled()
     assert host.sync_status.text() == (
-        "OFFLINE · pending: 0 · conflicts: 0 · errors: 0 · last sync: never"
+        "OFFLINE · queued: 0 · retrying: 0 · conflicts: 0 · errors: 0 "
+        "· last sync: never"
     )
 
 
@@ -260,7 +370,8 @@ def test_sync_now_handles_missing_project_unsupported_and_failed_backend(
     host.backend = BrokenBackend()
     host._sync_now()
     assert host.sync_status.text() == (
-        "OFFLINE · pending: 1 · conflicts: 0 · errors: 0 · last sync: never"
+        "OFFLINE · queued: 1 · retrying: 0 · conflicts: 0 · errors: 0 "
+        "· last sync: never"
     )
 
 

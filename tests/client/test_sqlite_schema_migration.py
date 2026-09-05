@@ -126,7 +126,7 @@ def test_project_id_migration_is_atomic_and_keeps_foreign_keys_enabled(tmp_path)
         store.close()
 
 
-def test_existing_outbox_gains_failure_kind_column(tmp_path) -> None:
+def test_existing_outbox_gains_failure_and_result_columns(tmp_path) -> None:
     db_file = tmp_path / "legacy-outbox.db"
     conn = sqlite3.connect(db_file)
     conn.execute("""
@@ -154,3 +154,7 @@ def test_existing_outbox_gains_failure_kind_column(tmp_path) -> None:
             for row in store.conn.execute("PRAGMA table_info(outbox);").fetchall()
         }
         assert "failure_kind" in columns
+        assert "result_json" in columns
+        assert "retry_count" in columns
+        assert "next_retry_at" in columns
+        assert "last_attempt_at" in columns

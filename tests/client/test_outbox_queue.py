@@ -139,6 +139,65 @@ def test_get_blocked_changes_exposes_conflict_reason_and_title(tmp_path) -> None
         store.close()
 
 
+def test_complete_conflict_payload_survives_database_restart(tmp_path) -> None:
+    """Conflict records are stored losslessly instead of in the 500-char summary."""
+    from riskapp_client.adapters.local_storage.sqlite_data_store import LocalStore
+    from riskapp_client.adapters.local_storage.sync_outbox_queue import OutboxStore
+
+    db_file = tmp_path / "persistent-conflict.db"
+    store = LocalStore(str(db_file))
+    try:
+        project = store.create_local_project(name="P", project_id="p1")
+        store.upsert_local_risk(
+            risk_id="r1",
+            project_id=project.id,
+            title="Local value",
+            probability=5,
+            impact=4,
+            version=2,
+        )
+        outbox = OutboxStore(store)
+        outbox.queue_risk_upsert(
+            project.id,
+            {"id": "r1", "title": "Local value", "probability": 5, "impact": 4},
+        )
+        change_id = outbox.get_pending_changes(project.id)[0]["change_id"]
+        server_record = {
+            "id": "r1",
+            "project_id": project.id,
+            "title": "Server value",
+            "description": "full server description " * 80,
+            "probability": 2,
+            "impact": 3,
+            "version": 7,
+            "updated_at": "2026-09-04T12:00:00",
+        }
+        outbox.block_outbox_id(
+            change_id,
+            {
+                "change_id": change_id,
+                "status": "conflict",
+                "reason": "version_mismatch",
+                "server_version": 7,
+                "server_record": server_record,
+                "server_updated_at": "2026-09-04T12:00:00",
+            },
+            failure_kind="conflict",
+        )
+    finally:
+        store.close()
+
+    with LocalStore(str(db_file)) as reopened:
+        blocked = OutboxStore(reopened).get_blocked_changes("p1")
+        assert len(blocked) == 1
+        assert blocked[0]["change_id"] == change_id
+        assert blocked[0]["project_id"] == "p1"
+        assert blocked[0]["server_version"] == 7
+        assert blocked[0]["server_updated_at"] == "2026-09-04T12:00:00"
+        assert blocked[0]["server_record"] == server_record
+        assert len(blocked[0]["server_record"]["description"]) > 500
+
+
 def test_helpdesk_outbox_uses_ticket_version_for_base_version(tmp_path) -> None:
     """Helpdesk outbox upsert records the ticket's local version as the base_version"""
     from riskapp_client.adapters.local_storage.sqlite_data_store import LocalStore
@@ -199,6 +258,7 @@ def test_helpdesk_delete_unsynced_ticket_discards_pending_change(tmp_path) -> No
             "INSERT INTO projects (id, name, description) VALUES (?,?,?);",
             ("p1", "P", ""),
         )
+        store.conn.commit()
         outbox = OutboxStore(store)
         service = HelpDeskService(store, outbox)
 

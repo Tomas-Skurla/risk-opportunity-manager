@@ -129,6 +129,7 @@ class OfflineFirstBackend(Backend):
                     )
                 ),
                 soft_delete_local_fn=soft_delete_local_fn,
+                write_transaction_fn=self.store.write_transaction,
                 next_code_fn=next_code_fn,
             )
         )
@@ -342,21 +343,23 @@ class OfflineFirstBackend(Backend):
         base_version: int | None = None,
         **meta,
     ) -> Risk:
-        ent = self._risks.update(
-            risk_id,
-            title=title,
-            probability=probability,
-            impact=impact,
-            meta=meta,
+        with self.store.write_transaction():
+            ent = self._risks.update(
+                risk_id,
+                title=title,
+                probability=probability,
+                impact=impact,
+                meta=meta,
         )
-        if base_version is not None:
-            # Thread through explicit base_version overrides.
-            self.outbox.override_base_version(
-                project_id,
-                entity="risk",
-                entity_id=risk_id,
-                base_version=base_version,
-            )
+            if base_version is not None:
+                # The override belongs to the same unit of work as the local
+                # entity update and outbox replacement.
+                self.outbox.override_base_version(
+                    project_id,
+                    entity="risk",
+                    entity_id=risk_id,
+                    base_version=base_version,
+                )
         return ent
 
     def delete_risk(self, project_id: str, risk_id: str) -> None:
@@ -398,20 +401,21 @@ class OfflineFirstBackend(Backend):
         base_version: int | None = None,
         **meta,
     ) -> Opportunity:
-        ent = self._opps.update(
-            opportunity_id,
-            title=title,
-            probability=probability,
-            impact=impact,
-            meta=meta,
-        )
-        if base_version is not None:
-            self.outbox.override_base_version(
-                project_id,
-                entity="opportunity",
-                entity_id=opportunity_id,
-                base_version=base_version,
+        with self.store.write_transaction():
+            ent = self._opps.update(
+                opportunity_id,
+                title=title,
+                probability=probability,
+                impact=impact,
+                meta=meta,
             )
+            if base_version is not None:
+                self.outbox.override_base_version(
+                    project_id,
+                    entity="opportunity",
+                    entity_id=opportunity_id,
+                    base_version=base_version,
+                )
         return ent
 
     def delete_opportunity(self, project_id: str, opportunity_id: str) -> None:
@@ -500,6 +504,9 @@ class OfflineFirstBackend(Backend):
     def blocked_count(self, project_id: str | None = None) -> int:
         return self._sync.blocked_count(project_id)
 
+    def deferred_count(self, project_id: str | None = None) -> int:
+        return self._sync.deferred_count(project_id)
+
     def conflict_count(self, project_id: str | None = None) -> int:
         return self._sync.conflict_count(project_id)
 
@@ -509,6 +516,9 @@ class OfflineFirstBackend(Backend):
     def last_sync_time(self, project_id: str | None = None) -> str | None:
         return self._sync.last_sync_time(project_id)
 
+    def next_retry_at(self, project_id: str | None = None) -> str | None:
+        return self._sync.next_retry_at(project_id)
+
     def can_sync(self) -> bool:
         return self._sync.can_sync()
 
@@ -517,6 +527,14 @@ class OfflineFirstBackend(Backend):
 
     def blocked_details(self, project_id: str | None = None) -> list[dict[str, Any]]:
         return self._sync.blocked_details(project_id)
+
+    def conflict_details(self, project_id: str | None = None) -> list[dict[str, Any]]:
+        return self._sync.conflict_details(project_id)
+
+    def resolve_conflict(
+        self, change_id: str, resolution: str
+    ) -> dict[str, Any]:
+        return self._sync.resolve_conflict(change_id, resolution)
 
     # ---- Help Desk ---------------------------------------------------------
 

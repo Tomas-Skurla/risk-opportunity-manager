@@ -1,0 +1,337 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>ConflictCenterDialog</class>
+ <widget class="QDialog" name="conflict_center_dialog">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>900</width>
+    <height>680</height>
+   </rect>
+  </property>
+  <property name="minimumSize">
+   <size>
+    <width>800</width>
+    <height>620</height>
+   </size>
+  </property>
+  <property name="windowTitle">
+   <string>Synchronization conflicts</string>
+  </property>
+  <property name="accessibleName">
+   <string/>
+  </property>
+  <layout class="QVBoxLayout" name="main_layout" stretch="0,3,4,0">
+   <property name="spacing">
+    <number>10</number>
+   </property>
+   <property name="leftMargin">
+    <number>10</number>
+   </property>
+   <property name="topMargin">
+    <number>10</number>
+   </property>
+   <property name="rightMargin">
+    <number>10</number>
+   </property>
+   <property name="bottomMargin">
+    <number>10</number>
+   </property>
+   <item>
+    <widget class="QLabel" name="intro_label">
+     <property name="text">
+      <string>These items changed both locally and on the server. Select one, compare the copies, then choose which version should win.</string>
+     </property>
+     <property name="wordWrap">
+      <bool>true</bool>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QTableWidget" name="conflict_table">
+     <property name="minimumSize">
+      <size>
+       <width>0</width>
+       <height>200</height>
+      </size>
+     </property>
+     <property name="toolTip">
+      <string>Select a conflict to compare the local and server copies</string>
+     </property>
+     <property name="accessibleName">
+      <string>Unresolved synchronization conflicts</string>
+     </property>
+     <property name="editTriggers">
+      <set>QAbstractItemView::EditTrigger::NoEditTriggers</set>
+     </property>
+     <property name="alternatingRowColors">
+      <bool>true</bool>
+     </property>
+     <property name="selectionMode">
+      <enum>QAbstractItemView::SelectionMode::SingleSelection</enum>
+     </property>
+     <property name="selectionBehavior">
+      <enum>QAbstractItemView::SelectionBehavior::SelectRows</enum>
+     </property>
+     <property name="sortingEnabled">
+      <bool>false</bool>
+     </property>
+     <attribute name="horizontalHeaderStretchLastSection">
+      <bool>true</bool>
+     </attribute>
+     <attribute name="verticalHeaderVisible">
+      <bool>false</bool>
+     </attribute>
+     <column>
+      <property name="text">
+       <string>Type</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string>Item</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string>Operation</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string>Reason</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string>Server version</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string>Server updated</string>
+      </property>
+     </column>
+    </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="comparison_layout" stretch="1,1">
+     <property name="spacing">
+      <number>10</number>
+     </property>
+     <item>
+      <widget class="QGroupBox" name="local_group">
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
+         <horstretch>1</horstretch>
+         <verstretch>0</verstretch>
+        </sizepolicy>
+       </property>
+       <property name="title">
+        <string>Local copy</string>
+       </property>
+       <layout class="QVBoxLayout" name="verticalLayout_2">
+        <item>
+         <widget class="QPlainTextEdit" name="local_copy">
+          <property name="minimumSize">
+           <size>
+            <width>300</width>
+            <height>255</height>
+           </size>
+          </property>
+          <property name="font">
+           <font>
+            <family>Consolas</family>
+           </font>
+          </property>
+          <property name="accessibleName">
+           <string>Local record data</string>
+          </property>
+          <property name="lineWrapMode">
+           <enum>QPlainTextEdit::LineWrapMode::NoWrap</enum>
+          </property>
+          <property name="readOnly">
+           <bool>true</bool>
+          </property>
+          <property name="placeholderText">
+           <string>Select a conflict to view the local copy.</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </widget>
+     </item>
+     <item>
+      <widget class="QGroupBox" name="server_group">
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
+         <horstretch>1</horstretch>
+         <verstretch>0</verstretch>
+        </sizepolicy>
+       </property>
+       <property name="title">
+        <string>Server copy</string>
+       </property>
+       <layout class="QVBoxLayout" name="verticalLayout_3">
+        <item>
+         <widget class="QPlainTextEdit" name="server_copy">
+          <property name="minimumSize">
+           <size>
+            <width>300</width>
+            <height>255</height>
+           </size>
+          </property>
+          <property name="font">
+           <font>
+            <family>Consolas</family>
+           </font>
+          </property>
+          <property name="accessibleName">
+           <string>Server record data</string>
+          </property>
+          <property name="lineWrapMode">
+           <enum>QPlainTextEdit::LineWrapMode::NoWrap</enum>
+          </property>
+          <property name="readOnly">
+           <bool>true</bool>
+          </property>
+          <property name="placeholderText">
+           <string>Select a conflict to view the server copy.</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="actions_layout">
+     <property name="spacing">
+      <number>8</number>
+     </property>
+     <item>
+      <widget class="QPushButton" name="keep_mine_btn">
+       <property name="enabled">
+        <bool>false</bool>
+       </property>
+       <property name="minimumSize">
+        <size>
+         <width>110</width>
+         <height>0</height>
+        </size>
+       </property>
+       <property name="toolTip">
+        <string>Queue your local copy again against the latest known server version</string>
+       </property>
+       <property name="accessibleName">
+        <string>Keep my local version</string>
+       </property>
+       <property name="text">
+        <string>Keep mine</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="use_server_btn">
+       <property name="enabled">
+        <bool>false</bool>
+       </property>
+       <property name="minimumSize">
+        <size>
+         <width>110</width>
+         <height>0</height>
+        </size>
+       </property>
+       <property name="toolTip">
+        <string>Discard this queued local write and replace it with the saved server copy</string>
+       </property>
+       <property name="accessibleName">
+        <string>Use the server version</string>
+       </property>
+       <property name="text">
+        <string>Use server</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="later_btn">
+       <property name="minimumSize">
+        <size>
+         <width>90</width>
+         <height>0</height>
+        </size>
+       </property>
+       <property name="toolTip">
+        <string>Leave every unresolved conflict blocked</string>
+       </property>
+       <property name="accessibleName">
+        <string>Decide later</string>
+       </property>
+       <property name="text">
+        <string>Later</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <spacer name="actions_spacer">
+       <property name="orientation">
+        <enum>Qt::Orientation::Horizontal</enum>
+       </property>
+       <property name="sizeHint" stdset="0">
+        <size>
+         <width>40</width>
+         <height>20</height>
+        </size>
+       </property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QDialogButtonBox" name="conflict_close_buttons">
+       <property name="minimumSize">
+        <size>
+         <width>90</width>
+         <height>0</height>
+        </size>
+       </property>
+       <property name="standardButtons">
+        <set>QDialogButtonBox::StandardButton::Close</set>
+       </property>
+       <property name="centerButtons">
+        <bool>false</bool>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <tabstops>
+  <tabstop>conflict_table</tabstop>
+  <tabstop>local_copy</tabstop>
+  <tabstop>server_copy</tabstop>
+  <tabstop>keep_mine_btn</tabstop>
+  <tabstop>use_server_btn</tabstop>
+  <tabstop>later_btn</tabstop>
+ </tabstops>
+ <resources/>
+ <connections>
+  <connection>
+   <sender>conflict_close_buttons</sender>
+   <signal>rejected()</signal>
+   <receiver>conflict_center_dialog</receiver>
+   <slot>reject()</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>641</x>
+     <y>628</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>449</x>
+     <y>339</y>
+    </hint>
+   </hints>
+  </connection>
+ </connections>
+</ui>

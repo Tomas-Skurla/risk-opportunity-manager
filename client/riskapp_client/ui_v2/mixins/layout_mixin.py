@@ -6,7 +6,7 @@ import logging
 import sys
 
 import qdarktheme
-from PySide6.QtWidgets import QApplication, QLabel
+from PySide6.QtWidgets import QApplication, QLabel, QPushButton
 from riskapp_client.ui_v2.tabs.actions_tab import ActionsTab
 from riskapp_client.ui_v2.tabs.assessments_tab import AssessmentsTab
 from riskapp_client.ui_v2.tabs.helpdesk_tab import HelpDeskTab
@@ -89,8 +89,13 @@ class LayoutMixin:
         self.delete_project_btn = self.ui.delete_project_btn
         self.role_status = QLabel("Role: Initializing...")
         self.sync_status = QLabel("Sync: Initializing...")
+        self.conflicts_btn = QPushButton("Conflicts (0)")
+        self.conflicts_btn.setObjectName("conflicts_btn")
+        self.conflicts_btn.setEnabled(False)
+        self.conflicts_btn.setToolTip("Review synchronization conflicts")
         self.ui.statusbar.addPermanentWidget(self.role_status)
         self.ui.statusbar.addPermanentWidget(self.sync_status)
+        self.ui.statusbar.addPermanentWidget(self.conflicts_btn)
         self.project_list.setToolTip("Select a project to load its data")
         self.sync_btn.setToolTip(
             "Manually synchronize local offline changes with the server"
@@ -249,6 +254,7 @@ class LayoutMixin:
             self.ui.main_stacked_widget.setCurrentIndex
         )
         self.sync_btn.clicked.connect(self._sync_now)
+        self.conflicts_btn.clicked.connect(self._open_conflict_center)
         self.new_project_btn.clicked.connect(self._create_new_project)
         self.delete_project_btn.clicked.connect(self._delete_current_project)
         if hasattr(self.top_tab, "top_period"):

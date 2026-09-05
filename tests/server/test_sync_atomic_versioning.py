@@ -164,6 +164,21 @@ def test_all_existing_sync_entity_types_require_and_claim_base_version(
                 conflict["server_version"]
                 for conflict in missing_body["conflicts"]
             } == {1}
+            action_conflict = next(
+                item
+                for item in missing_body["conflicts"]
+                if item["entity"] == "action"
+            )
+            assessment_conflict = next(
+                item
+                for item in missing_body["conflicts"]
+                if item["entity"] == "assessment"
+            )
+            for child_conflict in (action_conflict, assessment_conflict):
+                assert child_conflict["server_record"]["risk_id"] == entities[
+                    "risk"
+                ]["id"]
+                assert child_conflict["server_record"]["opportunity_id"] is None
 
         accepted = client.post(
             f"/projects/{project_id}/sync/push",

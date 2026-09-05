@@ -446,6 +446,30 @@ class SyncPushRequest(BaseModel):
     changes: list[SyncChange] = Field(max_length=1000)
 
 
+class SyncChangeResult(BaseModel):
+
+    change_id: uuid.UUID
+    status: Literal["accepted", "conflict", "error"]
+    replayed: bool = False
+    entity: str
+    op: str
+    entity_id: uuid.UUID | None = None
+    reason: str | None = None
+    detail: str | None = None
+    server_version: int | None = None
+    server_record: dict[str, object] | None = None
+    server_updated_at: str | None = None
+    failure_kind: Literal[
+        "conflict",
+        "validation",
+        "permission",
+        "authentication",
+        "transient",
+        "error",
+    ] | None = None
+    retryable: bool = False
+
+
 class SyncPushResponse(BaseModel):
 
     accepted: int
@@ -453,6 +477,7 @@ class SyncPushResponse(BaseModel):
     duplicate_change_ids: list[str] = Field(default_factory=list)
     conflicts: list[dict] = Field(default_factory=list)
     errors: list[dict] = Field(default_factory=list)
+    results: list[SyncChangeResult] = Field(default_factory=list)
     server_time: datetime
 
 

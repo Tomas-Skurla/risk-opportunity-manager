@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
+from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -56,6 +57,7 @@ def _service(
         queue_delete=Mock(),
         discard=Mock(),
         soft_delete=Mock(return_value=("project-1", version)),
+        transaction=Mock(side_effect=nullcontext),
         next_code=next_code,
     )
     wiring = ScoredEntityWiring(
@@ -70,6 +72,7 @@ def _service(
         queue_delete_fn=calls.queue_delete,
         discard_pending_changes_fn=calls.discard,
         soft_delete_local_fn=calls.soft_delete,
+        write_transaction_fn=calls.transaction,
         next_code_fn=next_code,
     )
     return ScoredEntityService(wiring), calls, wiring
@@ -240,6 +243,7 @@ def _facade(**values) -> OfflineFirstBackend:
         "_sync": Mock(),
     }
     defaults.update(values)
+    defaults["store"].write_transaction.side_effect = nullcontext
     for name, value in defaults.items():
         setattr(backend, name, value)
     return backend
@@ -420,12 +424,16 @@ def test_offline_facade_user_snapshot_sync_and_feature_wrappers() -> None:
     backend.list_assessments("p", "risk", "r")
     backend.pending_count("p")
     backend.blocked_count("p")
+    backend.deferred_count("p")
     backend.conflict_count("p")
     backend.error_count("p")
     backend.last_sync_time("p")
+    backend.next_retry_at("p")
     backend.can_sync()
     backend.sync_project("p")
     backend.blocked_details("p")
+    backend.conflict_details("p")
+    backend.resolve_conflict("change-1", "later")
     backend.list_helpdesk_tickets("p")
     backend.create_helpdesk_ticket("p", title="ticket")
     backend.update_helpdesk_ticket("t1", status="closed")
@@ -438,5 +446,9 @@ def test_offline_facade_user_snapshot_sync_and_feature_wrappers() -> None:
     backend._sync.sync_project.assert_called_once_with("p")
     backend._sync.conflict_count.assert_called_once_with("p")
     backend._sync.error_count.assert_called_once_with("p")
+    backend._sync.deferred_count.assert_called_once_with("p")
     backend._sync.last_sync_time.assert_called_once_with("p")
+    backend._sync.next_retry_at.assert_called_once_with("p")
+    backend._sync.conflict_details.assert_called_once_with("p")
+    backend._sync.resolve_conflict.assert_called_once_with("change-1", "later")
     backend._helpdesk.delete.assert_called_once_with("t1")

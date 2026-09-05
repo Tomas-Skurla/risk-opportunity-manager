@@ -58,32 +58,33 @@ class ActionService:
         desc = description or ""
         st = status or "open"
 
-        self._store.upsert_local_action(
-            action_id=action_id,
-            project_id=project_id,
-            risk_id=risk_id,
-            opportunity_id=opportunity_id,
-            kind=kind,
-            title=title,
-            description=desc,
-            status=st,
-            owner_user_id=owner_user_id,
-            version=int(version),
-            is_deleted=False,
-            updated_at=utc_iso(),
-            dirty=1,
-        )
-        self._outbox.queue_action_upsert(
-            action_id,
-            project_id,
-            risk_id=risk_id,
-            opportunity_id=opportunity_id,
-            kind=kind,
-            title=title,
-            description=desc,
-            status=st,
-            owner_user_id=owner_user_id,
-        )
+        with self._store.write_transaction():
+            self._store.upsert_local_action(
+                action_id=action_id,
+                project_id=project_id,
+                risk_id=risk_id,
+                opportunity_id=opportunity_id,
+                kind=kind,
+                title=title,
+                description=desc,
+                status=st,
+                owner_user_id=owner_user_id,
+                version=int(version),
+                is_deleted=False,
+                updated_at=utc_iso(),
+                dirty=1,
+            )
+            self._outbox.queue_action_upsert(
+                action_id,
+                project_id,
+                risk_id=risk_id,
+                opportunity_id=opportunity_id,
+                kind=kind,
+                title=title,
+                description=desc,
+                status=st,
+                owner_user_id=owner_user_id,
+            )
 
         return Action(
             id=action_id,

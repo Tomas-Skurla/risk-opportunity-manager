@@ -29,9 +29,12 @@ flowchart TD
 
 ## Offline synchronization invariants
 
-- Outbox replacement and change coalescing are atomic. Local entity mutation and outbox enqueue currently use separate transactions.
+- Every local entity mutation and its outbox enqueue/replacement commit in one SQLite transaction. A failure in either write rolls back both.
 - At most one pending or blocked change exists per project/entity pair.
 - Every change has a stable `change_id`; retained server receipts deduplicate push retries for that identifier.
+- Version conflicts return the current server record and version. The client stores that complete outcome with the blocked outbox row so it survives restarts and can be resolved later.
+- The Conflict Center never resolves a conflict implicitly: **Keep mine** creates a new change ID against the newest known version, **Use server** atomically applies the saved server copy and removes the blocked write, and **Later** leaves it untouched. Applying a saved copy resets the pull watermark so a newer server change cannot be skipped.
+- Synchronization failures are classified: transient network/408/429/5xx failures remain queued with bounded backoff, while authentication, permission, validation, and conflict outcomes are blocked for the appropriate user action.
 - Existing-row sync updates and deletes require `base_version` and claim it with a conditional version increment. SQLite begins each push with `BEGIN IMMEDIATE`; databases with row-level locking rely on the conditional update. A stale concurrent writer therefore becomes an explicit conflict.
 - Parent items are applied before child actions and assessments during pull.
 - Every pull uses an application-time upper bound that remains fixed across all pagination pages. This closes the between-page watermark gap; a database-backed monotonic change sequence would additionally remove reliance on `updated_at` tracking commit order.
