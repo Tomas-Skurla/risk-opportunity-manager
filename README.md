@@ -103,3 +103,16 @@ scripts/      Setup, quality, run, reset, and dependency-lock workflows
 
 Detailed setup and manual acceptance flows remain in [SETUP_GUIDE.md](SETUP_GUIDE.md) and [TEST_GUIDE.md](TEST_GUIDE.md). Development commands are summarized in
 [README_QA.md](README_QA.md).
+
+## License
+
+RiskApp is licensed under the [MIT License](LICENSE).
+
+### Third-party software
+
+RiskApp uses [PySide6 (Qt for Python)](https://doc.qt.io/qtforpython-6/),
+which this project uses under the GNU Lesser General Public License v3.0.
+
+PySide6 and Qt are separate third-party works and are not covered by
+RiskApp's MIT License. This source repository does not bundle PySide6 or
+Qt binaries; they are installed separately as dependencies.
