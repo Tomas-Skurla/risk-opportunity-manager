@@ -40,6 +40,7 @@ def main() -> int:
             {
                 "ENV": "test",
                 "SECRET_KEY": "riskapp-migration-check-secret-key",
+                "TOKEN_HASH_KEY": "riskapp-migration-check-token-hash-key",
                 "ALLOW_INSECURE_DEFAULT_SECRET": "0",
                 "AUTO_CREATE_SCHEMA": "0",
                 "DATABASE_URL": f"sqlite+pysqlite:///{database_path.as_posix()}",

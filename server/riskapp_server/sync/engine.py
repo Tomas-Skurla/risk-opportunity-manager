@@ -10,7 +10,7 @@ from sqlalchemy import or_, select, update
 from sqlalchemy.inspection import inspect as sa_inspect
 from sqlalchemy.orm import Session
 
-from riskapp_server.core.config import MAX_SYNC_PULL_PER_ENTITY, SYNC_PUSH_EXUNGE_EVERY
+from riskapp_server.core.config import MAX_SYNC_PULL_PER_ENTITY, SYNC_PUSH_EXPUNGE_EVERY
 from riskapp_server.core.permissions import ensure_member, ensure_role_at_least
 from riskapp_server.core.scoring import recalculate_item_scores
 from riskapp_server.db.session import (
@@ -530,7 +530,11 @@ def push_changes(
 
     def _evict_if_needed() -> None:
         nonlocal wrote
-        if SYNC_PUSH_EXUNGE_EVERY and wrote and wrote % SYNC_PUSH_EXUNGE_EVERY == 0:
+        if (
+            SYNC_PUSH_EXPUNGE_EVERY
+            and wrote
+            and wrote % SYNC_PUSH_EXPUNGE_EVERY == 0
+        ):
             # Keep the transaction atomic and limit identity-map growth.
             db.flush()
             db.expunge_all()

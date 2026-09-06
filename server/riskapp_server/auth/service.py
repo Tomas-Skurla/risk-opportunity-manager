@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import base64
-import binascii
 import hashlib
 import hmac
 import logging
@@ -17,48 +15,30 @@ from jose import JWTError, jwt
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from riskapp_server.auth import passwords as password_hashing
 from riskapp_server.core.config import (
     ACCESS_TOKEN_MINUTES,
     ALGORITHM,
     ALLOW_INSECURE_DEFAULT_SECRET,
-    PBKDF2_ITERS,
     REFRESH_TOKEN_DAYS,
     SECRET_KEY,
+    TOKEN_HASH_KEY,
     validate_runtime_config,
 )
 from riskapp_server.db.session import RefreshToken, User, get_db, utcnow
 
 logger = logging.getLogger("riskapp_server.auth")
 
+# Backward-compatible exports for existing callers of auth.service.
+hash_pw = password_hashing.hash_pw
+verify_pw = password_hashing.verify_pw
+password_needs_rehash = password_hashing.password_needs_rehash
+
 validate_runtime_config()
 if SECRET_KEY == "change-me" and ALLOW_INSECURE_DEFAULT_SECRET:
     logger.warning("Using the default SECRET_KEY; do not use this outside local dev.")
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/login")
-
-
-def hash_pw(password: str) -> str:
-    salt = secrets.token_bytes(16)
-    dk = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, PBKDF2_ITERS)
-    return f"pbkdf2_sha256${PBKDF2_ITERS}${base64.b64encode(salt).decode()}${base64.b64encode(dk).decode()}"
-
-
-def verify_pw(password: str, stored_hash: str) -> bool:
-    try:
-        algo, iters_s, salt_b64, hash_b64 = stored_hash.split("$", 3)
-        if algo != "pbkdf2_sha256":
-            return False
-        iters = int(iters_s)
-        # A corrupted or attacker-controlled hash must not turn login into an
-        # unbounded CPU operation.
-        if not 100_000 <= iters <= 2_000_000:
-            return False
-        salt = base64.b64decode(salt_b64)
-        expected = base64.b64decode(hash_b64)
-        dk = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, iters)
-        return hmac.compare_digest(dk, expected)
-    except (ValueError, TypeError, binascii.Error):
-        return False
 
 
 def create_access_token(user_id: str) -> str:
@@ -84,9 +64,10 @@ create_token = create_access_token
 
 
 def hash_bearer_secret(raw: str) -> str:
-    """Hash a bearer token before storing it."""
+    """Hash a bearer token with a key independent from JWT signing."""
+    key = TOKEN_HASH_KEY or SECRET_KEY
     return hmac.new(
-        SECRET_KEY.encode("utf-8"), raw.encode("utf-8"), hashlib.sha256
+        key.encode("utf-8"), raw.encode("utf-8"), hashlib.sha256
     ).hexdigest()
 
 

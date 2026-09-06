@@ -43,7 +43,8 @@ flowchart TD
 ## Security model
 
 - Access tokens are short-lived JWTs with issuer, audience, expiry, and unique id.
-- Refresh and password-reset tokens are random, stored only as keyed hashes, and rotated or consumed once.
+- New passwords use Argon2id (`m=19456`, `t=2`, `p=1`). Legacy PBKDF2 hashes remain verifiable and are replaced only after a successful login.
+- Refresh and password-reset tokens are random, stored only as HMAC hashes keyed independently from JWT signing, and rotated or consumed once.
 - Project RBAC is enforced in both REST routers and  the sync engine.
 - Production startup rejects default secrets, wildcard hosts, returned reset tokens, and wildcard credentialed CORS.
 - Request bodies and response bodies are bounded; exported CSV neutralizes formula prefixes.
@@ -54,3 +55,7 @@ flowchart TD
 The in-process rate limiter is appropriate for a single demo process and has bounded memory. A multi-instance deployment should replace it with a shared store. SQLite
 and automatic schema creation support local evaluation; production should use a managed database, explicit migrations, trusted-proxy configuration, centralized
 logs, and external secret management.
+
+`SECRET_KEY` signs access JWTs, while `TOKEN_HASH_KEY` protects stored refresh and password-reset token hashes. Production requires both. An existing deployment can preserve outstanding tokens by initially setting `TOKEN_HASH_KEY` to its current `SECRET_KEY` before rotating the JWT key; rotating `TOKEN_HASH_KEY` itself intentionally invalidates outstanding opaque tokens.
+
+Argon2id is intentionally configured at OWASP's minimum 19 MiB/two-iteration profile to keep interactive login practical on portfolio-scale deployments. Parameters are embedded in each hash, and successful login upgrades a hash when the configured profile changes. This avoids a forced password reset or a risky bulk migration of legacy PBKDF2 credentials.

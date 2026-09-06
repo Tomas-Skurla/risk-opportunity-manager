@@ -118,6 +118,7 @@ This runs:
 ```text
 scripts/check_migrations.py
 scripts/test.sh
+scripts/typecheck.sh
 scripts/lint.sh
 python -m pip check
 ```
@@ -402,6 +403,7 @@ server/riskapp.db
 | `DATABASE_URL` | `sqlite+pysqlite:///./riskapp.db` | Server database URL |
 | `ENV` | `development` | Use `production` in deployments |
 | `SECRET_KEY` | `change-me` | Set a real secret outside local development |
+| `TOKEN_HASH_KEY` | unset | Separate HMAC key for refresh/password-reset token hashes; required in production |
 | `ALLOW_INSECURE_DEFAULT_SECRET` | unset | Use `1` only for local development |
 | `INITIAL_SUPERUSER_EMAIL` | unset | Optional startup superadmin email |
 | `INITIAL_SUPERUSER_PASSWORD` | unset | Optional startup superadmin password |
@@ -414,6 +416,11 @@ server/riskapp.db
 | `TRUST_X_FORWARDED_PROTO` | `0` | Enable only behind a configured trusted proxy |
 | `MAX_REQUEST_BODY_BYTES` | `2097152` | Maximum declared or streamed request body |
 | `PASSWORD_RESET_RETURN_TOKEN` | `0` | Development/test only; forbidden in production |
+| `SYNC_PUSH_EXPUNGE_EVERY` | `200` | Sync push housekeeping interval; legacy `SYNC_PUSH_EXUNGE_EVERY` is deprecated |
+
+For a new production deployment, generate `SECRET_KEY` and `TOKEN_HASH_KEY` independently and keep both in the deployment's secret manager. When upgrading an existing deployment, initially set `TOKEN_HASH_KEY` to its current `SECRET_KEY`; after deploying, `SECRET_KEY` can be rotated independently without logging out refresh-token holders. Rotating `TOKEN_HASH_KEY` deliberately invalidates existing refresh and password-reset tokens.
+
+No password-table migration is required when upgrading. New and changed passwords use Argon2id; a valid login with an older `pbkdf2_sha256` password hash rewrites that one hash to Argon2id in the successful login transaction.
 
 ### Client
 

@@ -12,6 +12,7 @@ fi
 
 if ! python -m pytest --version >/dev/null 2>&1 \
   || ! python -m ruff --version >/dev/null 2>&1 \
+  || ! python -m mypy --version >/dev/null 2>&1 \
   || ! python -m alembic --version >/dev/null 2>&1; then
   echo "ERROR: Missing development dependencies."
   echo "Install them with: python -m pip install -r requirements-test.txt"
@@ -36,6 +37,9 @@ python scripts/check_migrations.py
 
 echo "Running tests..."
 bash scripts/test.sh
+
+echo "Running incremental type checks..."
+bash scripts/typecheck.sh
 
 echo "Running lint..."
 bash scripts/lint.sh

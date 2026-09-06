@@ -12,6 +12,7 @@ from riskapp_server.auth.service import (
     create_access_token,
     hash_pw,
     issue_refresh_token,
+    password_needs_rehash,
     rotate_refresh_token,
     verify_pw,
 )
@@ -125,8 +126,14 @@ def login(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials"
         )
 
+    # PBKDF2 hashes and Argon2 hashes with obsolete parameters are upgraded
+    # only after the password has been verified successfully.
+    if password_needs_rehash(user.password_hash):
+        user.password_hash = hash_pw(form.password)
+
     access = create_access_token(str(user.id))
-    refresh = issue_refresh_token(db, user.id)
+    refresh = issue_refresh_token(db, user.id, commit=False)
+    db.commit()
     return {
         "user_id": str(user.id),
         "access_token": access,

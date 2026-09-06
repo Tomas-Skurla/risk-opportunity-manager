@@ -22,6 +22,9 @@ def isolated_app_factory(monkeypatch: pytest.MonkeyPatch):
         settings = {
             "ENV": "test",
             "SECRET_KEY": "riskapp-test-secret-key-that-is-not-used-in-production",
+            "TOKEN_HASH_KEY": (
+                "riskapp-test-token-hash-key-that-is-not-used-in-production"
+            ),
             "ALLOW_INSECURE_DEFAULT_SECRET": "0",
             "DATABASE_URL": db_url,
             "AUTO_CREATE_SCHEMA": "1",

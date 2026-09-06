@@ -9,6 +9,7 @@ def test_production_configuration_rejects_insecure_switches(monkeypatch) -> None
 
     monkeypatch.setattr(config, "ENV", "production")
     monkeypatch.setattr(config, "SECRET_KEY", "x" * 32)
+    monkeypatch.setattr(config, "TOKEN_HASH_KEY", "y" * 32)
     monkeypatch.setattr(config, "ALLOW_INSECURE_DEFAULT_SECRET", False)
     monkeypatch.setattr(config, "PASSWORD_RESET_RETURN_TOKEN", True)
     monkeypatch.setattr(config, "ALLOWED_HOSTS", ["*"])

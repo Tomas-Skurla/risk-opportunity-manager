@@ -33,6 +33,31 @@ def test_environment_helpers_reject_malformed_and_out_of_range_values(
     assert config._env_int("INT_SETTING", 5, minimum=1, maximum=10) == 7
 
 
+def test_integer_setting_deprecated_alias_and_canonical_precedence(
+    monkeypatch,
+) -> None:
+    import riskapp_server.core.config as config
+
+    monkeypatch.delenv("NEW_SETTING", raising=False)
+    monkeypatch.setenv("OLD_SETTING", "17")
+    with pytest.warns(DeprecationWarning, match="OLD_SETTING is deprecated"):
+        assert (
+            config._env_int_with_deprecated_alias(
+                "NEW_SETTING", "OLD_SETTING", 5, minimum=1
+            )
+            == 17
+        )
+
+    monkeypatch.setenv("NEW_SETTING", "23")
+    with pytest.warns(DeprecationWarning, match="OLD_SETTING is deprecated"):
+        assert (
+            config._env_int_with_deprecated_alias(
+                "NEW_SETTING", "OLD_SETTING", 5, minimum=1
+            )
+            == 23
+        )
+
+
 def test_runtime_validation_reports_all_unsafe_settings(monkeypatch) -> None:
     import riskapp_server.core.config as config
 
@@ -40,6 +65,7 @@ def test_runtime_validation_reports_all_unsafe_settings(monkeypatch) -> None:
         "ENV": "production",
         "ALGORITHM": "RS256",
         "SECRET_KEY": "short",
+        "TOKEN_HASH_KEY": "short",
         "ALLOW_INSECURE_DEFAULT_SECRET": True,
         "CORS_ORIGINS": ["*"],
         "INITIAL_SUPERUSER_EMAIL": "root@example.test",
@@ -59,6 +85,7 @@ def test_runtime_validation_reports_all_unsafe_settings(monkeypatch) -> None:
     assert "must be set together" in message
     assert "forbidden in production" in message
     assert "at least 32 characters" in message
+    assert "TOKEN_HASH_KEY" in message
     assert "explicit hostnames" in message
 
 
@@ -69,6 +96,7 @@ def test_valid_production_and_local_settings_pass(monkeypatch) -> None:
         "ENV": "production",
         "ALGORITHM": "HS512",
         "SECRET_KEY": "s" * 32,
+        "TOKEN_HASH_KEY": "t" * 32,
         "ALLOW_INSECURE_DEFAULT_SECRET": False,
         "CORS_ORIGINS": ["https://app.example.test"],
         "INITIAL_SUPERUSER_EMAIL": None,

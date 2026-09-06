@@ -135,6 +135,7 @@ Common settings:
 | `DATABASE_URL` | `sqlite+pysqlite:///./riskapp.db` | Server database URL |
 | `ENV` | `development` | Set to `production` in deployments |
 | `SECRET_KEY` | `change-me` | Required outside local dev unless insecure default is explicitly allowed |
+| `TOKEN_HASH_KEY` | unset | HMAC key for stored refresh/password-reset tokens; required and at least 32 characters in production |
 | `ALLOW_INSECURE_DEFAULT_SECRET` | unset | Use `1` only for local development |
 | `ACCESS_TOKEN_MINUTES` | `15` | Access-token lifetime; legacy alias: `TOKEN_MINUTES` |
 | `REFRESH_TOKEN_DAYS` | `30` | Refresh-token lifetime |
@@ -148,7 +149,14 @@ Common settings:
 | `MAX_REQUEST_BODY_BYTES` | `2097152` | Maximum declared or streamed request body |
 | `PASSWORD_RESET_RETURN_TOKEN` | `0` | Development/test only; forbidden in production |
 | `MAX_SYNC_PULL_PER_ENTITY` | `5000` | Sync pull cap |
-| `SYNC_PUSH_EXUNGE_EVERY` | `200` | Sync push housekeeping interval |
+| `SYNC_PUSH_EXPUNGE_EVERY` | `200` | Sync push housekeeping interval; misspelled `SYNC_PUSH_EXUNGE_EVERY` remains a deprecated fallback |
+
+`SECRET_KEY` signs access JWTs. `TOKEN_HASH_KEY` hashes opaque refresh and password-reset tokens before database storage, so routine JWT-key rotation does not invalidate those tokens. Generate the two values independently for new deployments.
+
+For an existing deployment, first set `TOKEN_HASH_KEY` to the current `SECRET_KEY` value and deploy this version. You may then rotate `SECRET_KEY` without invalidating stored refresh/password-reset token hashes. Changing `TOKEN_HASH_KEY` itself invalidates all outstanding refresh and reset tokens.
+
+New account passwords are hashed with Argon2id using 19 MiB of memory, two iterations, and one lane. Existing `pbkdf2_sha256` hashes continue to verify and are replaced with Argon2id only after that user successfully logs in. The `PBKDF2_ITERS` setting is retained for compatibility but no longer controls new
++password hashes.
 
 ## Scoring notes
 
