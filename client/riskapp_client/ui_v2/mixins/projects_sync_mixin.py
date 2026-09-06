@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+from collections.abc import Iterable
 from datetime import UTC, datetime
 
 from PySide6.QtCore import Qt  # pylint: disable=no-name-in-module
@@ -15,6 +16,7 @@ from PySide6.QtWidgets import (  # pylint: disable=no-name-in-module
     QListWidgetItem,
     QMessageBox,
 )
+from riskapp_client.domain.domain_models import Project
 from riskapp_client.ui_v2.components.conflict_center_dialog import (
     ConflictCenterDialog,
 )
@@ -46,26 +48,42 @@ class ProjectsSyncMixin:
             lines.append(line)
         return "\n".join(lines)
 
-    def _refresh_all_views(self, *, select_id: str | None = None) -> None:
+    def _refresh_all_views(
+        self,
+        *,
+        select_id: str | None = None,
+        include_remote: bool = True,
+    ) -> None:
         """Refresh all project-scoped tabs from the backend/local store."""
-        self._refresh_risks(select_id=select_id)
+        self._refresh_risks(
+            select_id=select_id,
+            use_remote_report=include_remote,
+        )
         for fn in (
             self._refresh_action_risk_combo,
             self._refresh_actions,
             self._refresh_matrix,
-            self._refresh_top_history,
             self._refresh_assessments,
-            self._refresh_opportunities,
-            self._refresh_action_opp_combo,
-            self._refresh_members,
-            self._update_sync_status,
-            self._refresh_helpdesk,
         ):
             fn()
+        self._refresh_opportunities(use_remote_report=include_remote)
+        self._refresh_action_opp_combo()
+        if include_remote:
+            self._refresh_top_history()
+            self._refresh_members()
+        self._update_sync_status()
+        self._refresh_helpdesk()
 
-    def _load_projects(self, *, select_project_id: str | None = None) -> None:
+    def _load_projects(
+        self,
+        *,
+        select_project_id: str | None = None,
+        projects: Iterable[Project] | None = None,
+        notify_selection: bool = True,
+    ) -> None:
         self.project_list.clear()
-        projects = self._call_backend("Backend error", self.backend.list_projects)
+        if projects is None:
+            projects = self._call_backend("Backend error", self.backend.list_projects)
         if projects is None:
             return
         # Build a uid→email map for resolving project owners.
@@ -102,13 +120,24 @@ class ProjectsSyncMixin:
             self.project_list.addItem(item)
         if self.project_list.count() <= 0:
             return
+
+        def select_row(row: int) -> None:
+            if notify_selection:
+                self.project_list.setCurrentRow(row)
+                return
+            previously_blocked = self.project_list.blockSignals(True)
+            try:
+                self.project_list.setCurrentRow(row)
+            finally:
+                self.project_list.blockSignals(previously_blocked)
+
         if select_project_id:
             for i in range(self.project_list.count()):
                 it = self.project_list.item(i)
                 if str(it.data(Qt.UserRole)) == str(select_project_id):
-                    self.project_list.setCurrentRow(i)
+                    select_row(i)
                     return
-        self.project_list.setCurrentRow(0)
+        select_row(0)
 
     def _on_project_selected(self) -> None:
         with contextlib.suppress(AttributeError, RuntimeError):
@@ -328,18 +357,50 @@ class ProjectsSyncMixin:
         if not hasattr(self.backend, "sync_project"):
             QMessageBox.information(self, "Sync", "This backend does not support sync.")
             return
-        summary = self._call_backend("Sync failed", self.backend.sync_project, pid)  # type: ignore[attr-defined]
-        if summary is None:
-            self._update_sync_status()
+        if not self._start_background_job(
+            "sync",
+            {"project_id": str(pid)},
+            on_success=self._sync_succeeded,
+            on_failure=self._sync_failed,
+            on_cancelled=self._sync_cancelled,
+        ):
+            QMessageBox.information(
+                self,
+                "Synchronization",
+                "Another background operation is already running.",
+            )
+
+    def _sync_succeeded(self, result: object) -> None:
+        if not isinstance(result, dict):
+            self._sync_failed("Synchronization returned an invalid result")
             return
+        summary = dict(result)
         # If the sync promoted a local-only project to a server project,
         # reload project list and keep the user on the migrated project.
         migrated_to = summary.get("project_id_migrated_to")
         if migrated_to:
-            self._load_projects(select_project_id=str(migrated_to))
+            visible_projects = summary.pop("_visible_projects", None)
+            if isinstance(visible_projects, list):
+                self._load_projects(
+                    select_project_id=str(migrated_to),
+                    projects=visible_projects,
+                    notify_selection=False,
+                )
+            else:
+                selected = self.project_list.selectedItems()
+                if selected:
+                    selected[0].setData(Qt.UserRole, str(migrated_to))
+                    raw_name = selected[0].data(_PROJECT_NAME_ROLE)
+                    if raw_name:
+                        selected[0].setText(str(raw_name))
             self.current_project_id = str(migrated_to)
-        # refresh UI from local store after sync
-        self._refresh_all_views(select_id=self.current_risk_id)
+        # Refresh from the local SQLite connection only. Pull already populated
+        # it; issuing reports/history/member requests here would put blocking
+        # network calls straight back onto the GUI thread.
+        self._refresh_all_views(
+            select_id=self.current_risk_id,
+            include_remote=False,
+        )
         blocked_details = self._format_blocked_sync_details(summary)
         state = str(summary.get("state") or "complete")
         sync_error = summary.get("sync_error")
@@ -363,3 +424,16 @@ class ProjectsSyncMixin:
             "Sync needs attention" if state != "retry_wait" else "Sync retry scheduled",
             message,
         )
+
+    def _sync_failed(self, message: str) -> None:
+        QMessageBox.critical(self, "Sync failed", message)
+        self._update_sync_status()
+
+    def _sync_cancelled(self) -> None:
+        QMessageBox.information(
+            self,
+            "Synchronization cancelled",
+            "Synchronization stopped safely. Changes already acknowledged by "
+            "the server remain acknowledged; remaining work will be retried.",
+        )
+        self._update_sync_status()

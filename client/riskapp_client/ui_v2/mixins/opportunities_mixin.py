@@ -34,7 +34,12 @@ class OpportunitiesMixin(ScoredEntityMixin):
             "opportunities.csv", self._opp_cache, export_csv.export_opportunities
         )
 
-    def _refresh_opportunities(self, select_id: str | None = None) -> None:
+    def _refresh_opportunities(
+        self,
+        select_id: str | None = None,
+        *,
+        use_remote_report: bool = True,
+    ) -> None:
         pid = self.current_project_id
         if not pid:
             return
@@ -57,7 +62,11 @@ class OpportunitiesMixin(ScoredEntityMixin):
             self.opps_table,
             filters_dict,
             self._mk_item,
-            getattr(self.backend, "opportunities_report", None),
+            (
+                getattr(self.backend, "opportunities_report", None)
+                if use_remote_report
+                else None
+            ),
             select_id,
         )
         if res is not None:

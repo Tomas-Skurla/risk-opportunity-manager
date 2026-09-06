@@ -75,6 +75,26 @@ def _bare_backend(opener=None) -> ApiBackend:
     return backend
 
 
+def test_authenticated_fork_has_its_own_opener_and_shared_auth_state(
+    monkeypatch,
+) -> None:
+    backend = _bare_backend()
+    fork_opener = FakeOpener([])
+    monkeypatch.setattr(api, "_build_api_opener", lambda _base_url: fork_opener)
+
+    clone = backend.fork_authenticated()
+
+    assert clone is not backend
+    assert clone._opener is fork_opener
+    assert clone._opener is not backend._opener
+    assert clone.token == "access-old"
+    assert clone.refresh_token == "refresh-old"
+    clone.token = "access-new"
+    clone.refresh_token = "refresh-new"
+    assert backend.token == "access-new"
+    assert backend.refresh_token == "refresh-new"
+
+
 SCORED = {
     "id": "entity-1",
     "project_id": "project-1",

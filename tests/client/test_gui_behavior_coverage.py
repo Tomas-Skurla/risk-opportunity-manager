@@ -347,6 +347,7 @@ def _window(qtbot):
     window = MainWindow(backend)
     qtbot.addWidget(window)
     window.top_tab.auto_snap_timer.stop()
+    qtbot.waitUntil(lambda: not window._background_jobs.is_busy)
     return window, backend
 
 
@@ -619,9 +620,11 @@ def test_history_snapshot_periods_and_auto_snapshot(monkeypatch, qtbot) -> None:
     )
 
     window._refresh_top_history()
+    qtbot.waitUntil(lambda: not window._background_jobs.is_busy)
     assert window.top_tab.top_table.rowCount() == 2
     assert "2 row(s)" in window.top_tab.top_report.text()
     window._snapshot_now()
+    qtbot.waitUntil(lambda: not window._background_jobs.is_busy)
     assert any(call[0] == "snapshot" for call in backend.calls)
 
     window.top_tab.top_period.setCurrentText("Last 7 days")
@@ -651,6 +654,7 @@ def test_history_snapshot_periods_and_auto_snapshot(monkeypatch, qtbot) -> None:
     window.top_tab.auto_snapshot_kind.setCurrentText("Risks")
     window._last_auto_snapshot_by_project.clear()
     window._maybe_auto_snapshot()
+    qtbot.waitUntil(lambda: not window._background_jobs.is_busy)
     assert "project-1" in window._last_auto_snapshot_by_project
     before = len(backend.calls)
     window._maybe_auto_snapshot()

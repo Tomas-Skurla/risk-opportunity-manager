@@ -6,9 +6,12 @@ import json
 import logging
 import os
 import ssl
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
+from dataclasses import dataclass, field
+from typing import Any
 
 from riskapp_client.adapters.mappers.action_assessment_mapper import (
     action_from_mapping,
@@ -32,6 +35,34 @@ from riskapp_client.utils.urls import UrlPolicy, validate_base_url
 _MAX_RESPONSE_BYTES = 5_000_000
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _AuthState:
+    """Authentication state shared by thread-local API clients."""
+
+    token: str | None = None
+    refresh_token: str | None = None
+    user_id: str | None = None
+    is_superuser: bool = False
+    lock: Any = field(default_factory=threading.RLock, repr=False)
+
+
+def _build_api_opener(base_url: str):
+    """Build one HTTP opener for use by a single API client instance."""
+    parsed_base = urllib.parse.urlparse(base_url)
+    handlers: list[urllib.request.BaseHandler] = [
+        _SameOriginRedirectHandler(
+            allowed_scheme=parsed_base.scheme,
+            allowed_netloc=parsed_base.netloc,
+        )
+    ]
+    if parsed_base.scheme == "https":
+        handlers.insert(
+            0,
+            urllib.request.HTTPSHandler(context=ssl.create_default_context()),
+        )
+    return urllib.request.build_opener(*handlers)
 
 
 class _SameOriginRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -170,25 +201,87 @@ class ApiBackend:
                 allow_http_anywhere=os.getenv("RISKAPP_ALLOW_HTTP", "").strip() == "1"
             )
         self.base_url = validate_base_url(base_url, url_policy)
-        parsed_base = urllib.parse.urlparse(self.base_url)
-        handlers: list[urllib.request.BaseHandler] = [
-            _SameOriginRedirectHandler(
-                allowed_scheme=parsed_base.scheme,
-                allowed_netloc=parsed_base.netloc,
-            )
-        ]
-        if parsed_base.scheme == "https":
-            ssl_context = ssl.create_default_context()
-            handlers.insert(0, urllib.request.HTTPSHandler(context=ssl_context))
-        self._opener = urllib.request.build_opener(*handlers)
+        self._opener = _build_api_opener(self.base_url)
         self.email = email
         self.timeout_s = timeout_s
+        self._auth_state = _AuthState()
         self.user_id: str | None = None
         self.token: str | None = None
         self.refresh_token: str | None = None
         self.is_superuser: bool = False
         self._login(password)
         self._fetch_me()
+
+    def _get_auth_state(self) -> _AuthState:
+        """Return auth state, including for lightweight test instances."""
+        state = self.__dict__.get("_auth_state")
+        if state is None:
+            state = _AuthState()
+            self.__dict__["_auth_state"] = state
+        return state
+
+    @property
+    def token(self) -> str | None:
+        state = self._get_auth_state()
+        with state.lock:
+            return state.token
+
+    @token.setter
+    def token(self, value: str | None) -> None:
+        state = self._get_auth_state()
+        with state.lock:
+            state.token = value
+
+    @property
+    def refresh_token(self) -> str | None:
+        state = self._get_auth_state()
+        with state.lock:
+            return state.refresh_token
+
+    @refresh_token.setter
+    def refresh_token(self, value: str | None) -> None:
+        state = self._get_auth_state()
+        with state.lock:
+            state.refresh_token = value
+
+    @property
+    def user_id(self) -> str | None:
+        state = self._get_auth_state()
+        with state.lock:
+            return state.user_id
+
+    @user_id.setter
+    def user_id(self, value: str | None) -> None:
+        state = self._get_auth_state()
+        with state.lock:
+            state.user_id = value
+
+    @property
+    def is_superuser(self) -> bool:
+        state = self._get_auth_state()
+        with state.lock:
+            return state.is_superuser
+
+    @is_superuser.setter
+    def is_superuser(self, value: bool) -> None:
+        state = self._get_auth_state()
+        with state.lock:
+            state.is_superuser = bool(value)
+
+    def fork_authenticated(self) -> ApiBackend:
+        """Create a thread-local HTTP client sharing only protected auth state.
+
+        The clone gets its own urllib opener, while refresh-token rotation is
+        coordinated through the shared authentication state. No password is
+        retained and no second login is performed.
+        """
+        clone = type(self).__new__(type(self))
+        clone.base_url = self.base_url
+        clone.email = self.email
+        clone.timeout_s = self.timeout_s
+        clone._auth_state = self._get_auth_state()
+        clone._opener = _build_api_opener(clone.base_url)
+        return clone
 
     def _req(
         self,
@@ -211,10 +304,12 @@ class ApiBackend:
             "User-Agent": "RiskAppClient/1.0",
         }
         data: bytes | None = None
+        used_token: str | None = None
         if auth:
-            if not self.token:
+            used_token = self.token
+            if not used_token:
                 raise ApiError(401, "Not logged in")
-            headers["Authorization"] = f"Bearer {self.token}"
+            headers["Authorization"] = f"Bearer {used_token}"
         if json_body is not None:
             data = json.dumps(json_body).encode("utf-8")
             headers["Content-Type"] = "application/json"
@@ -239,7 +334,14 @@ class ApiBackend:
         except urllib.error.HTTPError as exc:
             if exc.code == 401 and auth and _retry_on_401 and self.refresh_token:
                 try:
-                    self._refresh_access_token()
+                    state = self._get_auth_state()
+                    with state.lock:
+                        # A request in another thread may already have rotated
+                        # the shared refresh token while this request was in
+                        # flight. Only the client that used the current access
+                        # token performs the rotation.
+                        if state.token == used_token:
+                            self._refresh_access_token()
                     return self._req(
                         method,
                         path,
@@ -269,22 +371,24 @@ class ApiBackend:
         self.user_id = _jwt_sub(token)
 
     def _refresh_access_token(self) -> None:
-        if not self.refresh_token:
-            raise ApiError(401, "Missing refresh token")
-        j = self._req(
-            "POST",
-            "/refresh",
-            json_body={"refresh_token": self.refresh_token},
-            auth=False,
-            _retry_on_401=False,
-        )
-        token = (j or {}).get("access_token")
-        if not token:
-            raise ApiError(401, f"Refresh failed: {j}")
-        self.token = token
-        if (j or {}).get("refresh_token"):
-            self.refresh_token = (j or {}).get("refresh_token")
-        self.user_id = _jwt_sub(token)
+        state = self._get_auth_state()
+        with state.lock:
+            if not state.refresh_token:
+                raise ApiError(401, "Missing refresh token")
+            j = self._req(
+                "POST",
+                "/refresh",
+                json_body={"refresh_token": state.refresh_token},
+                auth=False,
+                _retry_on_401=False,
+            )
+            token = (j or {}).get("access_token")
+            if not token:
+                raise ApiError(401, f"Refresh failed: {j}")
+            state.token = token
+            if (j or {}).get("refresh_token"):
+                state.refresh_token = (j or {}).get("refresh_token")
+            state.user_id = _jwt_sub(token)
 
     def _fetch_me(self) -> None:
         try:

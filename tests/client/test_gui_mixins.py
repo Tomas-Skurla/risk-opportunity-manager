@@ -30,6 +30,8 @@ class ProjectSyncHost(ProjectsSyncMixin):
         self._cached_members: list[Member] = []
         self._load_projects_calls: list[str | None] = []
         self._refresh_calls: list[str | None] = []
+        self._refresh_remote_flags: list[bool] = []
+        self.background_job: dict[str, object] | None = None
 
     def _call_backend(self, _title, fn, *args):
         try:
@@ -37,11 +39,37 @@ class ProjectSyncHost(ProjectsSyncMixin):
         except Exception:  # noqa: BLE001 - mirrors the real GUI error boundary
             return None
 
-    def _load_projects(self, *, select_project_id=None) -> None:
+    def _load_projects(
+        self,
+        *,
+        select_project_id=None,
+        projects=None,
+        notify_selection=True,
+    ) -> None:
+        assert notify_selection is False
         self._load_projects_calls.append(select_project_id)
 
-    def _refresh_all_views(self, *, select_id=None) -> None:
+    def _refresh_all_views(self, *, select_id=None, include_remote=True) -> None:
         self._refresh_calls.append(select_id)
+        self._refresh_remote_flags.append(include_remote)
+
+    def _start_background_job(
+        self,
+        kind,
+        payload,
+        *,
+        on_success=None,
+        on_failure=None,
+        on_cancelled=None,
+    ) -> bool:
+        self.background_job = {
+            "kind": kind,
+            "payload": payload,
+            "on_success": on_success,
+            "on_failure": on_failure,
+            "on_cancelled": on_cancelled,
+        }
+        return True
 
 
 class ProjectListHost(ProjectsSyncMixin):
@@ -287,6 +315,7 @@ def test_project_sync_status_falls_back_when_backend_queries_fail(qtbot) -> None
 def test_sync_now_migrates_project_refreshes_and_reports(monkeypatch, qtbot) -> None:
     summary = {
         "project_id_migrated_to": "server-project-1",
+        "_visible_projects": [Project("server-project-1", "Migrated")],
         "pushed": 2,
         "conflicts": 1,
         "errors": 1,
@@ -319,9 +348,17 @@ def test_sync_now_migrates_project_refreshes_and_reports(monkeypatch, qtbot) -> 
 
     host._sync_now()
 
+    assert host.background_job is not None
+    assert host.background_job["kind"] == "sync"
+    assert host.background_job["payload"] == {"project_id": "project-1"}
+    callback = host.background_job["on_success"]
+    assert callable(callback)
+    callback(summary)
+
     assert host.current_project_id == "server-project-1"
     assert host._load_projects_calls == ["server-project-1"]
     assert host._refresh_calls == ["risk-1"]
+    assert host._refresh_remote_flags == [False]
     assert "Pushed: 2" in messages[-1]
     assert "Conflicts blocked: 1" in messages[-1]
     assert "Risk 'risk-2' · delete · Permission denied" in messages[-1]
@@ -336,6 +373,7 @@ def test_sync_now_handles_missing_project_unsupported_and_failed_backend(
         "information",
         lambda _parent, _title, message, *_args: messages.append(message),
     )
+    monkeypatch.setattr(QMessageBox, "critical", lambda *_args: None)
     host = ProjectSyncHost(object())
     qtbot.addWidget(host.sync_btn)
     qtbot.addWidget(host.sync_status)
@@ -369,6 +407,10 @@ def test_sync_now_handles_missing_project_unsupported_and_failed_backend(
 
     host.backend = BrokenBackend()
     host._sync_now()
+    assert host.background_job is not None
+    callback = host.background_job["on_failure"]
+    assert callable(callback)
+    callback("offline")
     assert host.sync_status.text() == (
         "OFFLINE · queued: 1 · retrying: 0 · conflicts: 0 · errors: 0 "
         "· last sync: never"
@@ -406,6 +448,29 @@ def test_project_list_labels_local_state_owner_and_selection(qtbot) -> None:
     assert host.project_list.item(1).text() == "Draft  (offline, will sync)"
     assert host.project_list.item(2).text() == "Remote  (owner@example.test)"
     assert host.project_list.currentItem().data(Qt.UserRole) == "server-1"
+
+
+def test_project_list_can_select_without_triggering_refresh(qtbot) -> None:
+    class Backend:
+        @staticmethod
+        def list_projects():
+            return [
+                Project("project-1", "One"),
+                Project("project-2", "Two"),
+            ]
+
+    host = ProjectListHost(Backend())
+    qtbot.addWidget(host.project_list)
+    selections: list[int] = []
+    host.project_list.currentRowChanged.connect(selections.append)
+
+    host._load_projects(
+        select_project_id="project-2",
+        notify_selection=False,
+    )
+
+    assert host.project_list.currentItem().data(Qt.UserRole) == "project-2"
+    assert selections == []
 
 
 def test_members_refresh_populates_widgets_and_protects_superuser(qtbot) -> None:

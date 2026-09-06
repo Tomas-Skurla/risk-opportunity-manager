@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from riskapp_client.adapters.local_storage.sqlite_data_store import LocalStore, utc_iso
@@ -8,6 +9,10 @@ from riskapp_client.adapters.local_storage.sync_outbox_queue import OutboxStore
 
 _SYNC_EPOCH = "1970-01-01T00:00:00"
 _CONFLICT_RESOLUTIONS = {"keep_mine", "use_server", "later"}
+
+
+class _SyncCancelled(RuntimeError):
+    """Internal cooperative-cancellation signal."""
 
 
 class SyncService:
@@ -24,6 +29,26 @@ class SyncService:
 
     def can_sync(self) -> bool:
         return self._remote is not None
+
+    @staticmethod
+    def _notify_progress(
+        progress: Callable[[str], None] | None,
+        message: str,
+    ) -> None:
+        if progress is None:
+            return
+        try:
+            progress(message)
+        except Exception:  # noqa: BLE001 - UI reporting must not break sync
+            logging.getLogger(__name__).debug(
+                "Synchronization progress callback failed",
+                exc_info=True,
+            )
+
+    @staticmethod
+    def _check_cancel(should_cancel: Callable[[], bool] | None) -> None:
+        if should_cancel is not None and should_cancel():
+            raise _SyncCancelled
 
     def pending_count(self, project_id: str | None = None) -> int:
         return self._outbox.pending_count(project_id)
@@ -410,7 +435,13 @@ class SyncService:
 
         return (len(processed), conflicts, errors)
 
-    def sync_project(self, project_id: str) -> dict[str, Any]:
+    def sync_project(
+        self,
+        project_id: str,
+        *,
+        should_cancel: Callable[[], bool] | None = None,
+        progress: Callable[[str], None] | None = None,
+    ) -> dict[str, Any]:
         if not self._remote:
             raise RuntimeError(
                 "No server configured (start the app online at least once)."
@@ -434,15 +465,35 @@ class SyncService:
             "pulled_helpdesk_tickets": 0,
         }
 
+        def cancelled() -> dict[str, Any]:
+            summary["state"] = "cancelled"
+            summary["cancelled"] = True
+            return self._finish_summary(summary, effective_project_id)
+
+        self._notify_progress(progress, "Preparing synchronization")
+        try:
+            self._check_cancel(should_cancel)
+        except _SyncCancelled:
+            return cancelled()
+
         if str(project_id).startswith("local-"):
+            self._notify_progress(progress, "Publishing local project")
             promoted = self._promote_local_project(project_id)
             if promoted and promoted != project_id:
                 summary["project_id_migrated_from"] = project_id
                 summary["project_id_migrated_to"] = promoted
                 effective_project_id = promoted
+            try:
+                self._check_cancel(should_cancel)
+            except _SyncCancelled:
+                return cancelled()
 
         changes = self._outbox.get_pending_changes(effective_project_id, limit=100)
         if changes:
+            self._notify_progress(
+                progress,
+                f"Pushing {len(changes)} pending change(s)",
+            )
             pushed, conflicts, errors = self._process_push(
                 effective_project_id, changes
             )
@@ -462,15 +513,32 @@ class SyncService:
                 summary["sync_error"] = failure
                 return self._finish_summary(summary, effective_project_id)
 
+            try:
+                self._check_cancel(should_cancel)
+            except _SyncCancelled:
+                return cancelled()
+
         since = self._store.get_last_server_time(effective_project_id)
 
+        self._notify_progress(progress, "Pulling server changes")
         try:
+            self._check_cancel(should_cancel)
             pull = self._remote.sync_pull(effective_project_id, since)
+            self._check_cancel(should_cancel)
+        except _SyncCancelled:
+            return cancelled()
         except Exception as exc:  # noqa: BLE001
             status = getattr(exc, "status", None)
             if int(status or 0) == 413:
                 try:
-                    pull = self._pull_paginated(effective_project_id, since)
+                    pull = self._pull_paginated(
+                        effective_project_id,
+                        since,
+                        should_cancel=should_cancel,
+                        progress=progress,
+                    )
+                except _SyncCancelled:
+                    return cancelled()
                 except Exception as paginated_exc:  # noqa: BLE001
                     failure = self._request_failure(
                         paginated_exc, phase="pull"
@@ -492,17 +560,34 @@ class SyncService:
         # Apply parent items before child records. This lets assessment pulls
         # that only contain item_id be classified as risk vs opportunity.
         for key in ("risks", "opportunities", "actions", "assessments"):
+            try:
+                self._check_cancel(should_cancel)
+            except _SyncCancelled:
+                return cancelled()
             items = pull.get(key) or []
+            self._notify_progress(
+                progress,
+                f"Applying {len(items)} {key}",
+            )
             getattr(self._store, f"apply_pull_{key}")(effective_project_id, items)
             summary[f"pulled_{key}"] = len(items)
 
+        try:
+            self._check_cancel(should_cancel)
+        except _SyncCancelled:
+            return cancelled()
         helpdesk_items = pull.get("helpdesk_tickets") or []
         if helpdesk_items:
+            self._notify_progress(
+                progress,
+                f"Applying {len(helpdesk_items)} help-desk ticket(s)",
+            )
             self._store.apply_pull_helpdesk_tickets(
                 effective_project_id, helpdesk_items
             )
         summary["pulled_helpdesk_tickets"] = len(helpdesk_items)
 
+        self._notify_progress(progress, "Finalizing synchronization")
         self._store.set_last_server_time(effective_project_id, server_time)
         return self._finish_summary(summary, effective_project_id)
 
@@ -556,7 +641,14 @@ class SyncService:
             self._store.upsert_projects([created])
         return str(new_id)
 
-    def _pull_paginated(self, project_id: str, since: str) -> dict[str, Any]:
+    def _pull_paginated(
+        self,
+        project_id: str,
+        since: str,
+        *,
+        should_cancel: Callable[[], bool] | None = None,
+        progress: Callable[[str], None] | None = None,
+    ) -> dict[str, Any]:
 
         limit = 2000
         cursors: dict[str, str] = {}
@@ -571,7 +663,14 @@ class SyncService:
             "helpdesk_tickets": [],
         }
 
+        page_number = 0
         while True:
+            self._check_cancel(should_cancel)
+            page_number += 1
+            self._notify_progress(
+                progress,
+                f"Downloading synchronization page {page_number}",
+            )
             resp = self._remote.sync_pull(
                 project_id,
                 since,
@@ -579,6 +678,7 @@ class SyncService:
                 cursors=cursors or None,
                 snapshot_time=snapshot_time,
             )
+            self._check_cancel(should_cancel)
             page_snapshot = str(resp.get("server_time") or "")
             if not page_snapshot:
                 raise RuntimeError("Sync pagination response omitted server_time")

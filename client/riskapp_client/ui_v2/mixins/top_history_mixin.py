@@ -12,6 +12,30 @@ from riskapp_client.utils.roles import role_at_least
 class TopHistoryMixin:
     """Snapshot history mixin."""
 
+    def _history_job_payload(self, project_id: str) -> dict[str, object]:
+        tab = self.top_tab
+        kind_ui = tab.top_kind.currentText().strip().lower()
+        kind = "risks" if kind_ui.startswith("risk") else "opportunities"
+        limit = int(tab.top_limit.value())
+        period = tab.top_period.currentText()
+        from_ts = None
+        to_ts = None
+        if period != "All":
+            from_ts = self._dtedit_to_iso_utc_naive(tab.top_from)
+            to_ts = self._dtedit_to_iso_utc_naive(tab.top_to)
+            if from_ts and to_ts and from_ts > to_ts:
+                from_ts, to_ts = to_ts, from_ts
+        return {
+            "project_id": str(project_id),
+            "history": {
+                "kind": kind,
+                "limit": limit,
+                "from_ts": from_ts,
+                "to_ts": to_ts,
+            },
+            "display": {"kind": kind, "limit": limit, "period": period},
+        }
+
     def _maybe_auto_snapshot(self) -> None:
         """Take a snapshot automatically if enabled and the interval has elapsed."""
         tab = self.top_tab
@@ -42,14 +66,24 @@ class TopHistoryMixin:
             if kind_ui.startswith("risk")
             else ("opportunities" if kind_ui.startswith("opp") else "both")
         )
-        try:
-            if hasattr(self.backend, "create_snapshot"):
-                self.backend.create_snapshot(pid, kind=kind)  # type: ignore[attr-defined]
-        except (RuntimeError, OSError):
-            # Avoid modal dialogs from the background timer.
+        if not hasattr(self.backend, "create_snapshot"):
             return
-        self._last_auto_snapshot_by_project[pid] = now
-        self._refresh_top_history()
+        payload = self._history_job_payload(str(pid))
+        payload["kind"] = kind
+        self._start_background_job(
+            "snapshot",
+            payload,
+            on_success=lambda result, project_id=str(pid), completed_at=now: (
+                self._snapshot_succeeded(
+                    result,
+                    project_id=project_id,
+                    automatic=True,
+                    completed_at=completed_at,
+                )
+            ),
+            # Automatic work must never interrupt the user with a modal dialog.
+            on_failure=lambda _message: None,
+        )
 
     def _snapshot_now(self) -> None:
         pid = self.current_project_id
@@ -65,12 +99,29 @@ class TopHistoryMixin:
                 self, "Snapshots", "This backend does not support snapshots."
             )
             return
-        if (
-            self._call_backend("Snapshot failed", self.backend.create_snapshot, pid)
-            is None
-        ):  # type: ignore[attr-defined]
-            return
-        self._refresh_top_history()
+        payload = self._history_job_payload(str(pid))
+        # Preserve the manual action's existing meaning: capture both entity
+        # types. The automatic timer still honours its configured kind.
+        payload["kind"] = None
+        if not self._start_background_job(
+            "snapshot",
+            payload,
+            on_success=lambda result, project_id=str(pid): self._snapshot_succeeded(
+                result,
+                project_id=project_id,
+                automatic=False,
+            ),
+            on_failure=lambda message: QMessageBox.warning(
+                self,
+                "Snapshot failed",
+                message,
+            ),
+        ):
+            QMessageBox.information(
+                self,
+                "Snapshots",
+                "Another background operation is already running.",
+            )
 
     def _refresh_top_history(self) -> None:
         tab = self.top_tab
@@ -85,28 +136,70 @@ class TopHistoryMixin:
             tab.top_table.setRowCount(0)
             tab.top_report.setText("Top history not supported by this backend.")
             return
-        kind_ui = tab.top_kind.currentText().strip().lower()
-        kind = "risks" if kind_ui.startswith("risk") else "opportunities"
-        limit = int(tab.top_limit.value())
-        period = tab.top_period.currentText()
-        from_ts = None
-        to_ts = None
-        if period != "All":
-            from_ts = self._dtedit_to_iso_utc_naive(tab.top_from)
-            to_ts = self._dtedit_to_iso_utc_naive(tab.top_to)
-            if from_ts and to_ts and from_ts > to_ts:
-                from_ts, to_ts = to_ts, from_ts
-        batches = self._call_backend(
-            "Top history failed",
-            self.backend.top_history,  # type: ignore[attr-defined]
-            pid,
+        if not self._start_background_job(
+            "history",
+            self._history_job_payload(str(pid)),
+            on_success=self._history_succeeded,
+            on_failure=lambda message: QMessageBox.warning(
+                self,
+                "Top history failed",
+                message,
+            ),
+        ):
+            tab.top_report.setText("Another background operation is already running.")
+
+    def _snapshot_succeeded(
+        self,
+        result: object,
+        *,
+        project_id: str,
+        automatic: bool,
+        completed_at: datetime | None = None,
+    ) -> None:
+        if automatic:
+            self._last_auto_snapshot_by_project[project_id] = (
+                completed_at or datetime.now(UTC).replace(tzinfo=None)
+            )
+        if not isinstance(result, dict):
+            return
+        if str(self.current_project_id or "") != project_id:
+            return
+        if result.get("history_error"):
+            self.top_tab.top_report.setText(
+                "Snapshot created, but history could not be refreshed: "
+                + str(result["history_error"])
+            )
+            return
+        self._history_succeeded(result)
+
+    def _history_succeeded(self, result: object) -> None:
+        if not isinstance(result, dict):
+            return
+        if str(result.get("project_id") or "") != str(self.current_project_id or ""):
+            return
+        batches = result.get("history")
+        display = result.get("display") or {}
+        if not isinstance(batches, list) or not isinstance(display, dict):
+            return
+        kind = str(display.get("kind") or "risks")
+        limit = int(display.get("limit") or 10)
+        period = str(display.get("period") or "All")
+        self._render_top_history(
+            batches,
             kind=kind,
             limit=limit,
-            from_ts=from_ts,
-            to_ts=to_ts,
+            period=period,
         )
-        if batches is None:
-            return
+
+    def _render_top_history(
+        self,
+        batches: list[dict],
+        *,
+        kind: str,
+        limit: int,
+        period: str,
+    ) -> None:
+        tab = self.top_tab
         tab.top_table.setRowCount(0)
         total_items = 0
         total_batches = 0

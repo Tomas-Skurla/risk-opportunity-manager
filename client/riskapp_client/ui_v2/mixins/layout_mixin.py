@@ -6,7 +6,7 @@ import logging
 import sys
 
 import qdarktheme
-from PySide6.QtWidgets import QApplication, QLabel, QPushButton
+from PySide6.QtWidgets import QApplication, QLabel, QProgressBar, QPushButton
 from riskapp_client.ui_v2.tabs.actions_tab import ActionsTab
 from riskapp_client.ui_v2.tabs.assessments_tab import AssessmentsTab
 from riskapp_client.ui_v2.tabs.helpdesk_tab import HelpDeskTab
@@ -89,12 +89,26 @@ class LayoutMixin:
         self.delete_project_btn = self.ui.delete_project_btn
         self.role_status = QLabel("Role: Initializing...")
         self.sync_status = QLabel("Sync: Initializing...")
+        self.background_progress = QProgressBar()
+        self.background_progress.setObjectName("background_progress")
+        self.background_progress.setRange(0, 0)
+        self.background_progress.setTextVisible(False)
+        self.background_progress.setMaximumWidth(120)
+        self.background_progress.setVisible(False)
+        self.cancel_background_btn = QPushButton("Cancel")
+        self.cancel_background_btn.setObjectName("cancel_background_btn")
+        self.cancel_background_btn.setToolTip(
+            "Cancel after the current network request or local write finishes"
+        )
+        self.cancel_background_btn.setVisible(False)
         self.conflicts_btn = QPushButton("Conflicts (0)")
         self.conflicts_btn.setObjectName("conflicts_btn")
         self.conflicts_btn.setEnabled(False)
         self.conflicts_btn.setToolTip("Review synchronization conflicts")
         self.ui.statusbar.addPermanentWidget(self.role_status)
         self.ui.statusbar.addPermanentWidget(self.sync_status)
+        self.ui.statusbar.addPermanentWidget(self.background_progress)
+        self.ui.statusbar.addPermanentWidget(self.cancel_background_btn)
         self.ui.statusbar.addPermanentWidget(self.conflicts_btn)
         self.project_list.setToolTip("Select a project to load its data")
         self.sync_btn.setToolTip(
@@ -254,6 +268,7 @@ class LayoutMixin:
             self.ui.main_stacked_widget.setCurrentIndex
         )
         self.sync_btn.clicked.connect(self._sync_now)
+        self.cancel_background_btn.clicked.connect(self._cancel_background_job)
         self.conflicts_btn.clicked.connect(self._open_conflict_center)
         self.new_project_btn.clicked.connect(self._create_new_project)
         self.delete_project_btn.clicked.connect(self._delete_current_project)

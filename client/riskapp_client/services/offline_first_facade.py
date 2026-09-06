@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from collections import Counter
+from collections.abc import Callable
 from typing import Any
 
 from riskapp_client.adapters.local_storage.sqlite_data_store import LocalStore
@@ -77,6 +78,18 @@ class OfflineFirstBackend(Backend):
         self._helpdesk = HelpDeskService(store, self.outbox)
         self._members = MembersService(remote)
         self._sync = SyncService(store, self.outbox, remote)
+
+    def create_background_backend(self) -> OfflineFirstBackend:
+        """Build a worker-owned facade with its own SQLite connection."""
+        remote = self.remote
+        fork_remote = getattr(remote, "fork_authenticated", None)
+        if callable(fork_remote):
+            remote = fork_remote()
+        return OfflineFirstBackend(
+            LocalStore(self.store.db_path),
+            remote=remote,
+            anonymous_offline=self.anonymous_offline,
+        )
 
     def _use_remote(self, project_id: str | None = None) -> bool:
         if not self.remote:
@@ -522,8 +535,19 @@ class OfflineFirstBackend(Backend):
     def can_sync(self) -> bool:
         return self._sync.can_sync()
 
-    def sync_project(self, project_id: str):
-        return self._sync.sync_project(project_id)
+    def sync_project(
+        self,
+        project_id: str,
+        *,
+        should_cancel: Callable[[], bool] | None = None,
+        progress: Callable[[str], None] | None = None,
+    ):
+        kwargs: dict[str, object] = {}
+        if should_cancel is not None:
+            kwargs["should_cancel"] = should_cancel
+        if progress is not None:
+            kwargs["progress"] = progress
+        return self._sync.sync_project(project_id, **kwargs)
 
     def blocked_details(self, project_id: str | None = None) -> list[dict[str, Any]]:
         return self._sync.blocked_details(project_id)

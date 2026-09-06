@@ -55,6 +55,111 @@ def test_sync_service_delegates_counts_and_requires_a_remote() -> None:
         service.sync_project("project-1")
 
 
+def test_sync_can_be_cancelled_before_any_remote_request() -> None:
+    remote = Mock()
+    service, store, outbox = _service(remote=remote)
+    outbox.get_blocked_changes.return_value = []
+
+    summary = service.sync_project("project-1", should_cancel=lambda: True)
+
+    assert summary["state"] == "cancelled"
+    assert summary["cancelled"] is True
+    remote.sync_push.assert_not_called()
+    remote.sync_pull.assert_not_called()
+    store.set_last_server_time.assert_not_called()
+
+
+def test_cancel_after_partial_apply_does_not_advance_watermark() -> None:
+    cancel = False
+    remote = Mock()
+    remote.sync_pull.return_value = {
+        "server_time": "2026-09-06T12:00:00",
+        "risks": [{"id": "risk-1"}],
+        "opportunities": [{"id": "opportunity-1"}],
+        "actions": [],
+        "assessments": [],
+        "helpdesk_tickets": [],
+    }
+    service, store, outbox = _service(remote=remote)
+    outbox.get_pending_changes.return_value = []
+    outbox.get_blocked_changes.return_value = []
+    store.get_last_server_time.return_value = "since"
+
+    def apply_risks(*_args) -> None:
+        nonlocal cancel
+        cancel = True
+
+    store.apply_pull_risks.side_effect = apply_risks
+    summary = service.sync_project(
+        "project-1",
+        should_cancel=lambda: cancel,
+    )
+
+    assert summary["state"] == "cancelled"
+    store.apply_pull_risks.assert_called_once()
+    store.apply_pull_opportunities.assert_not_called()
+    store.set_last_server_time.assert_not_called()
+
+
+def test_cancelled_paginated_pull_is_not_applied() -> None:
+    class PullTooLarge(RuntimeError):
+        status = 413
+
+    cancelled = False
+
+    def sync_pull(_project_id, _since, **kwargs):
+        nonlocal cancelled
+        if not kwargs:
+            raise PullTooLarge("too large")
+        cancelled = True
+        return {
+            "server_time": "snapshot",
+            "risks": [{"id": "risk-1"}],
+            "has_more": {"risks": False},
+            "cursors": {},
+        }
+
+    remote = Mock()
+    remote.sync_pull.side_effect = sync_pull
+    service, store, outbox = _service(remote=remote)
+    outbox.get_pending_changes.return_value = []
+    outbox.get_blocked_changes.return_value = []
+    store.get_last_server_time.return_value = "since"
+
+    summary = service.sync_project(
+        "project-1",
+        should_cancel=lambda: cancelled,
+    )
+
+    assert summary["state"] == "cancelled"
+    store.apply_pull_risks.assert_not_called()
+    store.set_last_server_time.assert_not_called()
+
+
+def test_sync_reports_progress_at_safe_boundaries() -> None:
+    remote = Mock()
+    remote.sync_pull.return_value = {
+        "server_time": "2026-09-06T12:00:00",
+        "risks": [],
+        "opportunities": [],
+        "actions": [],
+        "assessments": [],
+        "helpdesk_tickets": [],
+    }
+    service, store, outbox = _service(remote=remote)
+    outbox.get_pending_changes.return_value = []
+    outbox.get_blocked_changes.return_value = []
+    store.get_last_server_time.return_value = "since"
+    messages: list[str] = []
+
+    summary = service.sync_project("project-1", progress=messages.append)
+
+    assert summary["state"] == "complete"
+    assert messages[0] == "Preparing synchronization"
+    assert "Pulling server changes" in messages
+    assert messages[-1] == "Finalizing synchronization"
+
+
 def test_process_push_removes_successes_and_blocks_failures() -> None:
     remote = Mock()
     remote.sync_push.return_value = {

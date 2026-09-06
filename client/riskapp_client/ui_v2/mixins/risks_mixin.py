@@ -16,7 +16,12 @@ class RisksMixin(ScoredEntityMixin):
     def _export_risks_csv(self) -> None:
         self._export_entity_csv("risks.csv", self._risk_cache, export_csv.export_risks)
 
-    def _refresh_risks(self, select_id: str | None = None) -> None:
+    def _refresh_risks(
+        self,
+        select_id: str | None = None,
+        *,
+        use_remote_report: bool = True,
+    ) -> None:
         pid = self.current_project_id
         if not pid:
             return
@@ -39,7 +44,11 @@ class RisksMixin(ScoredEntityMixin):
             self.risks_table,
             filters_dict,
             self._mk_item,
-            getattr(self.backend, "risks_report", None),
+            (
+                getattr(self.backend, "risks_report", None)
+                if use_remote_report
+                else None
+            ),
             select_id,
         )
         if res is not None:
