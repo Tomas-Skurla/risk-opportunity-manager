@@ -94,7 +94,9 @@ def test_use_server_atomically_replaces_local_copy_and_rewinds_watermark(
 ) -> None:
     store, outbox, service, change_id = _risk_conflict(tmp_path)
     try:
-        store.set_last_server_time("project-1", "2026-09-04T13:00:00")
+        store.set_sync_watermark(
+            "project-1", "2026-09-04T13:00:00", 12
+        )
 
         result = service.resolve_conflict(change_id, "use_server")
 
@@ -114,6 +116,7 @@ def test_use_server_atomically_replaces_local_copy_and_rewinds_watermark(
         assert row["version"] == 5
         assert row["dirty"] == 0
         assert store.get_last_server_time("project-1") == "1970-01-01T00:00:00"
+        assert store.get_last_server_sequence("project-1") == 0
     finally:
         store.close()
 

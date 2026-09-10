@@ -49,7 +49,7 @@ class TokenOut(BaseModel):
 
     user_id: uuid.UUID | None = None
     access_token: str
-    token_type: str = "bearer"
+    token_type: str = "bearer"  # noqa: S105 -- OAuth token type, not a secret
     expires_in: int | None = None
     refresh_token: str | None = None
 
@@ -141,20 +141,24 @@ class ItemShared(BaseModel):
     occurred_at: datetime | None = None
 
 
-class ItemCreate(ItemShared):
+class _ItemCreateFields(ItemShared):
 
-    type: Literal["risk", "opportunity"]
     title: NonEmptyStr
     probability: Probability
     impact: Impact
 
 
-class RiskCreate(ItemCreate):
+class ItemCreate(_ItemCreateFields):
+
+    type: Literal["risk", "opportunity"]
+
+
+class RiskCreate(_ItemCreateFields):
 
     type: Literal["risk"] = "risk"
 
 
-class OpportunityCreate(ItemCreate):
+class OpportunityCreate(_ItemCreateFields):
 
     type: Literal["opportunity"] = "opportunity"
 
@@ -177,10 +181,9 @@ class OpportunityUpdate(ItemUpdate):
     pass
 
 
-class ItemOut(ItemShared, ORMModel):
+class _ItemOutFields(ItemShared, ORMModel):
 
     id: uuid.UUID
-    type: Literal["risk", "opportunity"]
     project_id: uuid.UUID
     title: str
     probability: int
@@ -194,12 +197,17 @@ class ItemOut(ItemShared, ORMModel):
     is_deleted: bool
 
 
-class RiskOut(ItemOut):
+class ItemOut(_ItemOutFields):
+
+    type: Literal["risk", "opportunity"]
+
+
+class RiskOut(_ItemOutFields):
 
     type: Literal["risk"]
 
 
-class OpportunityOut(ItemOut):
+class OpportunityOut(_ItemOutFields):
 
     type: Literal["opportunity"]
 
@@ -293,7 +301,8 @@ class ActionCreate(BaseModel):
 
     @model_validator(mode="after")
     def _validate_target(self):
-        # Avoid ambiguous linking; if you support global/project-level actions, allowing neither is OK.
+        # Avoid ambiguous linking. If global/project-level actions are supported,
+        # allowing neither target is valid.
         if self.risk_id and self.opportunity_id:
             raise ValueError("Provide only one of risk_id or opportunity_id.")
         return self
@@ -404,10 +413,13 @@ class SyncPullRequest(BaseModel):
 
     project_id: uuid.UUID
     since: datetime
+    # Sequence fields are additive so older clients can continue using time-based pulls.
+    since_sequence: int | None = Field(default=None, ge=0)
     # Optional per-entity pagination.
     limit_per_entity: int | None = Field(default=None, ge=1, le=50000)
     cursors: dict[str, str] | None = None
     snapshot_time: datetime | None = None
+    snapshot_sequence: int | None = Field(default=None, ge=0)
 
     @model_validator(mode="after")
     def _validate_pagination_snapshot(self):
@@ -415,12 +427,21 @@ class SyncPullRequest(BaseModel):
             raise ValueError("cursors require limit_per_entity")
         if self.cursors and self.snapshot_time is None:
             raise ValueError("cursors require snapshot_time")
+        if self.snapshot_sequence is not None and self.since_sequence is None:
+            raise ValueError("snapshot_sequence requires since_sequence")
+        if (
+            self.cursors
+            and self.since_sequence is not None
+            and self.snapshot_sequence is None
+        ):
+            raise ValueError("sequence cursors require snapshot_sequence")
         return self
 
 
 class SyncPullResponse(BaseModel):
 
     server_time: datetime
+    server_sequence: int = Field(ge=0)
     risks: list[RiskOut]
     opportunities: list[OpportunityOut]
     actions: list[ActionOut]

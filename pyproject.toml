@@ -14,6 +14,14 @@ omit = [
   "client/riskapp_client/ui_v2/ui_*.py",
 ]
 
+[tool.pylint.main]
+extension-pkg-allow-list = ["PySide6"]
+init-hook = "import sys; sys.path[:0] = ['client', 'server']"
+source-roots = ["client", "server"]
+
+[tool.pyright]
+extraPaths = ["server", "client"]
+
 [tool.coverage.report]
 show_missing = true
 skip_covered = false
@@ -38,13 +46,16 @@ files = [
   "server/riskapp_server/auth/passwords.py",
   "server/riskapp_server/core/config.py",
   "server/riskapp_server/core/csv_export.py",
+  "server/riskapp_server/core/logging_config.py",
   "server/riskapp_server/core/password_policy.py",
   "server/riskapp_server/core/rate_limit.py",
+  "server/riskapp_server/main/http_middleware.py",
   "client/riskapp_client/domain/scored_entity_fields.py",
   "client/riskapp_client/services/action_management_service.py",
   "client/riskapp_client/services/assessment_management_service.py",
   "client/riskapp_client/services/helpdesk_service.py",
   "client/riskapp_client/services/member_management_service.py",
+  "client/riskapp_client/ui_v2/window_state.py",
   "client/riskapp_client/utils/logging_config.py",
   "client/riskapp_client/utils/normalize.py",
   "client/riskapp_client/utils/roles.py",
@@ -73,7 +84,7 @@ extend-exclude = [
 
 [tool.ruff.lint]
 select = [
-  "E", "F", "I", "B", "UP", "SIM", "W",
+  "E", "F", "I", "B", "UP", "SIM", "W", "S",
 ]
 ignore = [
   "E501",
@@ -82,7 +93,13 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = [
   "S101",
+  # Tests intentionally use obvious, non-production credential literals.
+  "S105",
+  "S106",
+  "S107",
 ]
+"tests/client/test_gui_behavior_coverage.py" = ["S108"]
+"tests/server/test_ops_cli.py" = ["S104"]
 
 "server/riskapp_server/api/routers/**/*.py" = ["B008"]
 "server/riskapp_server/auth/service.py" = ["B008"]

@@ -5,8 +5,9 @@ from datetime import timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Response
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
+from sqlalchemy.sql.functions import count
 
 from riskapp_server.auth.service import get_current_user
 from riskapp_server.core.config import RETENTION_DAYS
@@ -43,7 +44,7 @@ def _ensure_not_last_admin(
     if actor and actor.is_superuser:
         return
     n = db.execute(
-        select(func.count()).where(
+        select(count()).where(
             ProjectMember.project_id == project_id,
             ProjectMember.role == Role.admin.value,
         )
@@ -91,12 +92,12 @@ def list_projects(
     db: Session = Depends(get_db), user: User = Depends(get_current_user)
 ) -> list[Project]:
     if user.is_superuser:
-        return (
+        return list(
             db.execute(select(Project).order_by(Project.created_at.desc()))
             .scalars()
             .all()
         )
-    return (
+    return list(
         db.execute(
             select(Project)
             .join(ProjectMember, ProjectMember.project_id == Project.id)

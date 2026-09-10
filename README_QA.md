@@ -39,6 +39,8 @@ The canonical suite includes headless Qt interaction tests. Install the client l
 
 Mypy is intentionally incremental: `[tool.mypy].files` in `pyproject.toml` is the reviewed module allowlist. Add modules as their existing findings are fixed; do not replace the allowlist with the whole repository and suppress the result.
 
+Ruff includes its Bandit-derived `S` security rules. The configured test exceptions cover assertions, obvious fixture credentials, and two narrowly scoped platform fixtures. Production suppressions remain line-specific and must document the validation or fixed input that makes the flagged operation safe.
+
 ## Qt Designer forms
 
 The Conflict Center layout is maintained in the editable Designer source:

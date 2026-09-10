@@ -5,7 +5,7 @@ RiskApp is an offline-first risk and opportunity manager: a FastAPI/SQLAlchemy A
 ## What this repository demonstrates
 
 - layered desktop architecture with domain services behind UI-independent adapters;
-- offline operation with persistent queued writes and bidirectional synchronization using server receipt deduplication plus incremental cursor pulls;
+- offline operation with persistent queued writes and bidirectional synchronization using server receipt deduplication plus a transactional monotonic change sequence;
 - a Qt Designer-backed Conflict Center that preserves unresolved writes and lets users explicitly keep the local copy, use the saved server copy, or decide later;
 - authorization enforced consistently across REST and sync paths;
 - Argon2id password hashing with automatic migration of legacy PBKDF2 hashes after a successful login;

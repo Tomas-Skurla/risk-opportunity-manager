@@ -7,14 +7,20 @@ from __future__ import annotations
 
 import contextlib
 import logging
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any, cast
 
 from PySide6.QtCore import Qt  # pylint: disable=no-name-in-module
 from PySide6.QtWidgets import (  # pylint: disable=no-name-in-module
     QDialog,
+    QLabel,
+    QListWidget,
     QListWidgetItem,
     QMessageBox,
+    QPushButton,
+    QTableWidget,
+    QWidget,
 )
 from riskapp_client.domain.domain_models import Project
 from riskapp_client.ui_v2.components.conflict_center_dialog import (
@@ -22,11 +28,45 @@ from riskapp_client.ui_v2.components.conflict_center_dialog import (
 )
 from riskapp_client.ui_v2.components.custom_gui_widgets import NewProjectDialog
 
-_PROJECT_NAME_ROLE = int(Qt.UserRole) + 1
+if TYPE_CHECKING:
+    from riskapp_client.ui_v2.components.custom_gui_widgets import RiskForm
+
+_PROJECT_NAME_ROLE = int(Qt.ItemDataRole.UserRole) + 1
 
 
 class ProjectsSyncMixin:
     """MainWindow mixin: ProjectsSyncMixin"""
+
+    backend: Any
+    conflicts_btn: QPushButton
+    current_assessment_item_id: str | None
+    current_assessment_item_type: str
+    current_opportunity_id: str | None
+    current_project_id: str | None
+    current_risk_id: str | None
+    editor_label: QLabel
+    project_list: QListWidget
+    risk_form: RiskForm
+    risks_table: QTableWidget
+    sync_btn: QPushButton
+    sync_status: QLabel
+    _risks_col_widths: dict[str, list[int]]
+    _call_backend: Callable[..., Any]
+    _commit_editor_changes: Callable[..., Any]
+    _commit_opp_editor_changes: Callable[..., Any]
+    _detect_offline_mode: Callable[[], bool]
+    _refresh_action_opp_combo: Callable[..., Any]
+    _refresh_action_risk_combo: Callable[..., Any]
+    _refresh_actions: Callable[..., Any]
+    _refresh_assessments: Callable[..., Any]
+    _refresh_helpdesk: Callable[..., Any]
+    _refresh_matrix: Callable[..., Any]
+    _refresh_members: Callable[..., Any]
+    _refresh_opportunities: Callable[..., Any]
+    _refresh_risks: Callable[..., Any]
+    _refresh_top_history: Callable[..., Any]
+    _start_background_job: Callable[..., bool]
+    _start_new_action: Callable[..., Any]
 
     def _format_blocked_sync_details(self, summary: dict[str, object]) -> str:
         """Format unresolved blocked sync items for display in the popup."""
@@ -115,7 +155,7 @@ class ProjectsSyncMixin:
                 if owner_email:
                     display_name = f"{p.name}  ({owner_email})"
             item = QListWidgetItem(display_name)
-            item.setData(Qt.UserRole, p.id)
+            item.setData(Qt.ItemDataRole.UserRole, p.id)
             item.setData(_PROJECT_NAME_ROLE, p.name)
             self.project_list.addItem(item)
         if self.project_list.count() <= 0:
@@ -134,7 +174,7 @@ class ProjectsSyncMixin:
         if select_project_id:
             for i in range(self.project_list.count()):
                 it = self.project_list.item(i)
-                if str(it.data(Qt.UserRole)) == str(select_project_id):
+                if str(it.data(Qt.ItemDataRole.UserRole)) == str(select_project_id):
                     select_row(i)
                     return
         select_row(0)
@@ -152,7 +192,7 @@ class ProjectsSyncMixin:
                 self.risks_table.columnWidth(c)
                 for c in range(self.risks_table.columnCount())
             ]
-        self.current_project_id = items[0].data(Qt.UserRole)
+        self.current_project_id = items[0].data(Qt.ItemDataRole.UserRole)
         self.current_risk_id = None
         self.current_opportunity_id = None
         self.current_assessment_item_id = None
@@ -171,8 +211,9 @@ class ProjectsSyncMixin:
         self._start_new_action()
 
     def _create_new_project(self) -> None:
-        dlg = NewProjectDialog(parent=self)
-        if dlg.exec() != QDialog.Accepted:
+        parent = cast(QWidget, self)
+        dlg = NewProjectDialog(parent=parent)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         name, description = dlg.values()
         # Avoid duplicate names in the sidebar.
@@ -187,7 +228,8 @@ class ProjectsSyncMixin:
             )
         if name.strip().lower() in existing_names:
             QMessageBox.warning(
-                self, "Duplicate name",
+                parent,
+                "Duplicate name",
                 f"A project named \"{name}\" already exists.\n"
                 "Please choose a different name.",
             )
@@ -195,31 +237,38 @@ class ProjectsSyncMixin:
         try:
             project = self.backend.create_project(name=name, description=description)
         except (RuntimeError, OSError, ValueError) as exc:
-            QMessageBox.critical(self, "Create project", str(exc))
+            QMessageBox.critical(parent, "Create project", str(exc))
             return
         self._load_projects(select_project_id=project.id)
 
     def _delete_current_project(self) -> None:
+        parent = cast(QWidget, self)
         pid = self.current_project_id
         if not pid:
-            QMessageBox.information(self, "Delete project", "No project selected.")
+            QMessageBox.information(
+                parent,
+                "Delete project",
+                "No project selected.",
+            )
             return
         items = self.project_list.selectedItems()
         name = items[0].text() if items else pid
+        yes = QMessageBox.StandardButton.Yes
+        no = QMessageBox.StandardButton.No
         reply = QMessageBox.warning(
-            self,
+            parent,
             "Delete project",
             f"Permanently delete project \"{name}\" and ALL its data?\n\n"
             "This cannot be undone. Only superadmins can do this.",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
+            yes | no,
+            no,
         )
-        if reply != QMessageBox.Yes:
+        if reply != yes:
             return
         try:
             self.backend.delete_project(pid)
         except (RuntimeError, OSError) as exc:
-            QMessageBox.critical(self, "Delete project", str(exc))
+            QMessageBox.critical(parent, "Delete project", str(exc))
             return
         self.current_project_id = None
         self._load_projects()
@@ -309,15 +358,20 @@ class ProjectsSyncMixin:
             self.conflicts_btn.setEnabled(bool(pid) and conflicts > 0)
 
     def _open_conflict_center(self) -> None:
+        parent = cast(QWidget, self)
         pid = self.current_project_id
         if not pid:
-            QMessageBox.information(self, "Synchronization conflicts", "No project selected.")
+            QMessageBox.information(
+                parent,
+                "Synchronization conflicts",
+                "No project selected.",
+            )
             return
         if not hasattr(self.backend, "conflict_details") or not hasattr(
             self.backend, "resolve_conflict"
         ):
             QMessageBox.information(
-                self,
+                parent,
                 "Synchronization conflicts",
                 "This backend does not support interactive conflict resolution.",
             )
@@ -332,7 +386,7 @@ class ProjectsSyncMixin:
             return
         if not isinstance(conflicts, list) or not conflicts:
             QMessageBox.information(
-                self,
+                parent,
                 "Synchronization conflicts",
                 "There are no unresolved conflicts for this project.",
             )
@@ -342,7 +396,7 @@ class ProjectsSyncMixin:
         dialog = ConflictCenterDialog(
             conflicts,
             self.backend.resolve_conflict,  # type: ignore[attr-defined]
-            parent=self,
+            parent=parent,
         )
         dialog.conflict_resolved.connect(
             lambda _change_id, _resolution: self._update_sync_status()
@@ -351,11 +405,16 @@ class ProjectsSyncMixin:
         self._refresh_all_views(select_id=self.current_risk_id)
 
     def _sync_now(self) -> None:
+        parent = cast(QWidget, self)
         pid = self.current_project_id
         if not pid:
             return
         if not hasattr(self.backend, "sync_project"):
-            QMessageBox.information(self, "Sync", "This backend does not support sync.")
+            QMessageBox.information(
+                parent,
+                "Sync",
+                "This backend does not support sync.",
+            )
             return
         if not self._start_background_job(
             "sync",
@@ -365,7 +424,7 @@ class ProjectsSyncMixin:
             on_cancelled=self._sync_cancelled,
         ):
             QMessageBox.information(
-                self,
+                parent,
                 "Synchronization",
                 "Another background operation is already running.",
             )
@@ -389,7 +448,10 @@ class ProjectsSyncMixin:
             else:
                 selected = self.project_list.selectedItems()
                 if selected:
-                    selected[0].setData(Qt.UserRole, str(migrated_to))
+                    selected[0].setData(
+                        Qt.ItemDataRole.UserRole,
+                        str(migrated_to),
+                    )
                     raw_name = selected[0].data(_PROJECT_NAME_ROLE)
                     if raw_name:
                         selected[0].setText(str(raw_name))
@@ -417,21 +479,25 @@ class ProjectsSyncMixin:
             f"{blocked_details}{error_detail}"
         )
         if state == "complete":
-            QMessageBox.information(self, "Sync complete", message)
+            QMessageBox.information(
+                cast(QWidget, self),
+                "Sync complete",
+                message,
+            )
             return
         QMessageBox.warning(
-            self,
+            cast(QWidget, self),
             "Sync needs attention" if state != "retry_wait" else "Sync retry scheduled",
             message,
         )
 
     def _sync_failed(self, message: str) -> None:
-        QMessageBox.critical(self, "Sync failed", message)
+        QMessageBox.critical(cast(QWidget, self), "Sync failed", message)
         self._update_sync_status()
 
     def _sync_cancelled(self) -> None:
         QMessageBox.information(
-            self,
+            cast(QWidget, self),
             "Synchronization cancelled",
             "Synchronization stopped safely. Changes already acknowledged by "
             "the server remain acknowledged; remaining work will be retried.",

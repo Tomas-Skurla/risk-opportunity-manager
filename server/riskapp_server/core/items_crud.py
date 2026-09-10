@@ -6,6 +6,7 @@ from fastapi import HTTPException
 from sqlalchemy import case, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+from sqlalchemy.sql.functions import count
 
 from riskapp_server.core.filters import apply_item_filters
 from riskapp_server.core.scoring import recalculate_item_scores
@@ -13,7 +14,7 @@ from riskapp_server.db.session import RiskStatus, utcnow
 from riskapp_server.schemas.models import ScoreReportOut
 
 
-def create_item(db: Session, user_id: uuid.UUID, project_id: uuid.UUID, payload, Model):
+def create_item(db: Session, user_id: uuid.UUID, project_id: uuid.UUID, payload, model):
     now = utcnow()
     item_type = getattr(payload, "type", "risk").lower()
     prefix = "R" if item_type == "risk" else "O"
@@ -45,7 +46,7 @@ def create_item(db: Session, user_id: uuid.UUID, project_id: uuid.UUID, payload,
 
     data = payload.model_dump(exclude_unset=True)
     data.pop("base_version", None)
-    if hasattr(Model, "type"):
+    if hasattr(model, "type"):
         # Route-specific schemas provide a default type. Pydantic intentionally
         # omits defaults from exclude_unset output, so persist the resolved value
         # explicitly instead of relying on the caller to repeat it in JSON.
@@ -70,7 +71,7 @@ def create_item(db: Session, user_id: uuid.UUID, project_id: uuid.UUID, payload,
         }
     )
 
-    item = Model(**data)
+    item = model(**data)
     recalculate_item_scores(item)
     db.add(item)
     try:
@@ -89,15 +90,15 @@ def update_item(
     project_id: uuid.UUID,
     item_id: uuid.UUID,
     payload,
-    Model,
+    model,
     *,
     item_type: str | None = None,
 ):
     now = utcnow()
-    where = [Model.project_id == project_id, Model.id == item_id]
-    if item_type and hasattr(Model, "type"):
-        where.append(Model.type == item_type)
-    item = db.execute(select(Model).where(*where)).scalars().first()
+    where = [model.project_id == project_id, model.id == item_id]
+    if item_type and hasattr(model, "type"):
+        where.append(model.type == item_type)
+    item = db.execute(select(model).where(*where)).scalars().first()
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
 
@@ -163,11 +164,11 @@ def update_item(
     return item
 
 
-def list_items(db: Session, project_id: uuid.UUID, Model, filters: dict):
+def list_items(db: Session, project_id: uuid.UUID, model, filters: dict):
     stmt = (
         apply_item_filters(
-            select(Model).where(Model.project_id == project_id),
-            Model,
+            select(model).where(model.project_id == project_id),
+            model,
             search=filters.get("search"),
             item_type=filters.get("item_type"),
             min_score=filters.get("min_score"),
@@ -179,7 +180,7 @@ def list_items(db: Session, project_id: uuid.UUID, Model, filters: dict):
             from_date=filters.get("from_date"),
             to_date=filters.get("to_date"),
         )
-        .order_by(Model.score.desc(), Model.title.asc())
+        .order_by(model.score.desc(), model.title.asc())
         .limit(filters.get("limit", 100))
         .offset(filters.get("offset", 0))
     )
@@ -190,14 +191,14 @@ def delete_item(
     db: Session,
     project_id: uuid.UUID,
     item_id: uuid.UUID,
-    Model,
+    model,
     *,
     item_type: str | None = None,
 ):
-    where = [Model.project_id == project_id, Model.id == item_id]
-    if item_type and hasattr(Model, "type"):
-        where.append(Model.type == item_type)
-    item = db.execute(select(Model).where(*where)).scalars().first()
+    where = [model.project_id == project_id, model.id == item_id]
+    if item_type and hasattr(model, "type"):
+        where.append(model.type == item_type)
+    item = db.execute(select(model).where(*where)).scalars().first()
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
     item.soft_delete(utcnow())
@@ -206,7 +207,7 @@ def delete_item(
 
 
 def generate_report(
-    db: Session, project_id: uuid.UUID, Model, filters: dict
+    db: Session, project_id: uuid.UUID, model, filters: dict
 ) -> ScoreReportOut:
 
     item_type = filters.get("item_type")
@@ -215,8 +216,8 @@ def generate_report(
     def _filtered_query(stmt):
         """applies standard report filters to any base SELECT statement."""
         return apply_item_filters(
-            stmt.where(Model.project_id == project_id),
-            Model,
+            stmt.where(model.project_id == project_id),
+            model,
             search=filters.get("search"),
             item_type=item_type,
             min_score=filters.get("min_score"),
@@ -234,8 +235,8 @@ def generate_report(
     project_total = int(
         db.execute(
             apply_item_filters(
-                select(func.count(Model.id)).where(Model.project_id == project_id),
-                Model,
+                select(count(model.id)).where(model.project_id == project_id),
+                model,
                 search=None,
                 item_type=item_type,
                 min_score=None,
@@ -255,10 +256,10 @@ def generate_report(
     stats_row = db.execute(
         _filtered_query(
             select(
-                func.count(Model.id),
-                func.min(Model.score),
-                func.max(Model.score),
-                func.avg(Model.score),
+                count(model.id),
+                func.min(model.score),
+                func.max(model.score),
+                func.avg(model.score),
             )
         )
     ).one()
@@ -272,38 +273,38 @@ def generate_report(
     status_counts = {
         str(st or RiskStatus.concept.value): int(cnt or 0)
         for st, cnt in db.execute(
-            _filtered_query(select(Model.status, func.count(Model.id))).group_by(
-                Model.status
+            _filtered_query(select(model.status, count(model.id))).group_by(
+                model.status
             )
         ).all()
     }
 
     category_counts = {}
     for cat, cnt in db.execute(
-        _filtered_query(select(Model.category, func.count(Model.id))).group_by(
-            Model.category
+        _filtered_query(select(model.category, count(model.id))).group_by(
+            model.category
         )
     ).all():
         category_counts[cat or "(none)"] = int(cnt or 0)
 
     owner_counts = {}
     for owner_id, cnt in db.execute(
-        _filtered_query(select(Model.owner_user_id, func.count(Model.id))).group_by(
-            Model.owner_user_id
+        _filtered_query(select(model.owner_user_id, count(model.id))).group_by(
+            model.owner_user_id
         )
     ).all():
         owner_counts[str(owner_id) if owner_id else "(none)"] = int(cnt or 0)
 
     bucket = case(
-        (Model.score <= 4, "0-4"),
-        (Model.score <= 9, "5-9"),
-        (Model.score <= 14, "10-14"),
-        (Model.score <= 19, "15-19"),
+        (model.score <= 4, "0-4"),
+        (model.score <= 9, "5-9"),
+        (model.score <= 14, "10-14"),
+        (model.score <= 19, "15-19"),
         else_="20-25",
     )
     buckets = {"0-4": 0, "5-9": 0, "10-14": 0, "15-19": 0, "20-25": 0}
     for b, cnt in db.execute(
-        _filtered_query(select(bucket, func.count(Model.id))).group_by(bucket)
+        _filtered_query(select(bucket, count(model.id))).group_by(bucket)
     ).all():
         buckets[str(b)] = int(cnt or 0)
 

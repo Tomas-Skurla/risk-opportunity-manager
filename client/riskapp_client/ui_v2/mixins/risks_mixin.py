@@ -5,13 +5,55 @@ Filtering, table rendering, editor behavior, column sizing, and CSV export for r
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
+
+from PySide6.QtCore import QModelIndex
 from riskapp_client.adapters.local_storage import csv_data_exporter as export_csv
 from riskapp_client.services import entity_filters as filters
 from riskapp_client.ui_v2.mixins.scored_entity_mixin import ScoredEntityMixin
 
+if TYPE_CHECKING:
+    from PySide6.QtWidgets import (
+        QComboBox,
+        QLabel,
+        QLineEdit,
+        QSpinBox,
+        QTableWidget,
+        QTableWidgetItem,
+    )
+    from riskapp_client.domain.domain_models import Risk
+    from riskapp_client.ui_v2.components.custom_gui_widgets import RiskForm
+    from riskapp_client.ui_v2.tabs.risks_tab import RisksTab
+
 
 class RisksMixin(ScoredEntityMixin):
     """MainWindow mixin: RisksMixin"""
+
+    backend: Any
+    current_project_id: str | None
+    current_risk_id: str | None
+    editor_label: QLabel
+    filter_category: QLineEdit
+    filter_from: QLineEdit
+    filter_max_score: QSpinBox
+    filter_min_score: QSpinBox
+    filter_owner: QComboBox
+    filter_report: QLabel
+    filter_search: QLineEdit
+    filter_status: QComboBox
+    filter_to: QLineEdit
+    risk_form: RiskForm
+    risks_tab: RisksTab
+    risks_table: QTableWidget
+    _editor_dirty: bool
+    _risk_cache: dict[str, Risk]
+    _fit_table_to_contents: Callable[..., None]
+    _mk_item: Callable[..., QTableWidgetItem]
+    _refresh_action_risk_combo: Callable[[], None]
+    _refresh_actions: Callable[..., None]
+    _refresh_matrix: Callable[[], None]
+    _sync_assessment_state: Callable[..., None]
 
     def _export_risks_csv(self) -> None:
         self._export_entity_csv("risks.csv", self._risk_cache, export_csv.export_risks)
@@ -83,7 +125,7 @@ class RisksMixin(ScoredEntityMixin):
     def _commit_editor_changes(
         self, *, refresh: bool, select_id: str | None = None
     ) -> None:
-        def ref_cb(select_id):
+        def ref_cb(select_id: str | None) -> None:
             self._refresh_risks(select_id)
             self._refresh_matrix()
 
@@ -104,7 +146,7 @@ class RisksMixin(ScoredEntityMixin):
         self.risk_form.set_values(title="", probability=3, impact=3)
         self._editor_dirty = False
         self.risks_table.clearSelection()
-        self.risks_table.setCurrentItem(None)
+        self.risks_table.setCurrentIndex(QModelIndex())
         self._sync_assessment_state("risk", None, self.risks_tab)
 
     def _save_risk(self, payload: dict) -> None:
@@ -130,7 +172,7 @@ class RisksMixin(ScoredEntityMixin):
             self._sync_assessment_state("risk", saved_id, self.risks_tab)
 
     def _delete_risk(self) -> None:
-        def refresh_all():
+        def refresh_all() -> None:
             self._refresh_risks()
             self._refresh_action_risk_combo()
             self._refresh_actions()

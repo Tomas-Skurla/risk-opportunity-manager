@@ -27,6 +27,8 @@ flowchart TD
 | Persistence | SQLAlchemy models and session lifecycle | `server/riskapp_server/db/` |
 | Synchronization | Pull cursors, version checks, receipt deduplication, audit | `server/riskapp_server/sync/` |
 
+The main window owns an explicit `MainWindowState` object for selection and access context shared across mixins. Compatibility properties preserve the existing mixin surface, while feature-specific caches remain owned by their corresponding mixins.
+
 ## Offline synchronization invariants
 
 - Every local entity mutation and its outbox enqueue/replacement commit in one SQLite transaction. A failure in either write rolls back both.
@@ -37,7 +39,8 @@ flowchart TD
 - Synchronization failures are classified: transient network/408/429/5xx failures remain queued with bounded backoff, while authentication, permission, validation, and conflict outcomes are blocked for the appropriate user action.
 - Existing-row sync updates and deletes require `base_version` and claim it with a conditional version increment. SQLite begins each push with `BEGIN IMMEDIATE`; databases with row-level locking rely on the conditional update. A stale concurrent writer therefore becomes an explicit conflict.
 - Parent items are applied before child actions and assessments during pull.
-- Every pull uses an application-time upper bound that remains fixed across all pagination pages. This closes the between-page watermark gap; a database-backed monotonic change sequence would additionally remove reliance on `updated_at` tracking commit order.
+- Every syncable write advances a per-project database counter in the same transaction and stamps the row with that sequence. The counter row serializes concurrent writers until commit; rollback also rolls back the reservation.
+- New clients pull the interval `(since_sequence, server_sequence]`, with one fixed `server_sequence` across pagination. This makes the feed independent of wall-clock ordering. Timestamp watermarks remain only as a compatibility path for older clients.
 - Project-id promotion updates the complete local graph in one deferred-FK transaction and leaves foreign-key enforcement enabled.
 
 ## Security model
@@ -48,6 +51,7 @@ flowchart TD
 - Project RBAC is enforced in both REST routers and  the sync engine.
 - Production startup rejects default secrets, wildcard hosts, returned reset tokens, and wildcard credentialed CORS.
 - Request bodies and response bodies are bounded; exported CSV neutralizes formula prefixes.
+- API responses and application logs share a validated correlation ID; structured JSON logging is configurable without logging request bodies, query strings, or tokens.
 - The local SQLite cache relies on operating-system user isolation and restrictive file permissions. It is not encrypted at rest.
 
 ## Deliberate trade-offs

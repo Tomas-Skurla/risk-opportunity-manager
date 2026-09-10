@@ -2,16 +2,29 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, cast
+
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QMessageBox
+from PySide6.QtWidgets import QMessageBox, QTableWidgetItem, QWidget
 from riskapp_client.domain.domain_models import HelpDeskTicket
 
+if TYPE_CHECKING:
+    from riskapp_client.ui_v2.tabs.helpdesk_tab import HelpDeskTab
 
 class HelpDeskMixin:
     """MainWindow mixin: HelpDeskMixin
 
     Manages help-desk tickets via the backend (offline-first with server sync).
     """
+
+    backend: Any
+    current_project_id: str | None
+    helpdesk_tab: HelpDeskTab
+    _all_tickets: list[HelpDeskTicket]
+    _current_ticket_id: str | None
+    _mk_item: Callable[..., QTableWidgetItem]
+    _select_row_by_entity_id: Callable[..., None]
 
     # ---- public entry points (called from layout wiring) -------------------
 
@@ -60,7 +73,7 @@ class HelpDeskMixin:
         item = table.item(row, 0)
         if not item:
             return
-        ticket_id = item.data(Qt.UserRole)
+        ticket_id = item.data(Qt.ItemDataRole.UserRole)
         if not ticket_id:
             return
         self._current_ticket_id = str(ticket_id)
@@ -86,13 +99,14 @@ class HelpDeskMixin:
 
     def _save_helpdesk_ticket(self) -> None:
         """Create or update a ticket via the backend."""
+        parent = cast(QWidget, self)
         pid = self.current_project_id
         if not pid:
-            QMessageBox.warning(self, "Help Desk", "Select a project first.")
+            QMessageBox.warning(parent, "Help Desk", "Select a project first.")
             return
         title = self.helpdesk_tab.ticket_title.text().strip()
         if not title:
-            QMessageBox.warning(self, "Validation", "Title is required.")
+            QMessageBox.warning(parent, "Validation", "Title is required.")
             return
 
         category = self.helpdesk_tab.ticket_category.currentText()
@@ -124,29 +138,32 @@ class HelpDeskMixin:
                 )
                 self._current_ticket_id = ticket.id
         except (RuntimeError, OSError, ValueError) as exc:
-            QMessageBox.critical(self, "Help Desk", f"Save failed: {exc}")
+            QMessageBox.critical(parent, "Help Desk", f"Save failed: {exc}")
             return
 
         self._refresh_helpdesk()
 
     def _delete_helpdesk_ticket(self) -> None:
         """Delete the currently selected ticket via the backend."""
+        parent = cast(QWidget, self)
         if not self._current_ticket_id:
-            QMessageBox.information(self, "Help Desk", "No ticket selected.")
+            QMessageBox.information(parent, "Help Desk", "No ticket selected.")
             return
+        yes = QMessageBox.StandardButton.Yes
+        no = QMessageBox.StandardButton.No
         reply = QMessageBox.question(
-            self,
+            parent,
             "Confirm delete",
             "Permanently delete this ticket?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
+            yes | no,
+            no,
         )
-        if reply != QMessageBox.Yes:
+        if reply != yes:
             return
         try:
             self.backend.delete_helpdesk_ticket(self._current_ticket_id)
         except (RuntimeError, OSError) as exc:
-            QMessageBox.critical(self, "Help Desk", f"Delete failed: {exc}")
+            QMessageBox.critical(parent, "Help Desk", f"Delete failed: {exc}")
             return
         self._current_ticket_id = None
         self._start_new_helpdesk_ticket()

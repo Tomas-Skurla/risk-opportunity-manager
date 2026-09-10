@@ -2,15 +2,36 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING, Any, cast
 
 from PySide6.QtCore import QDateTime  # pylint: disable=no-name-in-module
-from PySide6.QtWidgets import QMessageBox  # pylint: disable=no-name-in-module
+from PySide6.QtWidgets import (  # pylint: disable=no-name-in-module
+    QDateTimeEdit,
+    QMessageBox,
+    QTableWidgetItem,
+    QWidget,
+)
 from riskapp_client.utils.roles import role_at_least
+
+if TYPE_CHECKING:
+    from riskapp_client.ui_v2.tabs.top_history_tab import TopHistoryTab
 
 
 class TopHistoryMixin:
     """Snapshot history mixin."""
+
+    backend: Any
+    current_project_id: str | None
+    current_role: str
+    top_tab: TopHistoryTab
+    _last_auto_snapshot_by_project: dict[str, datetime]
+    _detect_offline_mode: Callable[[], bool]
+    _dtedit_to_iso_utc_naive: Callable[[QDateTimeEdit], str]
+    _is_local_project: Callable[[], bool]
+    _mk_item: Callable[..., QTableWidgetItem]
+    _start_background_job: Callable[..., bool]
 
     def _history_job_payload(self, project_id: str) -> dict[str, object]:
         tab = self.top_tab
@@ -49,7 +70,9 @@ class TopHistoryMixin:
             return
         if not role_at_least(self.current_role, "manager"):
             QMessageBox.information(
-                self, "Not allowed", "You need manager role to create snapshot."
+                cast(QWidget, self),
+                "Not allowed",
+                "You need manager role to create snapshot.",
             )
             return
         days = int(tab.auto_snapshot_days.value())
@@ -91,12 +114,16 @@ class TopHistoryMixin:
             return
         if self._is_local_project():
             QMessageBox.information(
-                self, "Snapshots", "Sync this project to the server first."
+                cast(QWidget, self),
+                "Snapshots",
+                "Sync this project to the server first.",
             )
             return
         if not hasattr(self.backend, "create_snapshot"):
             QMessageBox.information(
-                self, "Snapshots", "This backend does not support snapshots."
+                cast(QWidget, self),
+                "Snapshots",
+                "This backend does not support snapshots.",
             )
             return
         payload = self._history_job_payload(str(pid))
@@ -112,13 +139,13 @@ class TopHistoryMixin:
                 automatic=False,
             ),
             on_failure=lambda message: QMessageBox.warning(
-                self,
+                cast(QWidget, self),
                 "Snapshot failed",
                 message,
             ),
         ):
             QMessageBox.information(
-                self,
+                cast(QWidget, self),
                 "Snapshots",
                 "Another background operation is already running.",
             )
@@ -141,7 +168,7 @@ class TopHistoryMixin:
             self._history_job_payload(str(pid)),
             on_success=self._history_succeeded,
             on_failure=lambda message: QMessageBox.warning(
-                self,
+                cast(QWidget, self),
                 "Top history failed",
                 message,
             ),

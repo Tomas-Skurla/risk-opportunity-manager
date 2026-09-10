@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
+from typing import Any, cast
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QFileDialog, QMessageBox
+from PySide6.QtWidgets import QFileDialog, QMessageBox, QWidget
 from riskapp_client.ui_v2.mixins.scored_entities_ui_helpers import (
     date_bounds,
     form_values_for_entity,
@@ -18,11 +20,20 @@ from riskapp_client.utils.normalize import norm_optional_text_fields
 class ScoredEntityMixin:
     """A unified mixin for Risks and Opportunities"""
 
+    current_project_id: str | None
+    _call_backend: Callable[..., Any]
+    _can_mark_deleted: Callable[[], bool]
+    _select_row_by_entity_id: Callable[..., None]
+    _update_scored_filter_report: Callable[..., None]
+
     def _export_entity_csv(self, filename: str, cache: dict, export_fn) -> None:
         if not self.current_project_id:
             return
         path, _ = QFileDialog.getSaveFileName(
-            self, f"Export {filename}", filename, "CSV Files (*.csv)"
+            cast(QWidget, self),
+            f"Export {filename}",
+            filename,
+            "CSV Files (*.csv)",
         )
         if path:
             rows = list(cache.values())
@@ -123,7 +134,7 @@ class ScoredEntityMixin:
         t_it = table.item(row, 1)
         if not t_it:
             return None
-        clicked_id = str(t_it.data(Qt.UserRole))
+        clicked_id = str(t_it.data(Qt.ItemDataRole.UserRole))
         if not clicked_id:
             return None
         if editor_dirty and current_id and current_id != clicked_id:
@@ -154,9 +165,9 @@ class ScoredEntityMixin:
         st = str(payload.get("status") or "").strip().lower()
         if st == "deleted" and hasattr(self, "_can_mark_deleted"):
             try:
-                if not self._can_mark_deleted():  # type: ignore[attr-defined]
+                if not self._can_mark_deleted():
                     QMessageBox.warning(
-                        self,
+                        cast(QWidget, self),
                         "Not allowed",
                         "Only managers (or admins) can mark an item as deleted.",
                     )
@@ -184,14 +195,16 @@ class ScoredEntityMixin:
         pid = self.current_project_id
         if not pid:
             return
+        yes = QMessageBox.StandardButton.Yes
+        no = QMessageBox.StandardButton.No
         reply = QMessageBox.question(
-            self,
+            cast(QWidget, self),
             "Confirm Deletion",
             "Are you sure you want to completely delete this item? This cannot be undone.",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
+            yes | no,
+            no,
         )
-        if reply == QMessageBox.Yes:
+        if reply == yes:
             self._call_backend("Backend error", delete_backend_fn, pid, current_id)
             start_new_fn()
             refresh_fn()
@@ -210,7 +223,11 @@ class ScoredEntityMixin:
     ) -> str | None:
         pid = self.current_project_id
         if not pid:
-            QMessageBox.warning(self, "No project", "Select a project first.")
+            QMessageBox.warning(
+                cast(QWidget, self),
+                "No project",
+                "Select a project first.",
+            )
             return None
         data = dict(payload or {})
         title = (data.pop("title", "") or "").strip()
@@ -237,9 +254,9 @@ class ScoredEntityMixin:
         st = str(data.get("status") or "").strip().lower()
         if st == "deleted" and hasattr(self, "_can_mark_deleted"):
             try:
-                if not self._can_mark_deleted():  # type: ignore[attr-defined]
+                if not self._can_mark_deleted():
                     QMessageBox.warning(
-                        self,
+                        cast(QWidget, self),
                         "Not allowed",
                         "Only managers (or admins) can mark an item as deleted.",
                     )

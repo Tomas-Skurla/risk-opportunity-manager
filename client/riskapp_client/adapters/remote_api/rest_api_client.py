@@ -65,6 +65,24 @@ def _build_api_opener(base_url: str):
     return urllib.request.build_opener(*handlers)
 
 
+def _http_request(
+    url: str,
+    *,
+    data: bytes | None,
+    headers: dict[str, str],
+    method: str,
+) -> urllib.request.Request:
+    """Construct a request only after excluding non-HTTP URL schemes."""
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("request URL must use HTTP or HTTPS and include a host")
+    if parsed.username or parsed.password or parsed.fragment:
+        raise ValueError("request URL must not include credentials or a fragment")
+    return urllib.request.Request(  # noqa: S310 -- scheme checked above
+        url, data=data, headers=headers, method=method
+    )
+
+
 class _SameOriginRedirectHandler(urllib.request.HTTPRedirectHandler):
 
     def __init__(self, *, allowed_scheme: str, allowed_netloc: str) -> None:
@@ -112,6 +130,34 @@ class ApiError(RuntimeError):
         super().__init__(f"HTTP {status}: {detail}")
         self.status = status
         self.detail = detail
+
+
+def _require_object_list(
+    payload: object | None,
+    item_name: str,
+) -> list[dict[str, Any]]:
+    """Validate that an API response is a list of JSON objects."""
+    if payload is None:
+        return []
+    if not isinstance(payload, list):
+        raise ApiError(0, f"Server returned an invalid {item_name} list")
+
+    records: list[dict[str, Any]] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            raise ApiError(0, f"Server returned an invalid {item_name} record")
+        records.append(item)
+    return records
+
+
+def _require_object(
+    payload: object | None,
+    item_name: str,
+) -> dict[str, Any]:
+    """Validate that an API response is one JSON object."""
+    if not isinstance(payload, dict):
+        raise ApiError(0, f"Server returned an invalid {item_name} response")
+    return payload
 
 
 def _read_limited(response, *, status: int = 0) -> bytes:
@@ -171,7 +217,7 @@ def register_account(
             urllib.request.HTTPSHandler(context=ssl.create_default_context()),
         )
     opener = urllib.request.build_opener(*handlers)
-    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    req = _http_request(url, data=data, headers=headers, method="POST")
     try:
         with opener.open(req, timeout=timeout_s) as resp:
             payload = _load_json(_read_limited(resp))
@@ -205,10 +251,6 @@ class ApiBackend:
         self.email = email
         self.timeout_s = timeout_s
         self._auth_state = _AuthState()
-        self.user_id: str | None = None
-        self.token: str | None = None
-        self.refresh_token: str | None = None
-        self.is_superuser: bool = False
         self._login(password)
         self._fetch_me()
 
@@ -279,8 +321,11 @@ class ApiBackend:
         clone.base_url = self.base_url
         clone.email = self.email
         clone.timeout_s = self.timeout_s
+        # This method initializes another instance of the same class without logging in.
+        # pylint: disable=protected-access
         clone._auth_state = self._get_auth_state()
         clone._opener = _build_api_opener(clone.base_url)
+        # pylint: enable=protected-access
         return clone
 
     def _req(
@@ -316,7 +361,7 @@ class ApiBackend:
         elif form_body is not None:
             data = urllib.parse.urlencode(form_body).encode("utf-8")
             headers["Content-Type"] = "application/x-www-form-urlencoded"
-        req = urllib.request.Request(url, data=data, headers=headers, method=method_up)
+        req = _http_request(url, data=data, headers=headers, method=method_up)
         try:
             with self._opener.open(req, timeout=self.timeout_s) as resp:
                 content_type = (
@@ -357,37 +402,59 @@ class ApiBackend:
             raise ApiError(0, f"Cannot reach server: {exc}") from exc
 
     def _login(self, password: str) -> None:
-        j = self._req(
+        payload = self._req(
             "POST",
             "/login",
             form_body={"username": self.email, "password": password},
             auth=False,
         )
-        token = (j or {}).get("access_token")
-        if not token:
-            raise ApiError(401, f"Login failed: {j}")
+
+        if not isinstance(payload, dict):
+            raise ApiError(0, "Server returned an invalid login response")
+
+        token = payload.get("access_token")
+        if not isinstance(token, str) or not token:
+            raise ApiError(401, f"Login failed: {payload}")
+
+        refresh_token = payload.get("refresh_token")
+        if refresh_token is not None and not isinstance(refresh_token, str):
+            raise ApiError(0, "Server returned an invalid refresh token")
+
         self.token = token
-        self.refresh_token = (j or {}).get("refresh_token")
+        self.refresh_token = refresh_token
         self.user_id = _jwt_sub(token)
 
     def _refresh_access_token(self) -> None:
         state = self._get_auth_state()
+
         with state.lock:
             if not state.refresh_token:
                 raise ApiError(401, "Missing refresh token")
-            j = self._req(
+
+            payload = self._req(
                 "POST",
                 "/refresh",
                 json_body={"refresh_token": state.refresh_token},
                 auth=False,
                 _retry_on_401=False,
             )
-            token = (j or {}).get("access_token")
-            if not token:
-                raise ApiError(401, f"Refresh failed: {j}")
+
+            if not isinstance(payload, dict):
+                raise ApiError(0, "Server returned an invalid refresh response")
+
+            token = payload.get("access_token")
+            if not isinstance(token, str) or not token:
+                raise ApiError(401, f"Refresh failed: {payload}")
+
+            rotated_refresh_token = payload.get("refresh_token")
+            if rotated_refresh_token is not None and not isinstance(
+                rotated_refresh_token, str
+            ):
+                raise ApiError(0, "Server returned an invalid rotated refresh token")
+
             state.token = token
-            if (j or {}).get("refresh_token"):
-                state.refresh_token = (j or {}).get("refresh_token")
+            if rotated_refresh_token:
+                state.refresh_token = rotated_refresh_token
             state.user_id = _jwt_sub(token)
 
     def _fetch_me(self) -> None:
@@ -398,7 +465,7 @@ class ApiBackend:
         except (ValueError, TypeError):
             self.is_superuser = False
 
-    def _to_project(self, j) -> Project:
+    def _to_project(self, j: dict[str, Any]) -> Project:
         return Project(
             id=str(j["id"]),
             name=j.get("name", ""),
@@ -406,13 +473,13 @@ class ApiBackend:
             created_by=str(j.get("created_by") or ""),
         )
 
-    def _to_risk(self, j) -> Risk:
+    def _to_risk(self, j: dict[str, Any]) -> Risk:
         return scored_entity_from_mapping(j, model_cls=Risk)
 
-    def _to_opportunity(self, j) -> Opportunity:
+    def _to_opportunity(self, j: dict[str, Any]) -> Opportunity:
         return scored_entity_from_mapping(j, model_cls=Opportunity)
 
-    def _to_action(self, j) -> Action:
+    def _to_action(self, j: dict[str, Any]) -> Action:
         return action_from_mapping(j)
 
     def _to_ticket(self, j: dict) -> HelpDeskTicket:
@@ -452,8 +519,11 @@ class ApiBackend:
         return urllib.parse.urlencode(params)
 
     def list_projects(self) -> list[Project]:
-        j = self._req("GET", "/projects")
-        return [self._to_project(x) for x in (j or [])]
+        payload = self._req("GET", "/projects")
+        return [
+            self._to_project(item)
+            for item in _require_object_list(payload, "project")
+        ]
 
     def create_project(self, *, name: str, description: str = "") -> Project:
         """Create a project on the server.
@@ -462,14 +532,14 @@ class ApiBackend:
         to a real server project.
         """
         body = {"name": str(name or "Project"), "description": str(description or "")}
-        j = self._req("POST", "/projects", json_body=body)
-        return self._to_project(j)
+        payload = self._req("POST", "/projects", json_body=body)
+        return self._to_project(_require_object(payload, "project"))
 
     def delete_project(self, project_id: str) -> None:
         """Permanently delete a project on the server (superadmin only)."""
         self._req("DELETE", f"/projects/{project_id}")
 
-    def _to_assessment(self, j) -> Assessment:
+    def _to_assessment(self, j: dict[str, Any]) -> Assessment:
         return assessment_from_mapping(j)
 
     # --- Opportunities ---
@@ -501,8 +571,11 @@ class ApiBackend:
         )
 
         path = f"/projects/{project_id}/opportunities" + (f"?{qs}" if qs else "")
-        j = self._req("GET", path)
-        return [self._to_opportunity(x) for x in (j or [])]
+        payload = self._req("GET", path)
+        return [
+            self._to_opportunity(item)
+            for item in _require_object_list(payload, "opportunity")
+        ]
 
     def opportunities_report(
         self,
@@ -530,14 +603,19 @@ class ApiBackend:
             to_date=to_date,
         )
         path = f"/projects/{project_id}/opportunities/report" + (f"?{qs}" if qs else "")
-        return dict(self._req("GET", path) or {})
+        payload = self._req("GET", path)
+        if payload is None:
+            return {}
+        return dict(_require_object(payload, "opportunity report"))
 
     def create_opportunity(
         self, project_id: str, *, title: str, probability: int, impact: int, **meta
     ) -> Opportunity:
         body = self._build_scored_payload(title, probability, impact, meta)
-        j = self._req("POST", f"/projects/{project_id}/opportunities", json_body=body)
-        return self._to_opportunity(j)
+        payload = self._req(
+            "POST", f"/projects/{project_id}/opportunities", json_body=body
+        )
+        return self._to_opportunity(_require_object(payload, "opportunity"))
 
     def update_opportunity(
         self,
@@ -556,12 +634,12 @@ class ApiBackend:
         if base_version is not None:
             body["base_version"] = int(base_version)
 
-        j = self._req(
+        payload = self._req(
             "PATCH",
             f"/projects/{project_id}/opportunities/{opportunity_id}",
             json_body=body,
         )
-        return self._to_opportunity(j)
+        return self._to_opportunity(_require_object(payload, "opportunity"))
 
     def delete_opportunity(self, project_id: str, opportunity_id: str) -> None:
         self._req(
@@ -573,8 +651,13 @@ class ApiBackend:
         self, project_id: str, item_type: str, item_id: str
     ) -> list[Assessment]:
         prefix = "risks" if item_type == "risk" else "opportunities"
-        j = self._req("GET", f"/projects/{project_id}/{prefix}/{item_id}/assessments")
-        return [self._to_assessment(x) for x in (j or [])]
+        payload = self._req(
+            "GET", f"/projects/{project_id}/{prefix}/{item_id}/assessments"
+        )
+        return [
+            self._to_assessment(item)
+            for item in _require_object_list(payload, "assessment")
+        ]
 
     def upsert_my_assessment(
         self,
@@ -586,7 +669,7 @@ class ApiBackend:
         notes: str | None = None,
     ) -> Assessment:
         prefix = "risks" if item_type == "risk" else "opportunities"
-        j = self._req(
+        payload = self._req(
             "PUT",
             f"/projects/{project_id}/{prefix}/{item_id}/assessment",
             json_body={
@@ -595,7 +678,7 @@ class ApiBackend:
                 "notes": (notes or ""),
             },
         )
-        return self._to_assessment(j)
+        return self._to_assessment(_require_object(payload, "assessment"))
 
     def current_user_id(self) -> str | None:
         return self.user_id
@@ -628,8 +711,8 @@ class ApiBackend:
             to_date=to_date,
         )
         path = f"/projects/{project_id}/risks" + (f"?{qs}" if qs else "")
-        j = self._req("GET", path)
-        return [self._to_risk(x) for x in (j or [])]
+        payload = self._req("GET", path)
+        return [self._to_risk(item) for item in _require_object_list(payload, "risk")]
 
     def risks_report(
         self,
@@ -657,14 +740,17 @@ class ApiBackend:
             to_date=to_date,
         )
         path = f"/projects/{project_id}/risks/report" + (f"?{qs}" if qs else "")
-        return dict(self._req("GET", path) or {})
+        payload = self._req("GET", path)
+        if payload is None:
+            return {}
+        return dict(_require_object(payload, "risk report"))
 
     def create_risk(
         self, project_id: str, *, title: str, probability: int, impact: int, **meta
     ) -> Risk:
         body = self._build_scored_payload(title, probability, impact, meta)
-        j = self._req("POST", f"/projects/{project_id}/risks", json_body=body)
-        return self._to_risk(j)
+        payload = self._req("POST", f"/projects/{project_id}/risks", json_body=body)
+        return self._to_risk(_require_object(payload, "risk"))
 
     def update_risk(
         self,
@@ -682,10 +768,10 @@ class ApiBackend:
         if base_version is not None:
             body["base_version"] = int(base_version)
 
-        j = self._req(
+        payload = self._req(
             "PATCH", f"/projects/{project_id}/risks/{risk_id}", json_body=body
         )
-        return self._to_risk(j)
+        return self._to_risk(_require_object(payload, "risk"))
 
     def delete_risk(self, project_id: str, risk_id: str) -> None:
         self._req("DELETE", f"/projects/{project_id}/risks/{risk_id}")
@@ -695,13 +781,19 @@ class ApiBackend:
         project_id: str,
         since_iso: str,
         *,
+        since_sequence: int | None = None,
         limit_per_entity: int | None = None,
         cursors: dict[str, str] | None = None,
         snapshot_time: str | None = None,
+        snapshot_sequence: int | None = None,
     ):
         body: dict[str, object] = {"project_id": project_id, "since": since_iso}
+        if since_sequence is not None:
+            body["since_sequence"] = int(since_sequence)
         if snapshot_time is not None:
             body["snapshot_time"] = snapshot_time
+        if snapshot_sequence is not None:
+            body["snapshot_sequence"] = int(snapshot_sequence)
         if limit_per_entity is not None:
             body["limit_per_entity"] = int(limit_per_entity)
             if cursors:
@@ -726,8 +818,10 @@ class ApiBackend:
         return self._req("GET", f"/projects/{project_id}/snapshots/latest?{qs}")
 
     def list_actions(self, project_id: str) -> list[Action]:
-        j = self._req("GET", f"/projects/{project_id}/actions")
-        return [self._to_action(x) for x in (j or [])]
+        payload = self._req("GET", f"/projects/{project_id}/actions")
+        return [
+            self._to_action(item) for item in _require_object_list(payload, "action")
+        ]
 
     def create_action(
         self,
@@ -754,8 +848,8 @@ class ApiBackend:
         else:
             body["opportunity_id"] = target_id
 
-        j = self._req("POST", f"/projects/{project_id}/actions", json_body=body)
-        return self._to_action(j)
+        payload = self._req("POST", f"/projects/{project_id}/actions", json_body=body)
+        return self._to_action(_require_object(payload, "action"))
 
     def update_action(
         self,
@@ -785,10 +879,10 @@ class ApiBackend:
             body["risk_id"] = None
             body["opportunity_id"] = target_id
 
-        j = self._req(
+        payload = self._req(
             "PATCH", f"/projects/{project_id}/actions/{action_id}", json_body=body
         )
-        return self._to_action(j)
+        return self._to_action(_require_object(payload, "action"))
 
     def top_history(
         self,
@@ -808,16 +902,16 @@ class ApiBackend:
         return self._req("GET", f"/projects/{project_id}/top-history?{qs}")
 
     def list_members(self, project_id: str) -> list[Member]:
-        j = self._req("GET", f"/projects/{project_id}/members")
+        payload = self._req("GET", f"/projects/{project_id}/members")
         out: list[Member] = []
-        for m in j or []:
+        for member_data in _require_object_list(payload, "member"):
             out.append(
                 Member(
-                    user_id=str(m.get("user_id") or ""),
-                    email=str(m.get("email") or ""),
-                    role=str(m.get("role") or ""),
-                    is_superuser=bool(m.get("is_superuser", False)),
-                    created_at=str(m.get("created_at") or "") or None,
+                    user_id=str(member_data.get("user_id") or ""),
+                    email=str(member_data.get("email") or ""),
+                    role=str(member_data.get("role") or ""),
+                    is_superuser=bool(member_data.get("is_superuser", False)),
+                    created_at=str(member_data.get("created_at") or "") or None,
                 )
             )
         return out
@@ -835,8 +929,20 @@ class ApiBackend:
     # --- Help Desk ----------------------------------------------------------
 
     def list_helpdesk_tickets(self, project_id: str) -> list[HelpDeskTicket]:
-        j = self._req("GET", f"/projects/{project_id}/helpdesk/tickets")
-        return [self._to_ticket(x) for x in (j or [])]
+        payload = self._req("GET", f"/projects/{project_id}/helpdesk/tickets")
+
+        if payload is None:
+            return []
+        if not isinstance(payload, list):
+            raise ApiError(0, "Server returned an invalid help-desk ticket list")
+
+        tickets: list[HelpDeskTicket] = []
+        for item in payload:
+            if not isinstance(item, dict):
+                raise ApiError(0, "Server returned an invalid help-desk ticket record")
+            tickets.append(self._to_ticket(item))
+
+        return tickets
 
     def create_helpdesk_ticket(
         self,
@@ -855,10 +961,10 @@ class ApiBackend:
             "priority": priority,
             "reporter_email": reporter_email,
         }
-        j = self._req(
+        payload = self._req(
             "POST", f"/projects/{project_id}/helpdesk/tickets", json_body=body
         )
-        return self._to_ticket(j)
+        return self._to_ticket(_require_object(payload, "help-desk ticket"))
 
     def update_helpdesk_ticket(
         self,
@@ -882,12 +988,12 @@ class ApiBackend:
             body["priority"] = priority
         if status is not None:
             body["status"] = status
-        j = self._req(
+        payload = self._req(
             "PATCH",
             f"/projects/{project_id}/helpdesk/tickets/{ticket_id}",
             json_body=body,
         )
-        return self._to_ticket(j)
+        return self._to_ticket(_require_object(payload, "help-desk ticket"))
 
     def delete_helpdesk_ticket(self, project_id: str, ticket_id: str) -> None:
         self._req("DELETE", f"/projects/{project_id}/helpdesk/tickets/{ticket_id}")

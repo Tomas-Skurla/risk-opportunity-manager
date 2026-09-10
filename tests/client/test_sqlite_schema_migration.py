@@ -158,3 +158,26 @@ def test_existing_outbox_gains_failure_and_result_columns(tmp_path) -> None:
         assert "retry_count" in columns
         assert "next_retry_at" in columns
         assert "last_attempt_at" in columns
+
+
+def test_existing_sync_state_gains_a_zero_sequence_watermark(tmp_path) -> None:
+    db_file = tmp_path / "legacy-sync-state.db"
+    with sqlite3.connect(db_file) as connection:
+        connection.execute(
+            """
+            CREATE TABLE sync_state (
+                project_id TEXT PRIMARY KEY,
+                last_server_time TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "INSERT INTO sync_state VALUES (?, ?)",
+            ("project-1", "2026-01-01T00:00:00"),
+        )
+
+    from riskapp_client.adapters.local_storage.sqlite_data_store import LocalStore
+
+    with LocalStore(str(db_file)) as store:
+        assert store.get_last_server_time("project-1") == "2026-01-01T00:00:00"
+        assert store.get_last_server_sequence("project-1") == 0

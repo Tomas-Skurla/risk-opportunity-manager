@@ -116,6 +116,41 @@ def test_paginated_pull_requires_one_stable_snapshot(pages, message) -> None:
         service._pull_paginated("project-1", "since")
 
 
+def test_paginated_pull_requires_one_stable_sequence_snapshot() -> None:
+    remote = Mock()
+    service = SyncService(Mock(), Mock(), remote)
+    remote.sync_pull.side_effect = [
+        {
+            **_empty_pull(),
+            "server_sequence": 4,
+            "has_more": {"risks": True},
+            "cursors": {"risks": "seq:3"},
+        },
+        {
+            **_empty_pull(),
+            "server_sequence": 5,
+            "has_more": {"risks": False},
+            "cursors": {},
+        },
+    ]
+
+    with pytest.raises(RuntimeError, match="sequence snapshot changed"):
+        service._pull_paginated("project-1", "since", since_sequence=2)
+
+    assert remote.sync_pull.call_args_list[1].kwargs["snapshot_sequence"] == 4
+
+
+@pytest.mark.parametrize("value", [True, "1", -1, 1.5])
+def test_server_sequence_must_be_a_nonnegative_integer(value: object) -> None:
+    with pytest.raises(RuntimeError, match="invalid server_sequence"):
+        SyncService._validated_server_sequence({"server_sequence": value})
+
+
+def test_missing_server_sequence_keeps_legacy_server_compatibility() -> None:
+    assert SyncService._validated_server_sequence({}) is None
+    assert SyncService._validated_server_sequence({"server_sequence": 0}) == 0
+
+
 @pytest.mark.parametrize(
     "pagination",
     [

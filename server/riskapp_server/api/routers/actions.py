@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy import select
@@ -11,6 +12,7 @@ from riskapp_server.core.items_crud import delete_item
 from riskapp_server.core.permissions import ensure_member, require_min_role
 from riskapp_server.db.session import (
     Action,
+    ActionKind,
     ActionStatus,
     Item,
     Role,
@@ -30,13 +32,22 @@ def _resolve_target(
     risk_id: uuid.UUID | None,
     opportunity_id: uuid.UUID | None,
 ) -> tuple[uuid.UUID, str]:
-    if bool(risk_id) == bool(opportunity_id):
+    if risk_id is not None:
+        if opportunity_id is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="Provide exactly one of risk_id or opportunity_id",
+            )
+        item_id = risk_id
+        expected_type = "risk"
+    elif opportunity_id is not None:
+        item_id = opportunity_id
+        expected_type = "opportunity"
+    else:
         raise HTTPException(
             status_code=400,
             detail="Provide exactly one of risk_id or opportunity_id",
         )
-    item_id = risk_id or opportunity_id
-    expected_type = "risk" if risk_id else "opportunity"
 
     item_type = db.execute(
         select(Item.type).where(
@@ -55,16 +66,16 @@ def _resolve_target(
     return item_id, expected_type
 
 
-def _action_out(action: Action, *, target_type: str) -> dict:
+def _action_out(action: Action, *, target_type: str) -> dict[str, Any]:
     return ActionOut(
         id=action.id,
         project_id=action.project_id,
         risk_id=action.item_id if target_type == "risk" else None,
         opportunity_id=action.item_id if target_type == "opportunity" else None,
-        kind=action.kind,
+        kind=ActionKind(action.kind),
         title=action.title,
         description=action.description,
-        status=action.status,
+        status=ActionStatus(action.status),
         owner_user_id=action.owner_user_id,
         updated_at=action.updated_at,
         version=action.version,
@@ -80,7 +91,7 @@ def create_action(
     payload: ActionCreate,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
-) -> dict:
+) -> dict[str, Any]:
     require_min_role(db, project_id, user.id, min_role=Role.member)
 
     item_id, target_type = _resolve_target(
@@ -95,14 +106,12 @@ def create_action(
         id=uuid.uuid4(),
         project_id=project_id,
         item_id=item_id,
-        kind=(
-            payload.kind.value if hasattr(payload.kind, "value") else str(payload.kind)
-        ),
+        kind=payload.kind.value,
         title=payload.title,
         description=payload.description,
         status=(
             payload.status.value
-            if getattr(payload, "status", None) is not None
+            if payload.status is not None
             else ActionStatus.open.value
         ),
         owner_user_id=payload.owner_user_id,
@@ -123,7 +132,7 @@ def list_actions(
     project_id: uuid.UUID,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     ensure_member(db, project_id, user.id)
     rows = db.execute(
         select(Action, Item.type)
@@ -141,7 +150,7 @@ def update_action(
     payload: ActionUpdate,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
-) -> dict:
+) -> dict[str, Any]:
     require_min_role(db, project_id, user.id, min_role=Role.member)
 
     action = (

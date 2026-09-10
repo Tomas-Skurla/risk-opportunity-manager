@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import Any
 
 from riskapp_client.adapters.local_storage.sqlite_data_store import LocalStore, utc_iso
@@ -39,7 +39,8 @@ class SyncService:
             return
         try:
             progress(message)
-        except Exception:  # noqa: BLE001 - UI reporting must not break sync
+        # UI callbacks are external to the sync operation and must not abort it.
+        except Exception:  # noqa: BLE001  # pylint: disable=W0718
             logging.getLogger(__name__).debug(
                 "Synchronization progress callback failed",
                 exc_info=True,
@@ -49,6 +50,16 @@ class SyncService:
     def _check_cancel(should_cancel: Callable[[], bool] | None) -> None:
         if should_cancel is not None and should_cancel():
             raise _SyncCancelled
+
+    @staticmethod
+    def _validated_server_sequence(response: dict[str, Any]) -> int | None:
+        raw = response.get("server_sequence")
+        if raw is None:
+            # Compatibility with servers predating the sequence protocol.
+            return None
+        if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+            raise RuntimeError("Synchronization returned an invalid server_sequence")
+        return raw
 
     def pending_count(self, project_id: str | None = None) -> int:
         return self._outbox.pending_count(project_id)
@@ -209,8 +220,14 @@ class SyncService:
             project_id = str(conflict["project_id"])
 
             if choice == "keep_mine":
+                raw_server_version = conflict.get("server_version")
+                if raw_server_version is None:
+                    raise RuntimeError(
+                        "The current server version is unavailable; leave this "
+                        "conflict blocked for later."
+                    )
                 try:
-                    server_version = int(conflict.get("server_version"))
+                    server_version = int(raw_server_version)
                 except (TypeError, ValueError) as exc:
                     raise RuntimeError(
                         "The current server version is unavailable; leave this "
@@ -225,7 +242,9 @@ class SyncService:
                     str(change_id), target_version
                 )
                 if not replacement_id:
-                    raise RuntimeError("The conflict disappeared before it was resolved")
+                    raise RuntimeError(
+                        "The conflict disappeared before it was resolved"
+                    )
                 return {
                     "change_id": str(change_id),
                     "replacement_change_id": replacement_id,
@@ -240,7 +259,7 @@ class SyncService:
             self._apply_server_record(conflict, server_record)
             # The saved conflict record is a point-in-time copy. Rewind the
             # watermark so the next sync cannot miss a newer server update.
-            self._store.set_last_server_time(project_id, _SYNC_EPOCH)
+            self._store.reset_sync_watermark(project_id, _SYNC_EPOCH)
             return {
                 "change_id": str(change_id),
                 "resolution": choice,
@@ -249,9 +268,11 @@ class SyncService:
             }
 
     def _extract_change_ids(self, items: object) -> list[str]:
+        if not isinstance(items, Iterable):
+            return []
         return [
             str(it.get("change_id"))
-            for it in (items or [])
+            for it in items
             if isinstance(it, dict) and it.get("change_id")
         ]
 
@@ -356,7 +377,9 @@ class SyncService:
         ]
         try:
             resp = self._push_once(project_id, changes)
-        except Exception as exc:  # noqa: BLE001
+        # Remote adapters expose different transport exception classes; the
+        # shared failure normalizer re-raises exceptions it cannot classify.
+        except Exception as exc:  # noqa: BLE001  # pylint: disable=W0718
             failure = self._request_failure(exc, phase="push")
             return 0, [], self._record_request_failure(sent_ids, failure)
         if not isinstance(resp, dict):
@@ -519,29 +542,38 @@ class SyncService:
                 return cancelled()
 
         since = self._store.get_last_server_time(effective_project_id)
+        since_sequence = self._store.get_last_server_sequence(effective_project_id)
 
         self._notify_progress(progress, "Pulling server changes")
         try:
             self._check_cancel(should_cancel)
-            pull = self._remote.sync_pull(effective_project_id, since)
+            pull = self._remote.sync_pull(
+                effective_project_id,
+                since,
+                since_sequence=since_sequence,
+            )
             self._check_cancel(should_cancel)
         except _SyncCancelled:
             return cancelled()
-        except Exception as exc:  # noqa: BLE001
+        # Keep pull fallback independent of the concrete remote adapter while
+        # re-raising failures that do not carry a recognizable status.
+        except Exception as exc:  # noqa: BLE001  # pylint: disable=W0718
             status = getattr(exc, "status", None)
             if int(status or 0) == 413:
                 try:
                     pull = self._pull_paginated(
                         effective_project_id,
                         since,
+                        since_sequence,
                         should_cancel=should_cancel,
                         progress=progress,
                     )
                 except _SyncCancelled:
                     return cancelled()
-                except Exception as paginated_exc:  # noqa: BLE001
+                # Paginated adapters share the same status-based failure contract.
+                except Exception as page_exc:  # noqa: BLE001  # pylint: disable=W0718
                     failure = self._request_failure(
-                        paginated_exc, phase="pull"
+                        page_exc, phase="pull"
                     )
                     summary["state"] = self._state_for_failure_kind(
                         str(failure["failure_kind"])
@@ -557,6 +589,7 @@ class SyncService:
                 return self._finish_summary(summary, effective_project_id)
 
         server_time = str(pull.get("server_time") or utc_iso())
+        server_sequence = self._validated_server_sequence(pull)
         # Apply parent items before child records. This lets assessment pulls
         # that only contain item_id be classified as risk vs opportunity.
         for key in ("risks", "opportunities", "actions", "assessments"):
@@ -588,7 +621,11 @@ class SyncService:
         summary["pulled_helpdesk_tickets"] = len(helpdesk_items)
 
         self._notify_progress(progress, "Finalizing synchronization")
-        self._store.set_last_server_time(effective_project_id, server_time)
+        self._store.set_sync_watermark(
+            effective_project_id,
+            server_time,
+            server_sequence,
+        )
         return self._finish_summary(summary, effective_project_id)
 
     def _promote_local_project(self, local_project_id: str) -> str | None:
@@ -645,17 +682,26 @@ class SyncService:
         self,
         project_id: str,
         since: str,
+        since_sequence: int = 0,
         *,
         should_cancel: Callable[[], bool] | None = None,
         progress: Callable[[str], None] | None = None,
     ) -> dict[str, Any]:
+        remote = self._remote
+        if remote is None:
+            raise RuntimeError(
+                "No server configured (start the app online at least once)."
+            )
 
         limit = 2000
         cursors: dict[str, str] = {}
         snapshot_time: str | None = None
+        snapshot_sequence: int | None = None
+        sequence_snapshot_initialized = False
 
         merged: dict[str, Any] = {
             "server_time": None,
+            "server_sequence": None,
             "risks": [],
             "opportunities": [],
             "actions": [],
@@ -671,12 +717,14 @@ class SyncService:
                 progress,
                 f"Downloading synchronization page {page_number}",
             )
-            resp = self._remote.sync_pull(
+            resp = remote.sync_pull(
                 project_id,
                 since,
+                since_sequence=since_sequence,
                 limit_per_entity=limit,
                 cursors=cursors or None,
                 snapshot_time=snapshot_time,
+                snapshot_sequence=snapshot_sequence,
             )
             self._check_cancel(should_cancel)
             page_snapshot = str(resp.get("server_time") or "")
@@ -687,6 +735,16 @@ class SyncService:
                 merged["server_time"] = page_snapshot
             elif page_snapshot != snapshot_time:
                 raise RuntimeError("Sync pagination snapshot changed between pages")
+
+            page_sequence = self._validated_server_sequence(resp)
+            if not sequence_snapshot_initialized:
+                snapshot_sequence = page_sequence
+                merged["server_sequence"] = page_sequence
+                sequence_snapshot_initialized = True
+            elif page_sequence != snapshot_sequence:
+                raise RuntimeError(
+                    "Sync pagination sequence snapshot changed between pages"
+                )
             for key in (
                 "risks",
                 "opportunities",

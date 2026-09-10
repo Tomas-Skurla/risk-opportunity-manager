@@ -1,22 +1,40 @@
 """MainWindow mixin for the risk matrix view.
 
-Computes and renders 5×5 count matrices from current risks/opportunities.
+Computes and renders 5x5 count matrices from current risks/opportunities.
 """
 
 from __future__ import annotations
 
 import contextlib
+from collections.abc import Callable, Iterable
+from typing import TYPE_CHECKING, Any
 
+from PySide6.QtWidgets import QTableWidget, QTableWidgetItem
+
+if TYPE_CHECKING:
+    from riskapp_client.ui_v2.tabs.matrix_tab import MatrixTab
 
 class MatrixMixin:
     """MainWindow mixin: MatrixMixin"""
+
+    backend: Any
+    current_project_id: str | None
+    matrix_tab: MatrixTab
+    opps_matrix_table: QTableWidget
+    risks_matrix_table: QTableWidget
+    _call_backend: Callable[..., Any]
+    _mk_item: Callable[..., QTableWidgetItem]
 
     def _on_matrix_kind_changed(self, text: str) -> None:
         with contextlib.suppress(AttributeError, RuntimeError, ValueError):
             self.matrix_tab.set_kind(text)
         self._refresh_matrix()
 
-    def _render_matrix(self, table, items) -> None:
+    def _render_matrix(
+        self,
+        table: QTableWidget,
+        items: Iterable[Any],
+    ) -> None:
         grid = [[0 for _ in range(5)] for __ in range(5)]
         for it in items:
             p = max(1, min(5, int(getattr(it, "probability", 1))))

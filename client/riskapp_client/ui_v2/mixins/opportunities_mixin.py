@@ -5,13 +5,54 @@ Filtering, table rendering, editor behavior, and CSV export for opportunities.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
+
 from riskapp_client.adapters.local_storage import csv_data_exporter as export_csv
 from riskapp_client.services import entity_filters as filters
 from riskapp_client.ui_v2.mixins.scored_entity_mixin import ScoredEntityMixin
 
+if TYPE_CHECKING:
+    from PySide6.QtWidgets import (
+        QComboBox,
+        QLabel,
+        QLineEdit,
+        QSpinBox,
+        QTableWidget,
+        QTableWidgetItem,
+    )
+    from riskapp_client.domain.domain_models import Opportunity
+    from riskapp_client.ui_v2.components.custom_gui_widgets import RiskForm
+    from riskapp_client.ui_v2.tabs.opportunities_tab import OpportunitiesTab
+
 
 class OpportunitiesMixin(ScoredEntityMixin):
     """MainWindow mixin: OpportunitiesMixin"""
+
+    backend: Any
+    current_opportunity_id: str | None
+    current_project_id: str | None
+    opp_editor_label: QLabel
+    opp_filter_category: QLineEdit
+    opp_filter_from: QLineEdit
+    opp_filter_max_score: QSpinBox
+    opp_filter_min_score: QSpinBox
+    opp_filter_owner: QComboBox
+    opp_filter_report: QLabel
+    opp_filter_search: QLineEdit
+    opp_filter_status: QComboBox
+    opp_filter_to: QLineEdit
+    opp_form: RiskForm
+    opps_tab: OpportunitiesTab
+    opps_table: QTableWidget
+    _opp_cache: dict[str, Opportunity]
+    _opp_editor_dirty: bool
+    _opp_title_by_id: dict[str, str]
+    _mk_item: Callable[..., QTableWidgetItem]
+    _refresh_action_opp_combo: Callable[[], None]
+    _refresh_actions: Callable[..., None]
+    _refresh_matrix: Callable[[], None]
+    _sync_assessment_state: Callable[..., None]
 
     def _mark_opp_editor_dirty(self, *args) -> None:
         self._opp_editor_dirty = True

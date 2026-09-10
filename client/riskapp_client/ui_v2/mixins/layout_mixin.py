@@ -4,9 +4,17 @@ from __future__ import annotations
 
 import logging
 import sys
+from collections.abc import Callable
+from typing import Any, cast
 
 import qdarktheme
-from PySide6.QtWidgets import QApplication, QLabel, QProgressBar, QPushButton
+from PySide6.QtWidgets import (
+    QApplication,
+    QLabel,
+    QMainWindow,
+    QProgressBar,
+    QPushButton,
+)
 from riskapp_client.ui_v2.tabs.actions_tab import ActionsTab
 from riskapp_client.ui_v2.tabs.assessments_tab import AssessmentsTab
 from riskapp_client.ui_v2.tabs.helpdesk_tab import HelpDeskTab
@@ -50,7 +58,7 @@ def _set_titlebar_dark(window, dark: bool) -> None:
     try:
         from PySide6.QtCore import Qt as QtCore_Qt
         from PySide6.QtWidgets import QApplication
-        app = QApplication.instance()
+        app = cast(QApplication | None, QApplication.instance())
         if app and hasattr(app, "styleHints"):
             hints = app.styleHints()
             if hasattr(hints, "setColorScheme"):
@@ -79,10 +87,56 @@ def _set_titlebar_dark(window, dark: bool) -> None:
 class LayoutMixin:
     """Build the main window UI."""
 
+    backend: Any
+    current_opportunity_id: str | None
+    current_risk_id: str | None
+
+    _add_or_update_member: Callable[..., Any]
+    _apply_helpdesk_filters: Callable[..., Any]
+    _cancel_background_job: Callable[..., Any]
+    _create_new_project: Callable[..., Any]
+    _delete_current_project: Callable[..., Any]
+    _delete_entity: Callable[..., Any]
+    _delete_helpdesk_ticket: Callable[..., Any]
+    _export_opportunities_csv: Callable[..., Any]
+    _export_risks_csv: Callable[..., Any]
+    _fit_table_card: Callable[..., Any]
+    _mark_editor_dirty: Callable[..., Any]
+    _mark_opp_editor_dirty: Callable[..., Any]
+    _maybe_auto_snapshot: Callable[..., Any]
+    _on_action_clicked: Callable[..., Any]
+    _on_helpdesk_ticket_clicked: Callable[..., Any]
+    _on_matrix_kind_changed: Callable[..., Any]
+    _on_member_selected: Callable[..., Any]
+    _on_opportunity_clicked: Callable[..., Any]
+    _on_project_selected: Callable[..., Any]
+    _on_risk_clicked: Callable[..., Any]
+    _on_top_period_changed: Callable[..., Any]
+    _open_conflict_center: Callable[..., Any]
+    _refresh_helpdesk: Callable[..., Any]
+    _refresh_members: Callable[..., Any]
+    _refresh_opportunities: Callable[..., Any]
+    _refresh_risks: Callable[..., Any]
+    _refresh_top_history: Callable[..., Any]
+    _remove_selected_member: Callable[..., Any]
+    _save_action: Callable[..., Any]
+    _save_assessment: Callable[..., Any]
+    _save_helpdesk_ticket: Callable[..., Any]
+    _save_opportunity: Callable[..., Any]
+    _save_risk: Callable[..., Any]
+    _snapshot_now: Callable[..., Any]
+    _start_new_action: Callable[..., Any]
+    _start_new_helpdesk_ticket: Callable[..., Any]
+    _start_new_opportunity: Callable[..., Any]
+    _start_new_risk: Callable[..., Any]
+    _sync_now: Callable[..., Any]
+    _toggle_action_target_inputs: Callable[..., Any]
+
     def _build_ui(self) -> None:
+        window = cast(QMainWindow, self)
         self.ui = Ui_MainWindow()
-        self.ui.setupUi(self)
-        self.setWindowTitle("RiskApp")
+        self.ui.setupUi(window)
+        window.setWindowTitle("RiskApp")
         self.project_list = self.ui.project_list
         self.sync_btn = self.ui.sync_btn
         self.new_project_btn = self.ui.new_project_btn
@@ -143,12 +197,16 @@ class LayoutMixin:
             try:
                 qdarktheme.setup_theme(theme, additional_qss=extra_css)
             except AttributeError:
-                app = QApplication.instance()
+                app = cast(QApplication | None, QApplication.instance())
                 if app:
                     app.setStyleSheet(qdarktheme.load_stylesheet(theme) + extra_css)
-            _set_titlebar_dark(self, is_dark)
+            _set_titlebar_dark(window, is_dark)
 
+        # PySide exposes bound signals dynamically; Pylint cannot infer their
+        # ``connect`` member from the generated UI class.
+        # pylint: disable=no-member
         self.ui.theme_toggle.toggled.connect(apply_theme)
+        # pylint: enable=no-member
         apply_theme(self.ui.theme_toggle.isChecked())
 
         def bind(src: object, names: tuple[str, ...], **renamed: str) -> None:
@@ -160,6 +218,8 @@ class LayoutMixin:
 
         while self.ui.main_stacked_widget.count() > 0:
             widget = self.ui.main_stacked_widget.widget(0)
+            if widget is None:
+                break
             self.ui.main_stacked_widget.removeWidget(widget)
             widget.deleteLater()
         self.risks_tab = RisksTab(
@@ -263,6 +323,8 @@ class LayoutMixin:
                 "Help Desk",
             ]
         )
+        # PySide signals are runtime descriptors and are invisible to Pylint.
+        # pylint: disable=no-member
         self.project_list.itemSelectionChanged.connect(self._on_project_selected)
         self.ui.sidebar_list.currentRowChanged.connect(
             self.ui.main_stacked_widget.setCurrentIndex
@@ -272,9 +334,10 @@ class LayoutMixin:
         self.conflicts_btn.clicked.connect(self._open_conflict_center)
         self.new_project_btn.clicked.connect(self._create_new_project)
         self.delete_project_btn.clicked.connect(self._delete_current_project)
+        # pylint: enable=no-member
         if hasattr(self.top_tab, "top_period"):
             self._on_top_period_changed(self.top_tab.top_period.currentText())
         self.ui.sidebar_list.setCurrentRow(0)
-        app = QApplication.instance()
+        app = cast(QApplication | None, QApplication.instance())
         if app:
-            app.installEventFilter(self)
+            app.installEventFilter(window)

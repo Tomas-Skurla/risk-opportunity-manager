@@ -1,9 +1,14 @@
 import csv
 import io
 import uuid
+from collections.abc import Iterator, Sequence
+from enum import Enum
+from types import FunctionType
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -23,32 +28,45 @@ from riskapp_server.db.session import RiskStatus, Role, User, get_db, utcnow
 from riskapp_server.schemas.models import AssessmentIn, ScoreReportOut
 
 
+def _set_payload_schema(
+    endpoint: FunctionType, schema: type[BaseModel]
+) -> None:
+    """Install a concrete request model before FastAPI inspects an endpoint."""
+    endpoint.__annotations__["payload"] = schema
+
+
 def create_crud_router(
     *,
     prefix: str,
-    tags: list[str],
-    Model,
-    CreateSchema,
-    UpdateSchema,
-    OutSchema,
+    tags: Sequence[str | Enum],
+    Model: type[Any],
+    CreateSchema: type[BaseModel],
+    UpdateSchema: type[BaseModel],
+    OutSchema: type[BaseModel],
     fixed_type: str | None = None,
-    AssessmentModel=None,
-    AssessmentOutSchema=None,
+    AssessmentModel: type[Any] | None = None,
+    AssessmentOutSchema: type[BaseModel] | None = None,
 ) -> APIRouter:
     """Create crud router."""
-    r = APIRouter(tags=tags)
+    r = APIRouter(tags=list(tags))
 
-    @r.post(
-        f"/projects/{{project_id}}/{prefix}", response_model=OutSchema, status_code=201
-    )
     def create_obj(
         project_id: uuid.UUID,
-        payload: CreateSchema,
+        payload: BaseModel,
         db: Session = Depends(get_db),
         user: User = Depends(get_current_user),
-    ):
+    ) -> Any:
         require_min_role(db, project_id, user.id, min_role=Role.member)
         return create_item(db, user.id, project_id, payload, Model)
+
+    _set_payload_schema(create_obj, CreateSchema)
+    r.add_api_route(
+        f"/projects/{{project_id}}/{prefix}",
+        create_obj,
+        methods=["POST"],
+        response_model=OutSchema,
+        status_code=201,
+    )
 
     @r.get(f"/projects/{{project_id}}/{prefix}", response_model=list[OutSchema])
     def list_objs(
@@ -125,7 +143,7 @@ def create_crud_router(
         ]
         cols = [c for c in cols if c]
 
-        def rows():
+        def rows() -> Iterator[bytes]:
             buf = io.StringIO()
             w = csv.writer(buf)
             w.writerow(cols)
@@ -142,14 +160,13 @@ def create_crud_router(
         headers = {"Content-Disposition": f"attachment; filename={prefix}_export.csv"}
         return StreamingResponse(rows(), media_type="text/csv", headers=headers)
 
-    @r.patch(f"/projects/{{project_id}}/{prefix}/{{item_id}}", response_model=OutSchema)
     def update_obj(
         project_id: uuid.UUID,
         item_id: uuid.UUID,
-        payload: UpdateSchema,
+        payload: BaseModel,
         db: Session = Depends(get_db),
         user: User = Depends(get_current_user),
-    ):
+    ) -> Any:
         status_val = getattr(payload, "status", None)
         status_s = str(getattr(status_val, "value", status_val) or "").lower().strip()
         min_role = Role.manager if status_s == RiskStatus.deleted.value else Role.member
@@ -157,6 +174,14 @@ def create_crud_router(
         return update_item(
             db, project_id, item_id, payload, Model, item_type=fixed_type
         )
+
+    _set_payload_schema(update_obj, UpdateSchema)
+    r.add_api_route(
+        f"/projects/{{project_id}}/{prefix}/{{item_id}}",
+        update_obj,
+        methods=["PATCH"],
+        response_model=OutSchema,
+    )
 
     @r.delete(
         f"/projects/{{project_id}}/{prefix}/{{item_id}}",

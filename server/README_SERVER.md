@@ -8,6 +8,7 @@ FastAPI backend for RiskApp.
 - Actions and assessments.
 - Matrix, snapshot, and Help Desk endpoints.
 - Offline sync for risks, opportunities, actions, assessments, and Help Desk tickets.
+- Transactional per-project change sequences provide commit-safe incremental pulls; timestamp watermarks remain compatible with older clients.
 - JWT auth and project/global role checks.
 - Startup bootstrap for a global superadmin.
 
@@ -147,6 +148,8 @@ Common settings:
 | `INITIAL_SUPERUSER_PASSWORD` | unset | Optional bootstrap superadmin password |
 | `CORS_ORIGINS` | unset | Comma-separated allowed origins |
 | `MAX_REQUEST_BODY_BYTES` | `2097152` | Maximum declared or streamed request body |
+| `RISKAPP_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL` |
+| `RISKAPP_LOG_FORMAT` | `plain` | `plain` for local use or newline-delimited `json` for log collectors |
 | `PASSWORD_RESET_RETURN_TOKEN` | `0` | Development/test only; forbidden in production |
 | `MAX_SYNC_PULL_PER_ENTITY` | `5000` | Sync pull cap |
 | `SYNC_PUSH_EXPUNGE_EVERY` | `200` | Sync push housekeeping interval; misspelled `SYNC_PUSH_EXUNGE_EVERY` remains a deprecated fallback |
@@ -155,8 +158,9 @@ Common settings:
 
 For an existing deployment, first set `TOKEN_HASH_KEY` to the current `SECRET_KEY` value and deploy this version. You may then rotate `SECRET_KEY` without invalidating stored refresh/password-reset token hashes. Changing `TOKEN_HASH_KEY` itself invalidates all outstanding refresh and reset tokens.
 
-New account passwords are hashed with Argon2id using 19 MiB of memory, two iterations, and one lane. Existing `pbkdf2_sha256` hashes continue to verify and are replaced with Argon2id only after that user successfully logs in. The `PBKDF2_ITERS` setting is retained for compatibility but no longer controls new
-+password hashes.
+Every HTTP response includes `X-Request-ID`. A valid incoming `X-Request-ID` is preserved; otherwise the API generates one. RiskApp application logs include the same ID, HTTP method, path, status, and duration without recording query strings, authorization headers, or request bodies. Set `RISKAPP_LOG_FORMAT=json` for structured production logs; Uvicorn's own process logs remain independently configured by Uvicorn.
+
+New account passwords are hashed with Argon2id using 19 MiB of memory, two iterations, and one lane. Existing `pbkdf2_sha256` hashes continue to verify and are replaced with Argon2id only after that user successfully logs in. The `PBKDF2_ITERS` setting is retained for compatibility but no longer controls new password hashes.
 
 ## Scoring notes
 

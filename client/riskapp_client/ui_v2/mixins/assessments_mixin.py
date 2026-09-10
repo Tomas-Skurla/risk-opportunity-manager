@@ -3,13 +3,29 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
 
 from riskapp_client.domain.domain_models import Assessment
+
+if TYPE_CHECKING:
+    from PySide6.QtWidgets import QTableWidgetItem
+    from riskapp_client.ui_v2.tabs.assessments_tab import AssessmentsTab
 
 
 class AssessmentsMixin:
     """MainWindow mixin: AssessmentsMixin"""
+
+    # Supplied by MainWindow, CoreMixin, and LayoutMixin.
+    backend: Any
+    assessments_tab: AssessmentsTab
+    current_project_id: str | None
+    current_assessment_item_id: str | None
+    current_assessment_item_type: str
+
+    _call_backend: Callable[..., Any]
+    _mk_item: Callable[..., QTableWidgetItem]
+    _update_sync_status: Callable[[], None]
 
     def _sync_assessment_state(
         self, entity_type: str, entity_id: str, tab: Any

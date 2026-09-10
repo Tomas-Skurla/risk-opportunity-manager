@@ -14,9 +14,11 @@ from PySide6.QtWidgets import (
     QTableWidgetItem,
 )
 from riskapp_client.domain.domain_models import Member, Project
+from riskapp_client.ui_v2.mixins.global_state_mixin import CoreMixin
 from riskapp_client.ui_v2.mixins.members_mixin import MembersMixin
 from riskapp_client.ui_v2.mixins.projects_sync_mixin import ProjectsSyncMixin
 from riskapp_client.ui_v2.tabs.members_tab import MembersTab
+from riskapp_client.ui_v2.window_state import MainWindowState
 
 
 class ProjectSyncHost(ProjectsSyncMixin):
@@ -36,7 +38,7 @@ class ProjectSyncHost(ProjectsSyncMixin):
     def _call_backend(self, _title, fn, *args):
         try:
             return fn(*args)
-        except Exception:  # noqa: BLE001 - mirrors the real GUI error boundary
+        except (OSError, RuntimeError):
             return None
 
     def _load_projects(
@@ -115,6 +117,30 @@ class MembersHost(MembersMixin):
         if entity_id is not None:
             item.setData(Qt.UserRole, entity_id)
         return item
+
+
+def test_core_mixin_compatibility_properties_share_explicit_state() -> None:
+    class CoreHost(CoreMixin):
+        pass
+
+    host = CoreHost()
+    host.state = MainWindowState(project_id="project-1", role="member")
+    host._init_state()
+
+    assert host.current_project_id == "project-1"
+    assert host.current_role == "member"
+
+    host.current_risk_id = "risk-1"
+    host.current_assessment_item_id = "risk-1"
+    host._offline_mode = True
+    assert host.state.risk_id == "risk-1"
+    assert host.state.assessment_item_id == "risk-1"
+    assert host.state.offline_mode is True
+
+    host.state.project_id = "project-2"
+    host.state.role = "manager"
+    assert host.current_project_id == "project-2"
+    assert host.current_role == "manager"
 
 
 def test_project_sync_status_and_blocked_details(qtbot) -> None:

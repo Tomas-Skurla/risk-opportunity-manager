@@ -3,13 +3,29 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
+from PySide6.QtCore import QObject
+from PySide6.QtWidgets import QLabel, QListWidget, QProgressBar, QPushButton
 from riskapp_client.ui_v2.workers import BackgroundJobRunner
 
+if TYPE_CHECKING:
+    from riskapp_client.ui_v2.tabs.top_history_tab import TopHistoryTab
 
 class BackgroundJobsMixin:
     """Own the worker runner and reflect its state in the status bar."""
+
+    backend: Any
+    background_progress: QProgressBar
+    cancel_background_btn: QPushButton
+    conflicts_btn: QPushButton
+    project_list: QListWidget
+    sync_btn: QPushButton
+    sync_status: QLabel
+    top_tab: TopHistoryTab
+    _background_jobs: BackgroundJobRunner
+    _apply_permissions: Callable[[], None]
+    _update_sync_status: Callable[[], None]
 
     def _init_background_jobs(self) -> None:
         factory = getattr(self.backend, "create_background_backend", None)
@@ -28,7 +44,7 @@ class BackgroundJobsMixin:
         self._background_jobs = BackgroundJobRunner(
             factory,
             owns_backend=owns_backend,
-            parent=self,
+            parent=cast(QObject, self),
         )
         self._background_jobs.busy_changed.connect(self._on_background_busy_changed)
         self._background_jobs.progress_changed.connect(

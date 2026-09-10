@@ -80,10 +80,28 @@ def _env_list(name: str, default: str = "") -> list[str]:
     ]
 
 
+def _env_choice(name: str, default: str, choices: set[str]) -> str:
+    """Read a case-insensitive setting constrained to explicit values."""
+    value = os.getenv(name, default).strip().lower()
+    if value not in choices:
+        raise ConfigurationError(
+            f"{name} must be one of: {', '.join(sorted(choices))}"
+        )
+    return value
+
+
 def _optional_env(name: str) -> str | None:
     value = os.getenv(name, "").strip()
     return value or None
 
+RISKAPP_LOG_LEVEL: str = _env_choice(
+    "RISKAPP_LOG_LEVEL",
+    "info",
+    {"critical", "error", "warning", "info", "debug"},
+).upper()
+RISKAPP_LOG_FORMAT: str = _env_choice(
+    "RISKAPP_LOG_FORMAT", "plain", {"plain", "json"}
+)
 
 ENV: str = os.getenv("ENV", "development").strip().lower()
 
@@ -174,7 +192,8 @@ ALLOWED_HOSTS: list[str] = _env_list(
 def validate_runtime_config() -> None:
     """Fail closed for settings that affect authentication or request trust."""
     errors: list[str] = []
-    insecure_secret = not SECRET_KEY or SECRET_KEY == "change-me"
+    # This literal identifies the deliberately rejected development sentinel.
+    insecure_secret = not SECRET_KEY or SECRET_KEY == "change-me"  # noqa: S105
     local_env = ENV in {"development", "test"}
 
     if ALGORITHM not in {"HS256", "HS384", "HS512"}:

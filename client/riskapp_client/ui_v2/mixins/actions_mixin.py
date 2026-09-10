@@ -2,13 +2,36 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, cast
+
 from PySide6.QtCore import Qt  # pylint: disable=no-name-in-module
-from PySide6.QtWidgets import QMessageBox  # pylint: disable=no-name-in-module
+from PySide6.QtWidgets import (  # pylint: disable=no-name-in-module
+    QMessageBox,
+    QWidget,
+)
 from riskapp_client.domain.scored_entity_fields import ACTION_DEFAULT_STATUS
+
+if TYPE_CHECKING:
+    from PySide6.QtWidgets import QTableWidgetItem
+    from riskapp_client.ui_v2.tabs.actions_tab import ActionsTab
 
 
 class ActionsMixin:
     """MainWindow mixin: ActionsMixin"""
+
+    # Supplied by MainWindow, CoreMixin, and LayoutMixin.
+    backend: Any
+    actions_tab: ActionsTab
+    current_project_id: str | None
+    current_action_id: str | None
+    _risk_title_by_id: dict[str, str]
+    _opp_title_by_id: dict[str, str]
+
+    _call_backend: Callable[..., Any]
+    _mk_item: Callable[..., QTableWidgetItem]
+    _select_row_by_entity_id: Callable[..., None]
+    _update_sync_status: Callable[[], None]
 
     def _toggle_action_target_inputs(self) -> None:
         tab = self.actions_tab
@@ -75,7 +98,7 @@ class ActionsMixin:
         it = tab.actions_table.item(row, 0)
         if not it:
             return
-        aid = str(it.data(Qt.UserRole))
+        aid = str(it.data(Qt.ItemDataRole.UserRole))
         a = getattr(self, "_action_by_id", {}).get(aid)
         if not a:
             return
@@ -115,19 +138,20 @@ class ActionsMixin:
     def _save_action(self) -> None:
         tab = self.actions_tab
         pid = self.current_project_id
+        parent = cast(QWidget, self)
         if not pid:
-            QMessageBox.warning(self, "No project", "Select a project first.")
+            QMessageBox.warning(parent, "No project", "Select a project first.")
             return
         target_type = tab.action_target_type.currentText()
         if target_type == "risk":
             target_id = str(tab.action_risk_combo.currentData())
             if not target_id or target_id == "None":
-                QMessageBox.warning(self, "Validation", "Pick a risk.")
+                QMessageBox.warning(parent, "Validation", "Pick a risk.")
                 return
         else:
             target_id = str(tab.action_opp_combo.currentData())
             if not target_id or target_id == "None":
-                QMessageBox.warning(self, "Validation", "Pick an opportunity.")
+                QMessageBox.warning(parent, "Validation", "Pick an opportunity.")
                 return
         kind = tab.action_kind.currentText()
         status = tab.action_status.currentText()
@@ -135,7 +159,7 @@ class ActionsMixin:
         desc = tab.action_desc.toPlainText().strip()
         owner = tab.action_owner.text().strip() or None
         if not title:
-            QMessageBox.warning(self, "Validation", "Title is required.")
+            QMessageBox.warning(parent, "Validation", "Title is required.")
             return
         kwargs = {
             "target_type": target_type,

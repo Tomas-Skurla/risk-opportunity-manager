@@ -7,7 +7,7 @@ import uuid
 from collections.abc import Callable, Mapping, MutableMapping
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
-from typing import Any, TypeVar
+from typing import Any, Generic, TypeVar
 
 from riskapp_client.adapters.local_storage.sqlite_data_store import utc_iso
 from riskapp_client.domain.scored_entity_fields import (
@@ -19,13 +19,13 @@ ModelT = TypeVar("ModelT")
 
 
 @dataclass(frozen=True)
-class ScoredEntityWiring:
+class ScoredEntityWiring(Generic[ModelT]):
     """Bind entity-specific store/outbox callables."""
 
     kind: str  # "risk" | "opportunity"
     id_kw: str  # "risk_id" | "opportunity_id"
 
-    model_cls: type[ModelT]
+    model_cls: Callable[..., ModelT]
 
     list_fn: Callable[[str], list[ModelT]]
     get_project_and_version_fn: Callable[[str], tuple[str, int]]
@@ -43,10 +43,10 @@ class ScoredEntityWiring:
     next_code_fn: Callable[[str], str] | None = None
 
 
-class ScoredEntityService:
+class ScoredEntityService(Generic[ModelT]):
     """Create/update scored entities locally and queue sync."""
 
-    def __init__(self, wiring: ScoredEntityWiring) -> None:
+    def __init__(self, wiring: ScoredEntityWiring[ModelT]) -> None:
         self._w = wiring
 
     def list(self, project_id: str) -> list[ModelT]:

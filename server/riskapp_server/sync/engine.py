@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
@@ -24,6 +25,7 @@ from riskapp_server.db.session import (
     HelpDeskTicket,
     Item,
     RiskStatus,
+    SyncProjectState,
     SyncReceipt,
     utcnow,
 )
@@ -111,6 +113,9 @@ def model_to_dict(obj: Any) -> dict[str, Any]:
     insp = sa_inspect(obj)
     for attr in insp.mapper.column_attrs:
         k = attr.key
+        if k == "change_sequence":
+            # Feed ordering is transport metadata, not client-editable state.
+            continue
         v = getattr(obj, k)
         if isinstance(v, uuid.UUID):
             out[k] = str(v)
@@ -183,6 +188,285 @@ def _encode_cursor(ts: datetime, entity_id: uuid.UUID) -> str:
     return f"{_naive_utc(ts).isoformat()}|{entity_id}"
 
 
+def _parse_sequence_cursor(
+    cur: str | None, *, default_since: int, snapshot_sequence: int
+) -> int:
+    if not cur:
+        return default_since
+    try:
+        prefix, value = cur.split(":", 1)
+        sequence = int(value)
+        if prefix != "seq" or not default_since <= sequence <= snapshot_sequence:
+            raise ValueError("cursor is outside the synchronization snapshot")
+        return sequence
+    except (ValueError, KeyError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail="Invalid cursor") from exc
+
+
+def _encode_sequence_cursor(sequence: int) -> str:
+    return f"seq:{sequence}"
+
+
+@dataclass(frozen=True)
+class _PullContext:
+    db: Session
+    project_id: uuid.UUID
+    since: datetime
+    snapshot_time: datetime
+    limit: int | None
+    hard_cap: int | None
+    cursors: dict[str, str]
+    server_sequence: int
+    since_sequence: int | None
+    snapshot_sequence: int | None
+
+
+@dataclass(frozen=True)
+class _PullPage:
+    rows: list[Any]
+    has_more: bool
+    cursor: str
+
+
+def _prepare_pull_context(
+    db: Session,
+    project_id: uuid.UUID,
+    since: datetime,
+    limit_per_entity: int | None,
+    cursors: dict[str, str] | None,
+    snapshot_time: datetime | None,
+    since_sequence: int | None,
+    snapshot_sequence: int | None,
+) -> _PullContext:
+    request_time = _naive_utc(utcnow())
+    normalized_since = _naive_utc(since)
+    normalized_snapshot = (
+        _naive_utc(snapshot_time) if snapshot_time is not None else request_time
+    )
+    if normalized_snapshot < normalized_since:
+        raise HTTPException(status_code=400, detail="snapshot_time precedes since")
+    if normalized_snapshot > request_time:
+        raise HTTPException(status_code=400, detail="snapshot_time is in the future")
+
+    current_sequence_value = db.execute(
+        select(SyncProjectState.last_sequence).where(
+            SyncProjectState.project_id == project_id
+        )
+    ).scalar_one_or_none()
+    if current_sequence_value is None:
+        raise HTTPException(
+            status_code=500, detail="Project synchronization state is missing"
+        )
+    current_sequence = int(current_sequence_value)
+
+    normalized_snapshot_sequence: int | None = None
+    if since_sequence is None:
+        if snapshot_sequence is not None:
+            raise HTTPException(
+                status_code=400, detail="snapshot_sequence requires since_sequence"
+            )
+    else:
+        since_sequence = int(since_sequence)
+        if since_sequence < 0:
+            raise HTTPException(
+                status_code=400, detail="since_sequence must be nonnegative"
+            )
+        normalized_snapshot_sequence = (
+            current_sequence if snapshot_sequence is None else int(snapshot_sequence)
+        )
+        if normalized_snapshot_sequence < since_sequence:
+            raise HTTPException(
+                status_code=400, detail="snapshot_sequence precedes since_sequence"
+            )
+        if normalized_snapshot_sequence > current_sequence:
+            raise HTTPException(
+                status_code=400, detail="snapshot_sequence is ahead of the server"
+            )
+
+    hard_cap = MAX_SYNC_PULL_PER_ENTITY if limit_per_entity is None else None
+    limit = hard_cap if limit_per_entity is None else limit_per_entity
+    return _PullContext(
+        db=db,
+        project_id=project_id,
+        since=normalized_since,
+        snapshot_time=normalized_snapshot,
+        limit=limit,
+        hard_cap=hard_cap,
+        cursors=cursors or {},
+        server_sequence=current_sequence,
+        since_sequence=since_sequence,
+        snapshot_sequence=normalized_snapshot_sequence,
+    )
+
+
+def _pull_window(
+    ctx: _PullContext, model: Any, key: str
+) -> tuple[tuple[Any, ...], tuple[Any, ...], str]:
+    if ctx.since_sequence is not None:
+        if ctx.snapshot_sequence is None:  # pragma: no cover - context invariant
+            raise RuntimeError("Sequence pull is missing its snapshot")
+        sequence = _parse_sequence_cursor(
+            ctx.cursors.get(key),
+            default_since=ctx.since_sequence,
+            snapshot_sequence=ctx.snapshot_sequence,
+        )
+        return (
+            (
+                model.change_sequence > sequence,
+                model.change_sequence <= ctx.snapshot_sequence,
+            ),
+            (model.change_sequence.asc(),),
+            _encode_sequence_cursor(sequence),
+        )
+
+    ts, last_id = _parse_cursor(
+        ctx.cursors.get(key),
+        default_since=ctx.since,
+        snapshot_time=ctx.snapshot_time,
+    )
+    return (
+        (
+            model.updated_at <= ctx.snapshot_time,
+            or_(
+                model.updated_at > ts,
+                (model.updated_at == ts) & (model.id > last_id),
+            ),
+        ),
+        (model.updated_at.asc(), model.id.asc()),
+        _encode_cursor(ts, last_id),
+    )
+
+
+def _finish_pull_page(
+    rows: list[Any],
+    *,
+    ctx: _PullContext,
+    limit: int | None,
+    base_cursor: str,
+    joined: bool = False,
+) -> _PullPage:
+    has_more = bool(limit and len(rows) > limit)
+    if has_more:
+        rows = rows[:limit]
+    last = rows[-1][0] if rows and joined else (rows[-1] if rows else None)
+    if last is None:
+        cursor = base_cursor
+    elif ctx.since_sequence is not None:
+        cursor = _encode_sequence_cursor(int(last.change_sequence))
+    else:
+        cursor = _encode_cursor(last.updated_at, last.id)
+    return _PullPage(rows=rows, has_more=has_more, cursor=cursor)
+
+
+def _pull_item_page(ctx: _PullContext, item_type: str, key: str) -> _PullPage:
+    window, ordering, base_cursor = _pull_window(ctx, Item, key)
+    query = (
+        select(Item)
+        .where(
+            Item.project_id == ctx.project_id,
+            Item.type == item_type,
+            *window,
+        )
+        .order_by(*ordering)
+    )
+    rows = ctx.db.execute(
+        query.limit(ctx.limit + 1) if ctx.limit else query
+    ).scalars().all()
+    return _finish_pull_page(
+        list(rows),
+        ctx=ctx,
+        limit=ctx.limit,
+        base_cursor=base_cursor,
+    )
+
+
+def _pull_joined_page(
+    ctx: _PullContext,
+    model: Any,
+    cursor_key: str,
+    project_filter: Any,
+) -> _PullPage:
+    window, ordering, base_cursor = _pull_window(ctx, model, cursor_key)
+    query = (
+        select(model, Item.type)
+        .join(Item, model.item_id == Item.id)
+        .where(
+            project_filter,
+            *window,
+        )
+        .order_by(*ordering)
+    )
+    rows = ctx.db.execute(
+        query.limit(ctx.limit + 1) if ctx.limit else query
+    ).all()
+    return _finish_pull_page(
+        list(rows),
+        ctx=ctx,
+        limit=ctx.limit,
+        base_cursor=base_cursor,
+        joined=True,
+    )
+
+
+def _pull_simple_page(
+    ctx: _PullContext,
+    model: Any,
+    cursor_key: str,
+    project_filter: Any,
+) -> _PullPage:
+    window, ordering, base_cursor = _pull_window(ctx, model, cursor_key)
+    query = (
+        select(model)
+        .where(
+            project_filter,
+            *window,
+        )
+        .order_by(*ordering)
+    )
+    rows = ctx.db.execute(
+        query.limit(ctx.limit + 1) if ctx.limit else query
+    ).scalars().all()
+    return _finish_pull_page(
+        list(rows),
+        ctx=ctx,
+        limit=ctx.limit,
+        base_cursor=base_cursor,
+    )
+
+
+def _serialize_action_rows(rows: list[Any]) -> list[dict[str, Any]]:
+    return [
+        ActionOut(
+            id=action.id,
+            project_id=action.project_id,
+            risk_id=action.item_id if item_type == "risk" else None,
+            opportunity_id=action.item_id if item_type == "opportunity" else None,
+            kind=action.kind,
+            title=action.title,
+            description=action.description,
+            status=action.status,
+            owner_user_id=action.owner_user_id,
+            updated_at=action.updated_at,
+            version=action.version,
+            is_deleted=action.is_deleted,
+        ).model_dump(mode="json")
+        for action, item_type in rows
+    ]
+
+
+def _serialize_assessment_rows(rows: list[Any]) -> list[dict[str, Any]]:
+    assessments: list[dict[str, Any]] = []
+    for assessment, item_type in rows:
+        record = model_to_dict(assessment)
+        if "item_id" not in record and "risk_id" in record:
+            record["item_id"] = record["risk_id"]
+        item_id = record.get("item_id")
+        record["risk_id"] = item_id if item_type == "risk" else None
+        record["opportunity_id"] = item_id if item_type == "opportunity" else None
+        assessments.append(record)
+    return assessments
+
+
 def pull_since(
     db: Session,
     project_id: uuid.UUID,
@@ -191,185 +475,62 @@ def pull_since(
     limit_per_entity: int | None = None,
     cursors: dict[str, str] | None = None,
     snapshot_time: datetime | None = None,
+    since_sequence: int | None = None,
+    snapshot_sequence: int | None = None,
 ) -> dict[str, Any]:
-
-    request_time = _naive_utc(utcnow())
-    since = _naive_utc(since)
-    snapshot_time = (
-        _naive_utc(snapshot_time) if snapshot_time is not None else request_time
+    ctx = _prepare_pull_context(
+        db,
+        project_id,
+        since,
+        limit_per_entity,
+        cursors,
+        snapshot_time,
+        since_sequence,
+        snapshot_sequence,
     )
-    if snapshot_time < since:
-        raise HTTPException(status_code=400, detail="snapshot_time precedes since")
-    if snapshot_time > request_time:
-        raise HTTPException(status_code=400, detail="snapshot_time is in the future")
-
-    # Cap the response size unless paginating.
-    if limit_per_entity is None:
-        hard_cap: int | None = MAX_SYNC_PULL_PER_ENTITY
-        lim: int | None = hard_cap
-    else:
-        hard_cap = None
-        lim = limit_per_entity  # enables cursor pagination when set
-
-    cursors = cursors or {}
-
-    def item_page(item_type: str, key: str):
-        ts, last_id = _parse_cursor(
-            cursors.get(key), default_since=since, snapshot_time=snapshot_time
-        )
-        base_cur = _encode_cursor(ts, last_id)
-        q = (
-            select(Item)
-            .where(
-                Item.project_id == project_id,
-                Item.type == item_type,
-                Item.updated_at <= snapshot_time,
-                or_(
-                    Item.updated_at > ts,
-                    (Item.updated_at == ts) & (Item.id > last_id),
-                ),
-            )
-            .order_by(Item.updated_at.asc(), Item.id.asc())
-        )
-
-        rows = db.execute(q.limit(lim + 1) if lim else q).scalars().all()
-        more = bool(lim and len(rows) > lim)
-        if more:
-            rows = rows[:lim]
-        next_cur = (
-            _encode_cursor(rows[-1].updated_at, rows[-1].id) if rows else base_cur
-        )
-        return rows, more, next_cur
-
-    risks, more_risks, cur_risks = item_page("risk", "risks")
-    opportunities, more_opps, cur_opps = item_page("opportunity", "opportunities")
-
-    def _paginate_joined(
-        Model: Any, cursor_key: str, project_filter: Any
-    ) -> tuple[list, bool, str]:
-        ts, last_id = _parse_cursor(
-            cursors.get(cursor_key),
-            default_since=since,
-            snapshot_time=snapshot_time,
-        )
-        base_cur = _encode_cursor(ts, last_id)
-        q = (
-            select(Model, Item.type)
-            .join(Item, Model.item_id == Item.id)
-            .where(
-                project_filter,
-                Model.updated_at <= snapshot_time,
-                or_(
-                    Model.updated_at > ts,
-                    (Model.updated_at == ts) & (Model.id > last_id),
-                ),
-            )
-            .order_by(Model.updated_at.asc(), Model.id.asc())
-        )
-        rows = db.execute(q.limit(lim + 1) if lim else q).all()
-        more = bool(lim and len(rows) > lim)
-        if more:
-            rows = rows[:lim]
-        next_cur = (
-            _encode_cursor(rows[-1][0].updated_at, rows[-1][0].id) if rows else base_cur
-        )
-        return rows, more, next_cur
-
-    # Actions.
-    action_rows, more_actions, cur_actions = _paginate_joined(
-        Action, "actions", Action.project_id == project_id
+    risks = _pull_item_page(ctx, "risk", "risks")
+    opportunities = _pull_item_page(ctx, "opportunity", "opportunities")
+    actions = _pull_joined_page(
+        ctx, Action, "actions", Action.project_id == project_id
     )
-    actions_out = [
-        ActionOut(
-            id=a.id,
-            project_id=a.project_id,
-            risk_id=a.item_id if t == "risk" else None,
-            opportunity_id=a.item_id if t == "opportunity" else None,
-            kind=a.kind,
-            title=a.title,
-            description=a.description,
-            status=a.status,
-            owner_user_id=a.owner_user_id,
-            updated_at=a.updated_at,
-            version=a.version,
-            is_deleted=a.is_deleted,
-        ).model_dump(mode="json")
-        for a, t in action_rows
-    ]
-
-    # Assessments.
-    assessment_rows, more_assessments, cur_assessments = _paginate_joined(
-        Assessment, "assessments", Item.project_id == project_id
+    assessments = _pull_joined_page(
+        ctx, Assessment, "assessments", Item.project_id == project_id
+    )
+    helpdesk = _pull_simple_page(
+        ctx,
+        HelpDeskTicket,
+        "helpdesk_tickets",
+        HelpDeskTicket.project_id == project_id,
     )
 
-    # Help Desk tickets.
-    def _paginate_simple(
-        Model: Any, cursor_key: str, project_filter: Any
-    ) -> tuple[list, bool, str]:
-        ts, last_id = _parse_cursor(
-            cursors.get(cursor_key),
-            default_since=since,
-            snapshot_time=snapshot_time,
-        )
-        base_cur = _encode_cursor(ts, last_id)
-        q = (
-            select(Model)
-            .where(
-                project_filter,
-                Model.updated_at <= snapshot_time,
-                or_(
-                    Model.updated_at > ts,
-                    (Model.updated_at == ts) & (Model.id > last_id),
-                ),
-            )
-            .order_by(Model.updated_at.asc(), Model.id.asc())
-        )
-        rows = db.execute(q.limit(lim + 1) if lim else q).scalars().all()
-        more = bool(lim and len(rows) > lim)
-        if more:
-            rows = rows[:lim]
-        next_cur = (
-            _encode_cursor(rows[-1].updated_at, rows[-1].id) if rows else base_cur
-        )
-        return rows, more, next_cur
-
-    helpdesk_rows, more_helpdesk, cur_helpdesk = _paginate_simple(
-        HelpDeskTicket, "helpdesk_tickets", HelpDeskTicket.project_id == project_id
-    )
-
-    has_more = {
-        "risks": more_risks,
-        "opportunities": more_opps,
-        "actions": more_actions,
-        "assessments": more_assessments,
-        "helpdesk_tickets": more_helpdesk,
+    pages = {
+        "risks": risks,
+        "opportunities": opportunities,
+        "actions": actions,
+        "assessments": assessments,
+        "helpdesk_tickets": helpdesk,
     }
 
-    # Keep the payload JSON-safe and add legacy aliases.
-    assessments_out: list[dict[str, Any]] = []
-    for a, t in assessment_rows:
-        d = model_to_dict(a)
-        # Ensure item_id is present.
-        if "item_id" not in d and "risk_id" in d:
-            d["item_id"] = d["risk_id"]
-        item_id = d.get("item_id")
-        d["risk_id"] = item_id if t == "risk" else None
-        d["opportunity_id"] = item_id if t == "opportunity" else None
-        assessments_out.append(d)
+    has_more = {key: page.has_more for key, page in pages.items()}
 
     out: dict[str, Any] = {
-        "server_time": snapshot_time,
-        "risks": [model_to_dict(r) for r in risks],
-        "opportunities": [model_to_dict(o) for o in opportunities],
-        "actions": actions_out,
-        "assessments": assessments_out,
+        "server_time": ctx.snapshot_time,\
+        "server_sequence": (
+            ctx.snapshot_sequence
+            if ctx.snapshot_sequence is not None
+            else ctx.server_sequence
+        ),
+        "risks": [model_to_dict(row) for row in risks.rows],
+        "opportunities": [model_to_dict(row) for row in opportunities.rows],
+        "actions": _serialize_action_rows(actions.rows),
+        "assessments": _serialize_assessment_rows(assessments.rows),
         "helpdesk_tickets": [
-            HelpDeskTicketOut.model_validate(t).model_dump(mode="json")
-            for t in helpdesk_rows
+            HelpDeskTicketOut.model_validate(row).model_dump(mode="json")
+            for row in helpdesk.rows
         ],
     }
 
-    if hard_cap and any(has_more.values()):
+    if ctx.hard_cap and any(has_more.values()):
         raise HTTPException(
             status_code=413,
             detail=("Sync pull too large. Paginate using limit_per_entity + cursors."),
@@ -377,13 +538,7 @@ def pull_since(
 
     if limit_per_entity is not None:
         out["has_more"] = has_more
-        out["cursors"] = {
-            "risks": cur_risks,
-            "opportunities": cur_opps,
-            "actions": cur_actions,
-            "assessments": cur_assessments,
-            "helpdesk_tickets": cur_helpdesk,
-        }
+        out["cursors"] = {key: page.cursor for key, page in pages.items()}
     return out
 
 
@@ -513,282 +668,340 @@ def _append_legacy_outcome(
         errors.append(error)
 
 
+@dataclass
+class _PushContext:
+    db: Session
+    user_id: uuid.UUID
+    project_id: uuid.UUID
+    role: str
+    existing_receipts: dict[uuid.UUID, SyncReceipt]
+    seen_change_ids: set[uuid.UUID]
+    accepted: int = 0
+    duplicates: int = 0
+    duplicate_change_ids: list[str] = field(default_factory=list)
+    conflicts: list[dict[str, Any]] = field(default_factory=list)
+    errors: list[dict[str, Any]] = field(default_factory=list)
+    results: list[dict[str, Any]] = field(default_factory=list)
+    batch_results: dict[uuid.UUID, dict[str, Any]] = field(default_factory=dict)
+    wrote: int = 0
+
+
+def _load_existing_receipts(
+    db: Session,
+    user_id: uuid.UUID,
+    project_id: uuid.UUID,
+    changes: list[SyncChange],
+) -> dict[uuid.UUID, SyncReceipt]:
+    change_ids = [change.change_id for change in changes]
+    if not change_ids:
+        return {}
+    receipts = (
+        db.execute(
+            select(SyncReceipt).where(
+                SyncReceipt.change_id.in_(change_ids),
+                SyncReceipt.project_id == project_id,
+                SyncReceipt.user_id == user_id,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return {receipt.change_id: receipt for receipt in receipts}
+
+
+def _prepare_push_context(
+    db: Session,
+    user_id: uuid.UUID,
+    project_id: uuid.UUID,
+    role: str,
+    changes: list[SyncChange],
+) -> _PushContext:
+    existing_receipts = _load_existing_receipts(
+        db, user_id, project_id, changes
+    )
+    return _PushContext(
+        db=db,
+        user_id=user_id,
+        project_id=project_id,
+        role=role,
+        existing_receipts=existing_receipts,
+        seen_change_ids=set(existing_receipts),
+    )
+
+
+def _evict_push_identity_map_if_needed(ctx: _PushContext) -> None:
+    if (
+        SYNC_PUSH_EXPUNGE_EVERY
+        and ctx.wrote
+        and ctx.wrote % SYNC_PUSH_EXPUNGE_EVERY == 0
+    ):
+        # Keep the transaction atomic and limit identity-map growth.
+        ctx.db.flush()
+        ctx.db.expunge_all()
+
+
+def _record_push_result(
+    ctx: _PushContext,
+    change: SyncChange,
+    result: dict[str, Any],
+    *,
+    persisted: bool,
+) -> None:
+    ctx.results.append(result)
+    ctx.batch_results[change.change_id] = result
+    if persisted:
+        ctx.wrote += 1
+        _evict_push_identity_map_if_needed(ctx)
+
+
+def _record_duplicate(ctx: _PushContext, change: SyncChange) -> None:
+    ctx.duplicates += 1
+    ctx.duplicate_change_ids.append(str(change.change_id))
+    receipt = ctx.existing_receipts.get(change.change_id)
+    replay = (
+        _receipt_result(receipt)
+        if receipt is not None
+        else {**ctx.batch_results[change.change_id], "replayed": True}
+    )
+    ctx.results.append(replay)
+    _append_legacy_outcome(replay, ctx.conflicts, ctx.errors)
+
+
+def _reject_push_change(
+    ctx: _PushContext,
+    change: SyncChange,
+    reason: str,
+    detail: str | None = None,
+    *,
+    failure_kind: str,
+    retryable: bool = False,
+    store_receipt: bool = True,
+) -> None:
+    result = _receipt_err(
+        ctx.db,
+        ctx.errors,
+        change,
+        ctx.user_id,
+        ctx.project_id,
+        reason,
+        detail,
+        failure_kind=failure_kind,
+        retryable=retryable,
+        store_receipt=store_receipt,
+    )
+    _record_push_result(ctx, change, result, persisted=store_receipt)
+
+
+def _is_privileged_soft_delete(
+    entity: str, op: str, record: dict[str, Any]
+) -> bool:
+    if entity not in {"risk", "opportunity"} or op != "upsert":
+        return False
+    status = str(record.get("status") or "").lower().strip()
+    return status == RiskStatus.deleted.value or bool(record.get("is_deleted"))
+
+
+def _authorize_push_change(
+    ctx: _PushContext,
+    change: SyncChange,
+    entity: str,
+    op: str,
+    record: dict[str, Any],
+) -> bool:
+    try:
+        if _is_privileged_soft_delete(entity, op, record):
+            ensure_role_at_least(ctx.role, "manager")
+        ensure_role_at_least(ctx.role, _min_role_for_change(entity, op))
+        return True
+    except HTTPException:
+        _reject_push_change(
+            ctx,
+            change,
+            "insufficient_permissions",
+            failure_kind="permission",
+        )
+        return False
+
+
+def _apply_push_change(
+    ctx: _PushContext,
+    change: SyncChange,
+    entity: str,
+    op: str,
+    record: dict[str, Any],
+) -> None:
+    with ctx.db.begin_nested():
+        entity_id = (
+            _apply_upsert(
+                ctx.db,
+                ctx.user_id,
+                ctx.project_id,
+                entity,
+                change.base_version,
+                record,
+                change.change_id,
+            )
+            if op == "upsert"
+            else _apply_delete(
+                ctx.db,
+                ctx.user_id,
+                ctx.project_id,
+                entity,
+                change.base_version,
+                record,
+                change.change_id,
+            )
+        )
+        response = {"entity_id": str(entity_id)}
+        _store_receipt(
+            ctx.db,
+            change.change_id,
+            ctx.user_id,
+            ctx.project_id,
+            entity,
+            entity_id,
+            op,
+            "accepted",
+            response,
+        )
+        ctx.db.flush()
+
+    ctx.accepted += 1
+    result = _change_result(
+        change_id=change.change_id,
+        status="accepted",
+        entity=entity,
+        op=op,
+        entity_id=entity_id,
+        response=response,
+    )
+    _record_push_result(ctx, change, result, persisted=True)
+
+
+def _record_push_conflict(
+    ctx: _PushContext,
+    change: SyncChange,
+    entity: str,
+    op: str,
+    conflict: ConflictError,
+) -> None:
+    response = {
+        "reason": conflict.reason,
+        "server_version": conflict.server_version,
+        "server_record": conflict.server_record,
+        "server_updated_at": conflict.server_updated_at,
+        "failure_kind": "conflict",
+        "retryable": False,
+    }
+    _store_receipt(
+        ctx.db,
+        change.change_id,
+        ctx.user_id,
+        ctx.project_id,
+        entity,
+        conflict.entity_id,
+        op,
+        "conflict",
+        response,
+    )
+    result = _change_result(
+        change_id=change.change_id,
+        status="conflict",
+        entity=entity,
+        op=op,
+        entity_id=conflict.entity_id,
+        response=response,
+    )
+    _append_legacy_outcome(result, ctx.conflicts, ctx.errors)
+    _record_push_result(ctx, change, result, persisted=True)
+
+
+def _process_new_push_change(ctx: _PushContext, change: SyncChange) -> None:
+    entity = (change.entity or "").strip().lower()
+    op = (change.op or "").strip().lower()
+    record = change.record or {}
+    if entity not in ENTITY_MODELS:
+        _reject_push_change(
+            ctx, change, "unknown_entity", failure_kind="validation"
+        )
+        return
+    if op not in OPS:
+        _reject_push_change(ctx, change, "unknown_op", failure_kind="validation")
+        return
+    if not _authorize_push_change(ctx, change, entity, op, record):
+        return
+
+    try:
+        _apply_push_change(ctx, change, entity, op, record)
+    except ConflictError as exc:
+        _record_push_conflict(ctx, change, entity, op, exc)
+    except HTTPException as exc:
+        failure_kind, retryable = _classify_http_failure(exc.status_code)
+        _reject_push_change(
+            ctx,
+            change,
+            "http_error",
+            str(exc.detail),
+            failure_kind=failure_kind,
+            retryable=retryable,
+            store_receipt=not retryable,
+        )
+    except Exception:
+        logging.getLogger("riskapp_server.sync").exception(
+            "Unexpected error processing sync change %s", change.change_id
+        )
+        _reject_push_change(
+            ctx,
+            change,
+            "internal_error",
+            failure_kind="transient",
+            retryable=True,
+            store_receipt=False,
+        )
+
+
+def _process_push_change(ctx: _PushContext, change: SyncChange) -> None:
+    if change.change_id in ctx.seen_change_ids:
+        _record_duplicate(ctx, change)
+        return
+    # The initial receipt query cannot see receipts written later in this
+    # transaction, so track IDs from the request as they are encountered.
+    ctx.seen_change_ids.add(change.change_id)
+    _process_new_push_change(ctx, change)
+
+
+def _commit_push(ctx: _PushContext) -> None:
+    try:
+        ctx.db.commit()
+    except Exception as exc:
+        ctx.db.rollback()
+        logging.getLogger("riskapp_server.sync").exception("Failed to commit sync push")
+        raise HTTPException(status_code=500, detail="Sync push commit failed") from exc
+
+
+def _push_response(ctx: _PushContext) -> dict[str, Any]:
+    return {
+        "accepted": ctx.accepted,
+        "duplicates": ctx.duplicates,
+        "duplicate_change_ids": ctx.duplicate_change_ids,
+        "conflicts": ctx.conflicts,
+        "errors": ctx.errors,
+        "results": ctx.results,
+        "server_time": utcnow(),
+    }
+
+
 def push_changes(
     db: Session, user_id: uuid.UUID, project_id: uuid.UUID, changes: list[SyncChange]
 ) -> dict[str, Any]:
     if changes:
         _begin_push_transaction(db)
     role = ensure_member(db, project_id, user_id)
-
-    accepted = duplicates = 0
-    dup_ids: list[str] = []
-    conflicts: list[dict[str, Any]] = []
-    errors: list[dict[str, Any]] = []
-    results: list[dict[str, Any]] = []
-    batch_results: dict[uuid.UUID, dict[str, Any]] = {}
-    wrote = 0
-
-    def _evict_if_needed() -> None:
-        nonlocal wrote
-        if (
-            SYNC_PUSH_EXPUNGE_EVERY
-            and wrote
-            and wrote % SYNC_PUSH_EXPUNGE_EVERY == 0
-        ):
-            # Keep the transaction atomic and limit identity-map growth.
-            db.flush()
-            db.expunge_all()
-
-    ids = [c.change_id for c in changes]
-    if ids:
-        receipt_rows = (
-            db.execute(
-                select(SyncReceipt).where(
-                    SyncReceipt.change_id.in_(ids),
-                    SyncReceipt.project_id == project_id,
-                    SyncReceipt.user_id == user_id,
-                )
-            )
-            .scalars()
-            .all()
-        )
-        existing_receipts = {
-            receipt.change_id: receipt for receipt in receipt_rows
-        }
-    else:
-        existing_receipts = {}
-
-    seen_change_ids = set(existing_receipts)
-
-    for ch in changes:
-        if ch.change_id in seen_change_ids:
-            duplicates += 1
-            dup_ids.append(str(ch.change_id))
-            if ch.change_id in existing_receipts:
-                replay = _receipt_result(existing_receipts[ch.change_id])
-            else:
-                replay = {**batch_results[ch.change_id], "replayed": True}
-            results.append(replay)
-            _append_legacy_outcome(replay, conflicts, errors)
-            continue
-        # A receipt is not visible to the query above until this transaction is
-        # flushed. Track IDs from the current request as well so a malformed
-        # batch cannot apply the same logical change twice.
-        seen_change_ids.add(ch.change_id)
-
-        entity, op, record = (
-            (ch.entity or "").strip().lower(),
-            (ch.op or "").strip().lower(),
-            (ch.record or {}),
-        )
-        if entity not in ENTITY_MODELS:
-            result = _receipt_err(
-                db,
-                errors,
-                ch,
-                user_id,
-                project_id,
-                "unknown_entity",
-                failure_kind="validation",
-            )
-            results.append(result)
-            batch_results[ch.change_id] = result
-            wrote += 1
-            _evict_if_needed()
-            continue
-        if op not in OPS:
-            result = _receipt_err(
-                db,
-                errors,
-                ch,
-                user_id,
-                project_id,
-                "unknown_op",
-                failure_kind="validation",
-            )
-            results.append(result)
-            batch_results[ch.change_id] = result
-            wrote += 1
-            _evict_if_needed()
-            continue
-
-        # Treat 'deleted' as a privileged soft-delete on upsert.
-        if entity in {"risk", "opportunity"} and op == "upsert":
-            st = str((record or {}).get("status") or "").lower().strip()
-            if st == RiskStatus.deleted.value or bool((record or {}).get("is_deleted")):
-                try:
-                    ensure_role_at_least(role, "manager")
-                except HTTPException:
-                    result = _receipt_err(
-                        db,
-                        errors,
-                        ch,
-                        user_id,
-                        project_id,
-                        "insufficient_permissions",
-                        failure_kind="permission",
-                    )
-                    results.append(result)
-                    batch_results[ch.change_id] = result
-                    wrote += 1
-                    _evict_if_needed()
-                    continue
-
-        try:
-            ensure_role_at_least(role, _min_role_for_change(entity, op))
-        except HTTPException:
-            result = _receipt_err(
-                db,
-                errors,
-                ch,
-                user_id,
-                project_id,
-                "insufficient_permissions",
-                failure_kind="permission",
-            )
-            results.append(result)
-            batch_results[ch.change_id] = result
-            wrote += 1
-            _evict_if_needed()
-            continue
-
-        try:
-            with db.begin_nested():
-                eid = (
-                    _apply_upsert(
-                        db,
-                        user_id,
-                        project_id,
-                        entity,
-                        ch.base_version,
-                        record,
-                        ch.change_id,
-                    )
-                    if op == "upsert"
-                    else _apply_delete(
-                        db,
-                        user_id,
-                        project_id,
-                        entity,
-                        ch.base_version,
-                        record,
-                        ch.change_id,
-                    )
-                )
-                _store_receipt(
-                    db,
-                    ch.change_id,
-                    user_id,
-                    project_id,
-                    entity,
-                    eid,
-                    op,
-                    "accepted",
-                    {"entity_id": str(eid)},
-                )
-                db.flush()
-            accepted += 1
-            result = _change_result(
-                change_id=ch.change_id,
-                status="accepted",
-                entity=entity,
-                op=op,
-                entity_id=eid,
-                response={"entity_id": str(eid)},
-            )
-            results.append(result)
-            batch_results[ch.change_id] = result
-            wrote += 1
-            _evict_if_needed()
-
-        except ConflictError as exc:
-            conflict_response = {
-                "reason": exc.reason,
-                "server_version": exc.server_version,
-                "server_record": exc.server_record,
-                "server_updated_at": exc.server_updated_at,
-                "failure_kind": "conflict",
-                "retryable": False,
-            }
-            _store_receipt(
-                db,
-                ch.change_id,
-                user_id,
-                project_id,
-                entity,
-                exc.entity_id,
-                op,
-                "conflict",
-                conflict_response,
-            )
-            result = _change_result(
-                change_id=ch.change_id,
-                status="conflict",
-                entity=entity,
-                op=op,
-                entity_id=exc.entity_id,
-                response=conflict_response,
-            )
-            results.append(result)
-            batch_results[ch.change_id] = result
-            _append_legacy_outcome(result, conflicts, errors)
-            wrote += 1
-            _evict_if_needed()
-
-        except HTTPException as exc:
-            failure_kind, retryable = _classify_http_failure(exc.status_code)
-            result = _receipt_err(
-                db,
-                errors,
-                ch,
-                user_id,
-                project_id,
-                "http_error",
-                str(exc.detail),
-                failure_kind=failure_kind,
-                retryable=retryable,
-                store_receipt=not retryable,
-            )
-            results.append(result)
-            batch_results[ch.change_id] = result
-            if not retryable:
-                wrote += 1
-                _evict_if_needed()
-
-        except Exception:
-            logging.getLogger("riskapp_server.sync").exception(
-                "Unexpected error processing sync change %s", ch.change_id
-            )
-            result = _receipt_err(
-                db,
-                errors,
-                ch,
-                user_id,
-                project_id,
-                "internal_error",
-                failure_kind="transient",
-                retryable=True,
-                store_receipt=False,
-            )
-            results.append(result)
-            batch_results[ch.change_id] = result
-
-    try:
-        db.commit()
-    except Exception as exc:
-        db.rollback()
-        logging.getLogger("riskapp_server.sync").exception("Failed to commit sync push")
-        raise HTTPException(status_code=500, detail="Sync push commit failed") from exc
-
-    return {
-        "accepted": accepted,
-        "duplicates": duplicates,
-        "duplicate_change_ids": dup_ids,
-        "conflicts": conflicts,
-        "errors": errors,
-        "results": results,
-        "server_time": utcnow(),
-    }
+    ctx = _prepare_push_context(db, user_id, project_id, role, changes)
+    for change in changes:
+        _process_push_change(ctx, change)
+    _commit_push(ctx)
+    return _push_response(ctx)
 
 
 def _store_receipt(

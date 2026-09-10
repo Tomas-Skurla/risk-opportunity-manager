@@ -17,6 +17,7 @@ from riskapp_client.ui_v2.mixins.opportunities_mixin import OpportunitiesMixin
 from riskapp_client.ui_v2.mixins.projects_sync_mixin import ProjectsSyncMixin
 from riskapp_client.ui_v2.mixins.risks_mixin import RisksMixin
 from riskapp_client.ui_v2.mixins.top_history_mixin import TopHistoryMixin
+from riskapp_client.ui_v2.window_state import MainWindowState
 
 
 class MainWindow(  # pylint: disable=too-many-ancestors
@@ -39,9 +40,15 @@ class MainWindow(  # pylint: disable=too-many-ancestors
     Composed of multiple mixins to handle distinct UI components and state.
     """
 
-    def __init__(self, backend: Backend) -> None:
+    def __init__(
+        self,
+        backend: Backend,
+        *,
+        state: MainWindowState | None = None,
+    ) -> None:
         super().__init__()
         self.backend = backend
+        self.state = state if state is not None else MainWindowState()
         self._init_state()
         self._build_ui()
         self._init_background_jobs()

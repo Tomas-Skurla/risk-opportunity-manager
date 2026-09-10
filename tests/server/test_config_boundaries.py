@@ -32,6 +32,11 @@ def test_environment_helpers_reject_malformed_and_out_of_range_values(
     monkeypatch.setenv("INT_SETTING", "7")
     assert config._env_int("INT_SETTING", 5, minimum=1, maximum=10) == 7
 
+    monkeypatch.setenv("CHOICE_SETTING", " JSON ")
+    assert config._env_choice("CHOICE_SETTING", "plain", {"plain", "json"}) == "json"
+    monkeypatch.setenv("CHOICE_SETTING", "xml")
+    with pytest.raises(config.ConfigurationError, match="CHOICE_SETTING"):
+        config._env_choice("CHOICE_SETTING", "plain", {"plain", "json"})
 
 def test_integer_setting_deprecated_alias_and_canonical_precedence(
     monkeypatch,

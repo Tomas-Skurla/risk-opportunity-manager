@@ -25,6 +25,9 @@ BLOCKING_FAILURE_KINDS = {
     "error",
 }
 
+# SQL fragments interpolated below are assembled only from fixed clauses or
+# generated "?" placeholders. All runtime values remain bound parameters.
+
 
 @dataclass(frozen=True)
 class PendingChange:
@@ -64,7 +67,8 @@ class OutboxStore:
             where += " AND project_id=?"
             params.append(project_id)
         row = self.conn.execute(
-            f"SELECT COUNT(*) AS c FROM outbox WHERE {where};", params
+            f"SELECT COUNT(*) AS c FROM outbox WHERE {where};",  # noqa: S608
+            params,
         ).fetchone()
         return int(row["c"]) if row else 0
 
@@ -75,7 +79,8 @@ class OutboxStore:
             where += " AND project_id=?"
             params.append(project_id)
         row = self.conn.execute(
-            f"SELECT COUNT(*) AS c FROM outbox WHERE {where};", params
+            f"SELECT COUNT(*) AS c FROM outbox WHERE {where};",  # noqa: S608
+            params,
         ).fetchone()
         return int(row["c"]) if row else 0
 
@@ -104,7 +109,8 @@ class OutboxStore:
             where += " AND project_id=?"
             params.append(project_id)
         row = self.conn.execute(
-            f"SELECT COUNT(*) AS c FROM outbox WHERE {where};", params
+            f"SELECT COUNT(*) AS c FROM outbox WHERE {where};",  # noqa: S608
+            params,
         ).fetchone()
         return int(row["c"]) if row else 0
 
@@ -519,7 +525,8 @@ class OutboxStore:
             where += " AND project_id=?"
             params.append(project_id)
         row = self.conn.execute(
-            f"SELECT MIN(next_retry_at) AS ts FROM outbox WHERE {where};", params
+            f"SELECT MIN(next_retry_at) AS ts FROM outbox WHERE {where};",  # noqa: S608
+            params,
         ).fetchone()
         return str(row["ts"]) if row and row["ts"] else None
 
@@ -529,7 +536,8 @@ class OutboxStore:
         q = ",".join(["?"] * len(change_ids))
         with self._store.write_transaction():
             self.conn.execute(
-                f"DELETE FROM outbox WHERE change_id IN ({q});", change_ids
+                f"DELETE FROM outbox WHERE change_id IN ({q});",  # noqa: S608
+                change_ids,
             )
 
     def _encode_failure(
@@ -609,7 +617,7 @@ class OutboxStore:
                 UPDATE outbox
                 SET status=?, next_retry_at=''
                 WHERE status=? AND failure_kind='authentication'{project_clause};
-                """,
+                """,  # noqa: S608
                 params,
             )
         return int(result.rowcount or 0)

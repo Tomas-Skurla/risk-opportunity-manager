@@ -301,7 +301,7 @@ def test_offline_facade_worker_uses_a_separate_sqlite_connection(
             calls["fork"] = threading.get_ident()
             return self
 
-        def sync_pull(self, project_id, _since):
+        def sync_pull(self, project_id, _since, **_kwargs):
             assert project_id == "project-1"
             calls["pull"] = threading.get_ident()
             return {

@@ -22,7 +22,8 @@ def _temporary_parent() -> Path:
 
 
 def _run_alembic(arguments: list[str], environment: dict[str, str]) -> None:
-    subprocess.run(
+    # The executable/module and every argument are fixed by the private callers below.
+    subprocess.run(  # noqa: S603
         [sys.executable, "-m", "alembic", *arguments],
         cwd=ROOT,
         env=environment,

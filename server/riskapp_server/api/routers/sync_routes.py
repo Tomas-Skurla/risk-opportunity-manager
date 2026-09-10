@@ -41,6 +41,8 @@ def sync_pull(
         limit_per_entity=payload.limit_per_entity,
         cursors=payload.cursors,
         snapshot_time=payload.snapshot_time,
+        since_sequence=payload.since_sequence,
+        snapshot_sequence=payload.snapshot_sequence,
     )
 
 

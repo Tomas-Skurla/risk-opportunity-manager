@@ -10,16 +10,13 @@ from pathlib import Path
 
 from sqlalchemy import create_engine, text
 
+from riskapp_server.core import config
+
 
 def _resolve_database_url() -> str:
-    try:
-        from riskapp_server.core.config import DATABASE_URL  # type: ignore
-
-        url = str(DATABASE_URL).strip()
-        if url:
-            return url
-    except ImportError:
-        pass
+    url = str(config.DATABASE_URL).strip()
+    if url:
+        return url
     url = os.getenv("DATABASE_URL", "").strip()
     if not url:
         raise SystemExit(

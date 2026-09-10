@@ -33,6 +33,17 @@ from riskapp_client.services.scored_entity_management_service import (
 from riskapp_client.services.synchronization_service import SyncService
 
 
+def _optional_callable(
+    owner: object | None,
+    name: str,
+) -> Callable[..., Any] | None:
+    """Return a dynamically supported method only when it is callable."""
+    candidate = getattr(owner, name, None)
+    if not callable(candidate):
+        return None
+    return candidate
+
+
 class OfflineFirstBackend(Backend):
     """Backend implementation used by the Qt UI in offline-first mode."""
 
@@ -82,8 +93,8 @@ class OfflineFirstBackend(Backend):
     def create_background_backend(self) -> OfflineFirstBackend:
         """Build a worker-owned facade with its own SQLite connection."""
         remote = self.remote
-        fork_remote = getattr(remote, "fork_authenticated", None)
-        if callable(fork_remote):
+        fork_remote = _optional_callable(remote, "fork_authenticated")
+        if fork_remote is not None:
             remote = fork_remote()
         return OfflineFirstBackend(
             LocalStore(self.store.db_path),
@@ -91,10 +102,16 @@ class OfflineFirstBackend(Backend):
             anonymous_offline=self.anonymous_offline,
         )
 
+    def _remote_for_project(self, project_id: str | None = None) -> Any | None:
+        remote = self.remote
+        if not remote:
+            return None
+        if project_id and str(project_id).startswith("local-"):
+            return None
+        return remote
+
     def _use_remote(self, project_id: str | None = None) -> bool:
-        if not self.remote:
-            return False
-        return not (project_id and str(project_id).startswith("local-"))
+        return self._remote_for_project(project_id) is not None
 
     def _discard_scored_changes(
         self,
@@ -177,7 +194,9 @@ class OfflineFirstBackend(Backend):
                 for p in list(remote_projects) + local_projects:
                     by_id[str(p.id)] = p
                 return list(by_id.values())
-            except Exception:
+            # Any remote transport or response failure must fall back to the
+            # local cache so this offline-first boundary remains available.
+            except Exception:  # pylint: disable=broad-exception-caught
                 logging.getLogger(__name__).debug(
                     "Remote list_projects failed, using local cache", exc_info=True
                 )
@@ -251,9 +270,10 @@ class OfflineFirstBackend(Backend):
         )
 
     def delete_project(self, project_id: str) -> None:
-        if not self._use_remote(project_id):
+        remote = self._remote_for_project(project_id)
+        if remote is None:
             raise RuntimeError("Sync this project to the server before deleting.")
-        self.remote.delete_project(project_id)
+        remote.delete_project(project_id)
 
     def list_members(self, project_id: str) -> list[Member]:
         if not self._use_remote(project_id):
@@ -328,8 +348,12 @@ class OfflineFirstBackend(Backend):
         return self._risks.list(project_id)
 
     def risks_report(self, project_id: str, **filters) -> dict:
-        if self._use_remote(project_id) and getattr(self.remote, "risks_report", None):
-            return dict(self.remote.risks_report(project_id, **filters))
+        report = _optional_callable(
+            self._remote_for_project(project_id),
+            "risks_report",
+        )
+        if report is not None:
+            return dict(report(project_id, **filters))
 
         items = self._risks.list(project_id)
         return self._generate_scored_report(items, filters)
@@ -384,10 +408,12 @@ class OfflineFirstBackend(Backend):
         return self._opps.list(project_id)
 
     def opportunities_report(self, project_id: str, **filters) -> dict:
-        if self._use_remote(project_id) and getattr(
-            self.remote, "opportunities_report", None
-        ):
-            return dict(self.remote.opportunities_report(project_id, **filters))
+        report = _optional_callable(
+            self._remote_for_project(project_id),
+            "opportunities_report",
+        )
+        if report is not None:
+            return dict(report(project_id, **filters))
 
         items = self._opps.list(project_id)
         return self._generate_scored_report(items, filters)
@@ -490,9 +516,10 @@ class OfflineFirstBackend(Backend):
     # ---- Snapshots / history ----
 
     def create_snapshot(self, project_id: str, *, kind: str | None = None):
-        if not self._use_remote(project_id):
+        remote = self._remote_for_project(project_id)
+        if remote is None:
             raise RuntimeError("Snapshots require a synced project.")
-        return self.remote.create_snapshot(project_id, kind=kind)
+        return remote.create_snapshot(project_id, kind=kind)
 
     def top_history(
         self,
@@ -503,9 +530,10 @@ class OfflineFirstBackend(Backend):
         from_ts: str | None = None,
         to_ts: str | None = None,
     ):
-        if not self._use_remote(project_id):
+        remote = self._remote_for_project(project_id)
+        if remote is None:
             return []
-        return self.remote.top_history(
+        return remote.top_history(
             project_id, kind=kind, limit=limit, from_ts=from_ts, to_ts=to_ts
         )
 
@@ -542,12 +570,13 @@ class OfflineFirstBackend(Backend):
         should_cancel: Callable[[], bool] | None = None,
         progress: Callable[[str], None] | None = None,
     ):
-        kwargs: dict[str, object] = {}
-        if should_cancel is not None:
-            kwargs["should_cancel"] = should_cancel
-        if progress is not None:
-            kwargs["progress"] = progress
-        return self._sync.sync_project(project_id, **kwargs)
+        if should_cancel is None and progress is None:
+            return self._sync.sync_project(project_id)
+        return self._sync.sync_project(
+            project_id,
+            should_cancel=should_cancel,
+            progress=progress,
+        )
 
     def blocked_details(self, project_id: str | None = None) -> list[dict[str, Any]]:
         return self._sync.blocked_details(project_id)

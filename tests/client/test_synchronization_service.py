@@ -14,6 +14,7 @@ from riskapp_client.services.synchronization_service import SyncService
 def _service(*, remote=None):
     store = Mock()
     store.write_transaction.side_effect = nullcontext
+    store.get_last_server_sequence.return_value = 0
     outbox = Mock()
     outbox.next_retry_at.return_value = None
     return SyncService(store, outbox, remote), store, outbox
@@ -66,7 +67,7 @@ def test_sync_can_be_cancelled_before_any_remote_request() -> None:
     assert summary["cancelled"] is True
     remote.sync_push.assert_not_called()
     remote.sync_pull.assert_not_called()
-    store.set_last_server_time.assert_not_called()
+    store.set_sync_watermark.assert_not_called()
 
 
 def test_cancel_after_partial_apply_does_not_advance_watermark() -> None:
@@ -98,7 +99,7 @@ def test_cancel_after_partial_apply_does_not_advance_watermark() -> None:
     assert summary["state"] == "cancelled"
     store.apply_pull_risks.assert_called_once()
     store.apply_pull_opportunities.assert_not_called()
-    store.set_last_server_time.assert_not_called()
+    store.set_sync_watermark.assert_not_called()
 
 
 def test_cancelled_paginated_pull_is_not_applied() -> None:
@@ -109,7 +110,7 @@ def test_cancelled_paginated_pull_is_not_applied() -> None:
 
     def sync_pull(_project_id, _since, **kwargs):
         nonlocal cancelled
-        if not kwargs:
+        if "limit_per_entity" not in kwargs:
             raise PullTooLarge("too large")
         cancelled = True
         return {
@@ -133,7 +134,7 @@ def test_cancelled_paginated_pull_is_not_applied() -> None:
 
     assert summary["state"] == "cancelled"
     store.apply_pull_risks.assert_not_called()
-    store.set_last_server_time.assert_not_called()
+    store.set_sync_watermark.assert_not_called()
 
 
 def test_sync_reports_progress_at_safe_boundaries() -> None:
@@ -287,7 +288,7 @@ def test_request_level_push_failure_stops_pull_and_returns_retry_state() -> None
     assert summary["errors"] == 0
     assert summary["next_retry_at"] == "2026-09-04T12:00:02"
     remote.sync_pull.assert_not_called()
-    store.set_last_server_time.assert_not_called()
+    store.set_sync_watermark.assert_not_called()
 
 
 def test_last_sync_time_hides_uninitialized_watermark() -> None:
@@ -367,6 +368,7 @@ def test_sync_project_blocks_conflict_then_applies_pull_in_parent_order() -> Non
     }
     remote.sync_pull.return_value = {
         "server_time": "2026-08-10T08:00:00Z",
+        "server_sequence": 8,
         "risks": [{"id": "risk-1"}],
         "opportunities": [{"id": "opportunity-1"}],
         "actions": [{"id": "action-1"}],
@@ -384,6 +386,7 @@ def test_sync_project_blocks_conflict_then_applies_pull_in_parent_order() -> Non
         {"change_id": "bad-1"},
     ]
     store.get_last_server_time.return_value = "2026-08-09T08:00:00Z"
+    store.get_last_server_sequence.return_value = 7
 
     summary = service.sync_project("project-1")
 
@@ -412,8 +415,13 @@ def test_sync_project_blocks_conflict_then_applies_pull_in_parent_order() -> Non
     store.apply_pull_actions.assert_called_once()
     store.apply_pull_assessments.assert_called_once()
     store.apply_pull_helpdesk_tickets.assert_called_once()
-    store.set_last_server_time.assert_called_once_with(
-        "project-1", "2026-08-10T08:00:00Z"
+    remote.sync_pull.assert_called_once_with(
+        "project-1",
+        "2026-08-09T08:00:00Z",
+        since_sequence=7,
+    )
+    store.set_sync_watermark.assert_called_once_with(
+        "project-1", "2026-08-10T08:00:00Z", 8
     )
 
 
@@ -452,16 +460,20 @@ def test_sync_project_falls_back_to_paginated_pull_only_for_413() -> None:
     assert remote.sync_pull.call_args_list[1] == call(
         "project-1",
         "since",
+        since_sequence=0,
         limit_per_entity=2000,
         cursors=None,
         snapshot_time=None,
+        snapshot_sequence=None,
     )
     assert remote.sync_pull.call_args_list[2] == call(
         "project-1",
         "since",
+        since_sequence=0,
         limit_per_entity=2000,
         cursors={"risks": "cursor-1"},
         snapshot_time="snapshot",
+        snapshot_sequence=None,
     )
 
     remote.sync_pull.side_effect = PullError(500)

@@ -489,14 +489,18 @@ def test_sync_snapshot_and_history_routes_shape_requests() -> None:
     backend.sync_pull(
         "project-1",
         "2026-01-01",
+        since_sequence=7,
         limit_per_entity=25,
         cursors={"risks": "x"},
         snapshot_time="2026-01-02T00:00:00Z",
+        snapshot_sequence=9,
     )
     assert backend._req.call_args.kwargs["json_body"]["cursors"] == {"risks": "x"}
     assert backend._req.call_args.kwargs["json_body"]["snapshot_time"] == (
         "2026-01-02T00:00:00Z"
     )
+    assert backend._req.call_args.kwargs["json_body"]["since_sequence"] == 7
+    assert backend._req.call_args.kwargs["json_body"]["snapshot_sequence"] == 9
     backend.sync_push("project-1", [{"op": "create"}])
     assert backend._req.call_args.kwargs["json_body"]["changes"] == [{"op": "create"}]
 

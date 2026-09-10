@@ -6,6 +6,7 @@ PySide6 desktop client for RiskApp.
 
 - Local SQLite cache with an outbox.
 - Manual sync with the server.
+- Commit-safe incremental pulls using a persisted server sequence, with automatic fallback for older servers.
 - Sidebar views for Risks, Opportunities, Matrix, Top history, Actions, Assessments, Members, and Help Desk.
 - Online login, account registration, offline-as-user mode, and fully local anonymous mode.
 - Qt/PySide runtime diagnostics through `scripts/diagnose_qt_runtime.sh`.

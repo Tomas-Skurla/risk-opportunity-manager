@@ -35,7 +35,8 @@ verify_pw = password_hashing.verify_pw
 password_needs_rehash = password_hashing.password_needs_rehash
 
 validate_runtime_config()
-if SECRET_KEY == "change-me" and ALLOW_INSECURE_DEFAULT_SECRET:
+# "change-me" is a sentinel that is rejected outside local development.
+if SECRET_KEY == "change-me" and ALLOW_INSECURE_DEFAULT_SECRET:  # noqa: S105
     logger.warning("Using the default SECRET_KEY; do not use this outside local dev.")
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/login")

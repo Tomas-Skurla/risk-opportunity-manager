@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import sqlite3
 import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime
-from typing import Any, TypeVar
+from types import TracebackType
+from typing import Any, TypeVar, cast
 
 from riskapp_client.adapters.local_storage.schema import ensure_schema
 from riskapp_client.adapters.mappers.action_assessment_mapper import (
@@ -31,6 +33,7 @@ from riskapp_client.domain.scored_entity_fields import (
 )
 
 ModelT = TypeVar("ModelT")
+ValueT = TypeVar("ValueT")
 
 _TEXT_META_KEYS: set[str] = {
     name
@@ -57,12 +60,23 @@ _VALID_TABLES: set[str] = {
     "helpdesk_tickets",
 }
 
+# sqlite3 can bind values but not identifiers. Dynamic identifiers in this
+# module are allow-listed or checked here; every user value remains a parameter.
+_SQL_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+
 
 def _check_table(table: str) -> str:
     """Validate a table name."""
     if table not in _VALID_TABLES:
         raise ValueError(f"Unknown table name: {table!r}")
     return table
+
+
+def _check_identifier(identifier: str) -> str:
+    """Reject unsafe column identifiers used by private SQL builders."""
+    if not _SQL_IDENTIFIER.fullmatch(identifier):
+        raise ValueError(f"Unsafe SQLite identifier: {identifier!r}")
+    return identifier
 
 
 def utc_iso() -> str:
@@ -84,6 +98,20 @@ def _row_get(row: sqlite3.Row, key: str, default: Any = None) -> Any:
         return row[key]
     except IndexError:
         return default
+
+
+def _value_or_existing(
+    value: ValueT | None,
+    existing: sqlite3.Row | None,
+    key: str,
+    default: ValueT,
+) -> ValueT:
+    """Prefer an explicit value, then an existing SQLite value, then a default."""
+    if value is not None:
+        return value
+    if existing is None:
+        return default
+    return cast(ValueT, existing[key])
 
 
 class LocalStore:
@@ -113,7 +141,12 @@ class LocalStore:
     def __enter__(self) -> LocalStore:  # noqa: PYI034
         return self
 
-    def __exit__(self, exc_type, exc, tb) -> None:
+    def __exit__(
+        self,
+        _exc_type: type[BaseException] | None,
+        _exc: BaseException | None,
+        _traceback: TracebackType | None,
+    ) -> None:
         """Release resources when leaving the context manager."""
         self.close()
 
@@ -172,16 +205,18 @@ class LocalStore:
         """Insert or update a row."""
         _check_table(table)
         cols = list(record.keys())
+        for identifier in (*cols, pk):
+            _check_identifier(identifier)
         placeholders = ", ".join(["?"] * len(cols))
         set_clause = ", ".join([f"{c}=excluded.{c}" for c in cols if c != pk])
         if set_clause:
             sql = (
-                f"INSERT INTO {table} ({','.join(cols)}) VALUES ({placeholders}) "
+                f"INSERT INTO {table} ({','.join(cols)}) VALUES ({placeholders}) "  # noqa: S608
                 f"ON CONFLICT({pk}) DO UPDATE SET {set_clause}"
             )
         else:
             sql = (
-                f"INSERT INTO {table} ({','.join(cols)}) VALUES ({placeholders}) "
+                f"INSERT INTO {table} ({','.join(cols)}) VALUES ({placeholders}) "  # noqa: S608
                 f"ON CONFLICT({pk}) DO NOTHING"
             )
         (cur or self.conn).execute(sql, tuple(record[c] for c in cols))
@@ -266,7 +301,7 @@ class LocalStore:
                 "outbox",
             ):
                 cur.execute(
-                    f"UPDATE {table} SET project_id=? WHERE project_id=?;",
+                    f"UPDATE {table} SET project_id=? WHERE project_id=?;",  # noqa: S608
                     (new_id, old_id),
                 )
             cur.execute("DELETE FROM projects WHERE id=?;", (old_id,))
@@ -323,7 +358,8 @@ class LocalStore:
                 "outbox",
             ):
                 count = self.conn.execute(
-                    f"SELECT COUNT(*) FROM {child_table} WHERE project_id = ?;", (pid,)
+                    f"SELECT COUNT(*) FROM {child_table} WHERE project_id = ?;",  # noqa: S608
+                    (pid,),
                 ).fetchone()[0]
                 if count and int(count) > 0:
                     has_data = True
@@ -333,7 +369,8 @@ class LocalStore:
             # Clean up an empty project the user can no longer access.
             for child_table in ("helpdesk_tickets", "sync_state"):
                 self.conn.execute(
-                    f"DELETE FROM {child_table} WHERE project_id = ?;", (pid,)
+                    f"DELETE FROM {child_table} WHERE project_id = ?;",  # noqa: S608
+                    (pid,),
                 )
             self.conn.execute("DELETE FROM projects WHERE id = ?;", (pid,))
         self.upsert_projects(server_projects)
@@ -389,9 +426,6 @@ class LocalStore:
     ) -> None:
         existing = self._get_action_row(action_id)
 
-        def _fallback(val, key, default):
-            return val if val is not None else (existing[key] if existing else default)
-
         self._upsert_row(
             "actions",
             {
@@ -404,9 +438,15 @@ class LocalStore:
                 "description": description or "",
                 "status": status or "open",
                 "owner_user_id": owner_user_id,
-                "version": int(_fallback(version, "version", 0)),
-                "is_deleted": int(_fallback(is_deleted, "is_deleted", 0)),
-                "updated_at": str(_fallback(updated_at, "updated_at", "")),
+                "version": int(
+                    _value_or_existing(version, existing, "version", 0)
+                ),
+                "is_deleted": int(
+                    _value_or_existing(is_deleted, existing, "is_deleted", False)
+                ),
+                "updated_at": str(
+                    _value_or_existing(updated_at, existing, "updated_at", "")
+                ),
                 "dirty": int(dirty),
             },
         )
@@ -428,7 +468,7 @@ class LocalStore:
             obj = mapper_fn(raw)
             if obj.id in pending_ids:
                 cur.execute(
-                    f"UPDATE {table_name} SET version=?, updated_at=? WHERE id=?;",
+                    f"UPDATE {table_name} SET version=?, updated_at=? WHERE id=?;",  # noqa: S608
                     (int(obj.version), str(obj.updated_at or ""), str(obj.id)),
                 )
                 continue
@@ -444,7 +484,9 @@ class LocalStore:
     def apply_pull_actions(
         self, project_id: str, server_actions: list[dict[str, Any]]
     ) -> None:
-        def build_record(action, _raw):
+        def build_record(
+            action: Action, _raw: dict[str, Any]
+        ) -> dict[str, Any]:
             return {
                 "risk_id": action.risk_id,
                 "opportunity_id": action.opportunity_id,
@@ -494,7 +536,7 @@ class LocalStore:
         self._assert_scored_table(table)
         like = f"{prefix}-%"
         rows = self.conn.execute(
-            f"SELECT code FROM {table} WHERE project_id=? AND code LIKE ? AND code IS NOT NULL;",
+            f"SELECT code FROM {table} WHERE project_id=? AND code LIKE ? AND code IS NOT NULL;",  # noqa: S608
             (project_id, like),
         ).fetchall()
         max_n = 0
@@ -533,7 +575,7 @@ class LocalStore:
             FROM {table}
             WHERE project_id=? AND is_deleted=0
             ORDER BY (probability*impact) DESC, title ASC
-            """,
+            """,  # noqa: S608
             (project_id,),
         ).fetchall()
         return [scored_entity_from_mapping(r, model_cls=model_cls) for r in rows]
@@ -541,7 +583,8 @@ class LocalStore:
     def _get_scored_row(self, table: str, entity_id: str) -> sqlite3.Row | None:
         self._assert_scored_table(table)
         return self.conn.execute(
-            f"SELECT * FROM {table} WHERE id=?;", (entity_id,)
+            f"SELECT * FROM {table} WHERE id=?;",  # noqa: S608
+            (entity_id,),
         ).fetchone()
 
     def _get_scored_project_and_version(
@@ -562,7 +605,7 @@ class LocalStore:
         project_id = str(row["project_id"])
         version = int(row["version"] or 0)
         self.conn.execute(
-            f"UPDATE {table} SET is_deleted=1, dirty=1, updated_at=? WHERE id=?;",
+            f"UPDATE {table} SET is_deleted=1, dirty=1, updated_at=? WHERE id=?;",  # noqa: S608
             (utc_iso(), entity_id),
         )
         self._commit_if_needed()
@@ -598,12 +641,12 @@ class LocalStore:
         self._assert_scored_table(table)
         existing = self._get_scored_row(table, entity_id)
 
-        def _fallback(val, key, default):
-            return val if val is not None else (existing[key] if existing else default)
+        v = int(_value_or_existing(version, existing, "version", 0))
+        is_del = int(
+            _value_or_existing(is_deleted, existing, "is_deleted", False)
+        )
+        upd = str(_value_or_existing(updated_at, existing, "updated_at", ""))
 
-        v = int(_fallback(version, "version", 0))
-        is_del = int(_fallback(is_deleted, "is_deleted", 0))
-        upd = str(_fallback(updated_at, "updated_at", ""))
         m = self._norm_scored_meta(meta)
         if not m.get("status"):
             m["status"] = "concept"
@@ -655,7 +698,7 @@ class LocalStore:
             upd = str(ent.get("updated_at") or "")
             if eid in pending_ids:
                 cur.execute(
-                    f"UPDATE {table} SET version=?, updated_at=? WHERE id=?;",
+                    f"UPDATE {table} SET version=?, updated_at=? WHERE id=?;",  # noqa: S608
                     (ver, upd, eid),
                 )
                 continue
@@ -720,7 +763,10 @@ class LocalStore:
 
     def _mark_entity_clean(self, table: str, entity_id: str) -> None:
         _check_table(table)
-        self.conn.execute(f"UPDATE {table} SET dirty=0 WHERE id=?;", (entity_id,))
+        self.conn.execute(
+            f"UPDATE {table} SET dirty=0 WHERE id=?;",  # noqa: S608
+            (entity_id,),
+        )
         self._commit_if_needed()
 
     def mark_risk_clean(self, risk_id: str) -> None:
@@ -880,13 +926,43 @@ class LocalStore:
         ).fetchone()
         return str(row["last_server_time"]) if row else "1970-01-01T00:00:00"
 
+    def get_last_server_sequence(self, project_id: str) -> int:
+        row = self.conn.execute(
+            "SELECT last_server_sequence FROM sync_state WHERE project_id=?;",
+            (project_id,),
+        ).fetchone()
+        return int(row["last_server_sequence"] or 0) if row else 0
+
     def set_last_server_time(self, project_id: str, server_time: str) -> None:
+        """Update the display timestamp without discarding a sequence watermark."""
+        self.set_sync_watermark(
+            project_id,
+            server_time,
+            self.get_last_server_sequence(project_id),
+        )
+
+    def set_sync_watermark(
+        self,
+        project_id: str,
+        server_time: str,
+        server_sequence: int | None,
+    ) -> None:
+        sequence = 0 if server_sequence is None else int(server_sequence)
+        if sequence < 0:
+            raise ValueError("server_sequence must be nonnegative")
         self._upsert_row(
             "sync_state",
-            {"project_id": project_id, "last_server_time": server_time},
+            {
+                "project_id": project_id,
+                "last_server_time": server_time,
+                "last_server_sequence": sequence,
+            },
             pk="project_id",
         )
         self._commit_if_needed()
+
+    def reset_sync_watermark(self, project_id: str, server_time: str) -> None:
+        self.set_sync_watermark(project_id, server_time, 0)
 
     def apply_pull_risks(
         self, project_id: str, server_risks: list[dict[str, Any]]
@@ -911,7 +987,9 @@ class LocalStore:
     def apply_pull_assessments(
         self, project_id: str, server_assessments: list[dict[str, Any]]
     ) -> None:
-        def build_record(assessment, raw):
+        def build_record(
+            assessment: Assessment, raw: dict[str, Any]
+        ) -> dict[str, Any]:
             item_id = str(assessment.item_id)
             item_type = self._infer_assessment_item_type(project_id, item_id, raw)
             risk_id = item_id if item_type == "risk" else None
@@ -1060,7 +1138,7 @@ class LocalStore:
             params.append(status)
         params.append(ticket_id)
         self.conn.execute(
-            f"UPDATE helpdesk_tickets SET {', '.join(sets)} WHERE id = ?;",
+            f"UPDATE helpdesk_tickets SET {', '.join(sets)} WHERE id = ?;",  # noqa: S608
             params,
         )
         self._commit_if_needed()

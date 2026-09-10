@@ -60,7 +60,7 @@ def test_project_id_migration_is_atomic_and_idempotent(store: LocalStore) -> Non
         impact=4,
         version=2,
     )
-    store.set_last_server_time(old_id, "2025-02-01T00:00:00")
+    store.set_sync_watermark(old_id, "2025-02-01T00:00:00", 17)
     ticket = store.create_helpdesk_ticket(old_id, title="Move ticket")
     OutboxStore(store).queue_risk_upsert(
         old_id,
@@ -81,6 +81,7 @@ def test_project_id_migration_is_atomic_and_idempotent(store: LocalStore) -> Non
     assert store.get_risk_project_and_version("risk-1") == (new_id, 2)
     assert store.get_helpdesk_ticket_project_id(ticket.id) == new_id
     assert store.get_last_server_time(new_id) == "2025-02-01T00:00:00"
+    assert store.get_last_server_sequence(new_id) == 17
     assert OutboxStore(store).pending_count(new_id) == 1
     assert store.get_meta("bootstrap_project_id") == new_id
     assert store.get_meta("bootstrap_user_project_id") == "another-project"

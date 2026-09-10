@@ -32,7 +32,7 @@ def _handle_registration(
 ) -> tuple[str, str, str] | None:
     """Show the registration dialog and return credentials on success."""
     dlg = RegisterDialog(default_url=default_url)
-    if dlg.exec() != QDialog.Accepted:
+    if dlg.exec() != QDialog.DialogCode.Accepted:
         return None
     base_url, email, password = dlg.values()
     try:
@@ -53,11 +53,10 @@ def _handle_registration(
         if isinstance(detail, dict):
             parts = []
             for key, val in detail.items():
-                (
+                if isinstance(val, list):
                     parts.extend(val)
-                    if isinstance(val, list)
-                    else parts.append(f"{key}: {val}")
-                )
+                else:
+                    parts.append(f"{key}: {val}")
             detail = "\n".join(parts)
         QMessageBox.warning(None, "Registration failed", f"{detail}")
         return None
@@ -72,7 +71,7 @@ def _show_server_down(
     """Show the server-down dialog."""
     has_creds = bool(email)
     dlg = ServerDownDialog(error, has_credentials=has_creds, email=email)
-    if dlg.exec() != QDialog.Accepted:
+    if dlg.exec() != QDialog.DialogCode.Accepted:
         return None
 
     if dlg.choice == ServerDownDialog.OFFLINE_WITH_ACCOUNT and email:
@@ -122,7 +121,7 @@ def build_main_window(config: AppConfig) -> MainWindow:
             # Stay local only.
             backend = OfflineFirstBackend(store, remote=None, anonymous_offline=True)
             return MainWindow(backend)
-        elif result != QDialog.Accepted:
+        elif result != QDialog.DialogCode.Accepted:
             sys.exit(0)
         else:
             base_url, email, password = dlg.values()
