@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
 )  # pylint: disable=no-name-in-module
+
 from riskapp_client.services import entity_filters as filters
 
 

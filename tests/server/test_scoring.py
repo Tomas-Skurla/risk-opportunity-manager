@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-
 # Keep the import local so each test uses the current server module.
 # pylint: disable=import-outside-toplevel
 

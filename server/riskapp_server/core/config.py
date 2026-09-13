@@ -182,6 +182,9 @@ SYNC_PUSH_EXPUNGE_EVERY: int = _env_int_with_deprecated_alias(
 SYNC_PUSH_EXUNGE_EVERY: int = SYNC_PUSH_EXPUNGE_EVERY
 SNAPSHOT_INSERT_CHUNK: int = _env_int("SNAPSHOT_INSERT_CHUNK", 1000, minimum=100)
 RETENTION_DAYS: int = _env_int("RETENTION_DAYS", 180, minimum=1)
+SYNC_RECEIPT_RETENTION_DAYS: int = _env_int(
+    "SYNC_RECEIPT_RETENTION_DAYS", 365, minimum=1
+)
 
 CORS_ORIGINS: list[str] = _env_list("CORS_ORIGINS")
 ALLOWED_HOSTS: list[str] = _env_list(

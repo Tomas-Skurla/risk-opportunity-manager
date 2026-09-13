@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import uuid
+from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
 
 from fastapi.testclient import TestClient
 from riskapp_server.sync import engine
@@ -211,3 +213,117 @@ def test_transient_internal_failure_is_not_receipted_and_same_id_can_retry(
         assert retried["duplicates"] == 0
         assert retried["results"][0]["status"] == "accepted"
         assert retried["results"][0]["replayed"] is False
+
+
+def test_replay_requires_identical_payload_and_global_id_scope(
+    tmp_path, isolated_app_factory
+) -> None:
+    app = isolated_app_factory(f"sqlite+pysqlite:///{tmp_path / 'scope.db'}")
+    with TestClient(app) as client:
+        project_id, headers = _setup(client)
+        risk_id = str(uuid.uuid4())
+        change = {
+            "change_id": str(uuid.uuid4()), "entity": "risk", "op": "upsert",
+            "base_version": 0,
+            "record": {
+                "id": risk_id, "title": "Original",
+                "probability": 2, "impact": 3,
+            },
+        }
+        assert _push(client, project_id, headers, change).json()["accepted"] == 1
+        altered = {**change, "record": {**change["record"], "title": "Changed"}}
+        rejected = _push(client, project_id, headers, altered).json()
+        assert rejected["duplicates"] == 0
+        assert rejected["results"][0]["reason"] == "change_id_payload_mismatch"
+        assert rejected["results"][0]["failure_kind"] == "validation"
+
+        other_project = client.post(
+            "/projects", json={"name": "Different scope"}, headers=headers
+        ).json()["id"]
+        scoped = _push(client, other_project, headers, change).json()
+        assert scoped["accepted"] == 0
+        assert scoped["results"][0]["reason"] == "change_id_in_use"
+        assert scoped["results"][0]["server_record"] is None
+        reordered = {**change, "record": dict(reversed(list(change["record"].items())))}
+        assert _push(client, project_id, headers, reordered).json()["duplicates"] == 1
+
+
+def test_concurrent_identical_requests_share_one_receipt(
+    tmp_path, isolated_app_factory
+) -> None:
+    app = isolated_app_factory(f"sqlite+pysqlite:///{tmp_path / 'parallel.db'}")
+    with TestClient(app) as client:
+        project_id, headers = _setup(client)
+        change = {
+            "change_id": str(uuid.uuid4()), "entity": "risk", "op": "upsert",
+            "base_version": 0,
+            "record": {
+                "id": str(uuid.uuid4()), "title": "One write",
+                "probability": 2, "impact": 3,
+            },
+        }
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            bodies = list(pool.map(
+                lambda _: _push(client, project_id, headers, change).json(), range(2)
+            ))
+        assert sorted(body["accepted"] for body in bodies) == [0, 1]
+        assert sorted(body["duplicates"] for body in bodies) == [0, 1]
+
+
+def test_pre_migration_receipt_cannot_replay_unverifiable_payload(
+    tmp_path, isolated_app_factory
+) -> None:
+    app = isolated_app_factory(f"sqlite+pysqlite:///{tmp_path / 'legacy.db'}")
+    with TestClient(app) as client:
+        project_id, headers = _setup(client)
+        change = {
+            "change_id": str(uuid.uuid4()), "entity": "risk", "op": "upsert",
+            "base_version": 0,
+            "record": {
+                "id": str(uuid.uuid4()), "title": "Legacy",
+                "probability": 2, "impact": 3,
+            },
+        }
+        assert _push(client, project_id, headers, change).json()["accepted"] == 1
+        # pylint: disable-next=import-outside-toplevel
+        from riskapp_server.db.session import SessionLocal, SyncReceipt
+
+        with SessionLocal() as db:
+            receipt = db.get(SyncReceipt, uuid.UUID(change["change_id"]))
+            assert receipt is not None
+            receipt.payload_hash = None
+            db.commit()
+        replay = _push(client, project_id, headers, change).json()
+        assert replay["duplicates"] == 0
+        assert replay["results"][0]["reason"] == "receipt_unverifiable"
+
+
+def test_audit_prune_keeps_receipts_inside_idempotency_window(
+    tmp_path, isolated_app_factory
+) -> None:
+    app = isolated_app_factory(f"sqlite+pysqlite:///{tmp_path / 'retention.db'}")
+    with TestClient(app) as client:
+        project_id, headers = _setup(client)
+        change = {
+            "change_id": str(uuid.uuid4()), "entity": "risk", "op": "upsert",
+            "base_version": 0,
+            "record": {
+                "id": str(uuid.uuid4()), "title": "Keep receipt",
+                "probability": 2, "impact": 3,
+            },
+        }
+        assert _push(client, project_id, headers, change).json()["accepted"] == 1
+        # pylint: disable-next=import-outside-toplevel
+        from riskapp_server.db.session import SessionLocal, SyncReceipt, utcnow
+
+        with SessionLocal() as db:
+            receipt = db.get(SyncReceipt, uuid.UUID(change["change_id"]))
+            assert receipt is not None
+            receipt.processed_at = utcnow() - timedelta(days=200)
+            db.commit()
+        pruned = client.post(
+            f"/projects/{project_id}/maintenance/prune?days=1", headers=headers
+        )
+        assert pruned.status_code == 200
+        assert pruned.json()["sync_receipts_deleted"] == 0
+        assert _push(client, project_id, headers, change).json()["duplicates"] == 1

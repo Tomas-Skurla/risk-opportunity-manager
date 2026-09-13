@@ -171,13 +171,13 @@ class RiskStatus(StrEnum):
 
 
 class SyncReceipt(Base):
-    """Stores processed sync changes by change_id."""
+    """Stores processed sync changes; change IDs are globally unique."""
 
     __tablename__ = "sync_receipts"
 
     id = None  # type: ignore[assignment]  # suppress type checker warning
     __table_args__ = (
-        # Allow the same change_id in different user/project scopes.
+        # The primary key reserves a change ID across all users and projects.
         UniqueConstraint("change_id", "user_id", "project_id", name="uq_sync_receipt"),
         Index("ix_sync_receipts_project_processed", "project_id", "processed_at"),
     )
@@ -203,6 +203,9 @@ class SyncReceipt(Base):
 
     status: Mapped[str] = mapped_column(String(20), index=True, nullable=False)
     response: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    # Pre-migration receipts have no original request to hash. Never replay one
+    # without verifying its payload against this digest.
+    payload_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     processed_at: Mapped[datetime] = mapped_column(
         DateTime, default=utcnow, nullable=False

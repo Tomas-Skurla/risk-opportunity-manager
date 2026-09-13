@@ -2,6 +2,8 @@
 # The sync engine is organized into helpers; further file splitting is separate work.
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import uuid
 from dataclasses import dataclass, field
@@ -9,7 +11,7 @@ from datetime import UTC, datetime
 from typing import Any, cast
 
 from fastapi import HTTPException
-from sqlalchemy import or_, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.inspection import inspect as sa_inspect
 from sqlalchemy.orm import Session
@@ -588,6 +590,20 @@ def _begin_push_transaction(db: Session) -> None:
     db.connection().exec_driver_sql("BEGIN IMMEDIATE")
 
 
+def _lock_receipt_ids(db: Session, changes: list[SyncChange]) -> None:
+    """Serialize globally unique change IDs even across different projects."""
+    get_bind = getattr(db, "get_bind", None)
+    if not callable(get_bind):
+        return
+    bind = get_bind()
+    if getattr(getattr(bind, "dialect", None), "name", None) != "postgresql":
+        return  # SQLite already holds a global writer reservation.
+    # Sorted acquisition avoids lock-order deadlocks for multi-change batches.
+    for change_id in sorted({ch.change_id for ch in changes}):
+        key = int.from_bytes(change_id.bytes[:8], "big", signed=True)
+        db.execute(select(func.pg_advisory_xact_lock(key)))
+
+
 def _change_result(
     *,
     change_id: uuid.UUID,
@@ -633,6 +649,13 @@ def _receipt_result(receipt: SyncReceipt) -> dict[str, Any]:
         response=receipt.response,
         replayed=True,
     )
+
+
+def _payload_hash(change: SyncChange) -> str:
+    """Hash the parsed, key-order-independent request, excluding its receipt ID."""
+    payload = change.model_dump(mode="json", exclude={"change_id"})
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _append_legacy_outcome(
@@ -688,13 +711,12 @@ class _PushContext:
     errors: list[dict[str, Any]] = field(default_factory=list)
     results: list[dict[str, Any]] = field(default_factory=list)
     batch_results: dict[uuid.UUID, dict[str, Any]] = field(default_factory=dict)
+    batch_hashes: dict[uuid.UUID, str] = field(default_factory=dict)
     wrote: int = 0
 
 
 def _load_existing_receipts(
     db: Session,
-    user_id: uuid.UUID,
-    project_id: uuid.UUID,
     changes: list[SyncChange],
 ) -> dict[uuid.UUID, SyncReceipt]:
     change_ids = [change.change_id for change in changes]
@@ -704,8 +726,6 @@ def _load_existing_receipts(
         db.execute(
             select(SyncReceipt).where(
                 SyncReceipt.change_id.in_(change_ids),
-                SyncReceipt.project_id == project_id,
-                SyncReceipt.user_id == user_id,
             )
         )
         .scalars()
@@ -721,9 +741,7 @@ def _prepare_push_context(
     role: str,
     changes: list[SyncChange],
 ) -> _PushContext:
-    existing_receipts = _load_existing_receipts(
-        db, user_id, project_id, changes
-    )
+    existing_receipts = _load_existing_receipts(db, changes)
     return _PushContext(
         db=db,
         user_id=user_id,
@@ -760,9 +778,35 @@ def _record_push_result(
 
 
 def _record_duplicate(ctx: _PushContext, change: SyncChange) -> None:
+    receipt = ctx.existing_receipts.get(change.change_id)
+    if receipt and (
+        receipt.user_id != ctx.user_id or receipt.project_id != ctx.project_id
+    ):
+        reason = "change_id_in_use"
+    elif receipt and receipt.payload_hash is None:
+        reason = "receipt_unverifiable"
+    elif (
+        receipt.payload_hash if receipt else ctx.batch_hashes.get(change.change_id)
+    ) != _payload_hash(change):
+        reason = "change_id_payload_mismatch"
+    else:
+        reason = None
+    if reason:
+        result = _change_result(
+            change_id=change.change_id,
+            status="error",
+            entity=change.entity,
+            op=change.op,
+            entity_id=_maybe_entity_id(change.record),
+            response={
+                "reason": reason, "failure_kind": "validation", "retryable": False
+            },
+        )
+        ctx.results.append(result)
+        _append_legacy_outcome(result, ctx.conflicts, ctx.errors)
+        return
     ctx.duplicates += 1
     ctx.duplicate_change_ids.append(str(change.change_id))
-    receipt = ctx.existing_receipts.get(change.change_id)
     replay = (
         _receipt_result(receipt)
         if receipt is not None
@@ -868,6 +912,7 @@ def _apply_push_change(
             op,
             "accepted",
             response,
+            _payload_hash(change),
         )
         ctx.db.flush()
 
@@ -908,6 +953,7 @@ def _record_push_conflict(
         op,
         "conflict",
         response,
+        _payload_hash(change),
     )
     result = _change_result(
         change_id=change.change_id,
@@ -974,6 +1020,7 @@ def _process_push_change(ctx: _PushContext, change: SyncChange) -> None:
     # The initial receipt query cannot see receipts written later in this
     # transaction, so track IDs from the request as they are encountered.
     ctx.seen_change_ids.add(change.change_id)
+    ctx.batch_hashes[change.change_id] = _payload_hash(change)
     _process_new_push_change(ctx, change)
 
 
@@ -1003,6 +1050,16 @@ def push_changes(
 ) -> dict[str, Any]:
     if changes:
         _begin_push_transaction(db)
+        _lock_receipt_ids(db, changes)
+        # Serializes receipt lookup and insert on PostgreSQL. SQLite already
+        # holds a writer reservation from _begin_push_transaction.
+        state_id = db.execute(
+            select(SyncProjectState.project_id)
+            .where(SyncProjectState.project_id == project_id)
+            .with_for_update()
+        ).scalar_one_or_none()
+        if state_id is None:
+            raise HTTPException(status_code=500, detail="Project sync state is missing")
     role = ensure_member(db, project_id, user_id)
     ctx = _prepare_push_context(db, user_id, project_id, role, changes)
     for change in changes:
@@ -1021,6 +1078,7 @@ def _store_receipt(
     op: str,
     status: str,
     response: dict[str, Any],
+    payload_hash: str,
 ) -> None:
     db.add(
         SyncReceipt(
@@ -1032,6 +1090,7 @@ def _store_receipt(
             op=op,
             status=status,
             response=response or {},
+            payload_hash=payload_hash,
             processed_at=utcnow(),
         )
     )
@@ -1085,6 +1144,7 @@ def _receipt_err(
                 op,
                 "error",
                 resp,
+                _payload_hash(ch),
             )
             db.flush()
 

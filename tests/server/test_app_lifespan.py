@@ -136,7 +136,8 @@ def test_create_app_optional_middleware_and_health_states(
     monkeypatch.setattr(main_app, "validate_runtime_config", lambda: None)
     configured = main_app.create_app()
     middleware_names = {
-        getattr(entry.cls, "__name__") for entry in configured.user_middleware
+        getattr(entry.cls, "__name__")  # noqa: B009 - FastAPI allows factories
+        for entry in configured.user_middleware
     }
     assert "CORSMiddleware" in middleware_names
     assert "GZipMiddleware" not in middleware_names

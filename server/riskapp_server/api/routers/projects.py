@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.sql.functions import count
 
 from riskapp_server.auth.service import get_current_user
-from riskapp_server.core.config import RETENTION_DAYS
+from riskapp_server.core.config import RETENTION_DAYS, SYNC_RECEIPT_RETENTION_DAYS
 from riskapp_server.core.permissions import ensure_member, require_min_role
 from riskapp_server.db.session import (
     Action,
@@ -260,19 +260,22 @@ def prune_project_logs(
     d = int(days or RETENTION_DAYS)
     d = max(1, min(d, 3650))
     cutoff = utcnow() - timedelta(days=d)
+    receipt_cutoff = utcnow() - timedelta(days=max(d, SYNC_RECEIPT_RETENTION_DAYS))
 
     r1 = db.execute(
         delete(AuditLog).where(AuditLog.project_id == project_id, AuditLog.ts < cutoff)
     )
     r2 = db.execute(
         delete(SyncReceipt).where(
-            SyncReceipt.project_id == project_id, SyncReceipt.processed_at < cutoff
+            SyncReceipt.project_id == project_id,
+            SyncReceipt.processed_at < receipt_cutoff,
         )
     )
     db.commit()
     return {
         "ok": True,
         "cutoff": cutoff.isoformat(),
+        "receipt_cutoff": receipt_cutoff.isoformat(),
         "audit_deleted": int(getattr(r1, "rowcount", 0) or 0),
         "sync_receipts_deleted": int(getattr(r2, "rowcount", 0) or 0),
     }
