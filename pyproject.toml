@@ -9,9 +9,7 @@ qt_api = "pyside6"
 branch = true
 source = ["server/riskapp_server", "client/riskapp_client"]
 omit = [
-  "client/riskapp_client/ui_v2/components/ui_*.py",
-  "client/riskapp_client/ui_v2/tabs/ui_*.py",
-  "client/riskapp_client/ui_v2/ui_*.py",
+  "client/riskapp_client/ui_v2/ui/ui_*.py",
 ]
 
 [tool.pylint.main]
@@ -77,9 +75,7 @@ extend-exclude = [
   ".venv",
   ".git",
   "__pycache__",
-  "client/riskapp_client/ui_v2/components/ui_*.py",
-  "client/riskapp_client/ui_v2/tabs/ui_*.py",
-  "client/riskapp_client/ui_v2/ui_*.py",
+  "client/riskapp_client/ui_v2/ui/ui_*.py",
 ]
 
 [tool.ruff.lint]

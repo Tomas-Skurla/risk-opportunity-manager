@@ -1,0 +1,182 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>Form</class>
+ <widget class="QWidget" name="Form">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>400</width>
+    <height>411</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Form</string>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout">
+   <item>
+    <widget class="QLabel" name="label">
+     <property name="text">
+      <string>Matrix (counts per Probability x Impact)</string>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QComboBox" name="kind_combo">
+     <item>
+      <property name="text">
+       <string>Risks</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>Opportunities</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>Both</string>
+      </property>
+     </item>
+    </widget>
+   </item>
+   <item>
+    <widget class="QLabel" name="risks_label">
+     <property name="text">
+      <string>Risks</string>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QTableWidget" name="risks_matrix_table">
+     <row>
+      <property name="text">
+       <string>P1</string>
+      </property>
+     </row>
+     <row>
+      <property name="text">
+       <string>P2</string>
+      </property>
+     </row>
+     <row>
+      <property name="text">
+       <string>P3</string>
+      </property>
+     </row>
+     <row>
+      <property name="text">
+       <string>P4</string>
+      </property>
+     </row>
+     <row>
+      <property name="text">
+       <string>P5</string>
+      </property>
+     </row>
+     <column>
+      <property name="text">
+       <string>I1</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string>I2</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string>I3</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string>I4</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string>I5</string>
+      </property>
+     </column>
+    </widget>
+   </item>
+   <item>
+    <widget class="QLabel" name="opps_label">
+     <property name="text">
+      <string>Opportunities</string>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QTableWidget" name="opps_matrix_table">
+     <row>
+      <property name="text">
+       <string>P1</string>
+      </property>
+     </row>
+     <row>
+      <property name="text">
+       <string>P2</string>
+      </property>
+     </row>
+     <row>
+      <property name="text">
+       <string>P3</string>
+      </property>
+     </row>
+     <row>
+      <property name="text">
+       <string>P4</string>
+      </property>
+     </row>
+     <row>
+      <property name="text">
+       <string>P5</string>
+      </property>
+     </row>
+     <column>
+      <property name="text">
+       <string>I1</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string>I2</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string>I3</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string>I4</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string>I5</string>
+      </property>
+     </column>
+    </widget>
+   </item>
+   <item>
+    <spacer name="verticalSpacer">
+     <property name="orientation">
+      <enum>Qt::Orientation::Vertical</enum>
+     </property>
+     <property name="sizeHint" stdset="0">
+      <size>
+       <width>20</width>
+       <height>4</height>
+      </size>
+     </property>
+    </spacer>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

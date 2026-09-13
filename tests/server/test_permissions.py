@@ -4,6 +4,9 @@ import uuid
 
 import pytest
 
+# Import models after isolated_app_factory reloads the test database modules.
+# pylint: disable=import-outside-toplevel
+
 
 def test_ensure_role_at_least_blocks_lower_roles() -> None:
     """ensure_role_at_least raises HTTP 403 for roles below the required minimum"""

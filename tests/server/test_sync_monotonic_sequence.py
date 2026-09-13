@@ -7,6 +7,9 @@ from datetime import datetime
 
 from fastapi.testclient import TestClient
 
+# Imports stay local to the modules reloaded for each isolated test app.
+# pylint: disable=import-outside-toplevel
+
 _SYNC_EPOCH = "1970-01-01T00:00:00"
 
 

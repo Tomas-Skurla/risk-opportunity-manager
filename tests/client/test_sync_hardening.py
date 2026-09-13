@@ -7,6 +7,9 @@ from unittest.mock import Mock
 import pytest
 from riskapp_client.services.synchronization_service import SyncService
 
+# These regression tests intentionally target protected synchronization helpers.
+# pylint: disable=protected-access
+
 
 def _empty_pull() -> dict[str, object]:
     return {

@@ -1,3 +1,5 @@
+# pylint: disable=invalid-name,no-member
+# Alembic requires revision identifiers and dynamically proxies op directives.
 """transactional monotonic change sequence
 
 Revision ID: 0002

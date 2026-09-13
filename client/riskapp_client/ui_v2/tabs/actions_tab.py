@@ -8,7 +8,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QAbstractScrollArea, QHeaderView, QSizePolicy, QWidget
 
 from riskapp_client.ui_v2.components.custom_gui_widgets import setup_readonly_table
-from riskapp_client.ui_v2.tabs.ui_actions_tab import Ui_Form as Ui_ActionsTab
+from riskapp_client.ui_v2.ui.ui_actions_tab import Ui_Form as Ui_ActionsTab
 
 
 class ActionsTab(QWidget):
@@ -29,10 +29,16 @@ class ActionsTab(QWidget):
         self.actions_table = self.ui.actions_table
         setup_readonly_table(self.actions_table)
         hh = self.actions_table.horizontalHeader()
-        hh.setSectionResizeMode(QHeaderView.ResizeToContents)
-        self.actions_table.setSizeAdjustPolicy(QAbstractScrollArea.AdjustToContents)
-        self.actions_table.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Maximum)
-        self.ui.verticalLayout_2.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        hh.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self.actions_table.setSizeAdjustPolicy(
+            QAbstractScrollArea.SizeAdjustPolicy.AdjustToContents
+        )
+        self.actions_table.setSizePolicy(
+            QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Maximum
+        )
+        self.ui.verticalLayout_2.setAlignment(
+            Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft
+        )
         self.ui.splitter.setStretchFactor(0, 3)
         self.ui.splitter.setStretchFactor(1, 1)
         self.ui.splitter.setSizes([75000, 25000])
@@ -44,8 +50,11 @@ class ActionsTab(QWidget):
             4: "Owner: The person responsible for this action",
         }
         for col, text in tooltips.items():
-            if self.actions_table.horizontalHeaderItem(col):
-                self.actions_table.horizontalHeaderItem(col).setToolTip(text)
+            header_item = self.actions_table.horizontalHeaderItem(col)
+            if header_item is not None:
+                header_item.setToolTip(text)
+        # PySide exposes bound signals dynamically to Pylint.
+        # pylint: disable=no-member
         self.actions_table.cellClicked.connect(on_action_clicked)
         self.ui.action_target_type.addItems(["risk", "opportunity"])
         self.ui.action_kind.addItems(["mitigation", "contingency", "exploit"])
@@ -53,6 +62,7 @@ class ActionsTab(QWidget):
         self.ui.action_target_type.currentTextChanged.connect(on_target_type_changed)
         self.ui.action_save_btn.clicked.connect(on_save_action)
         self.ui.action_new_btn.clicked.connect(on_new_action)
+        # pylint: enable=no-member
         self.action_editor_label = self.ui.action_editor_label
         self.action_target_type = self.ui.action_target_type
         self.action_risk_combo = self.ui.action_risk_combo

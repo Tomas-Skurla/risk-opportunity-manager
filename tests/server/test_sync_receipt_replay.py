@@ -186,6 +186,8 @@ def test_transient_internal_failure_is_not_receipted_and_same_id_can_retry(
                 "impact": 3,
             },
         }
+        # Failure injection wraps the internal upsert seam.
+        # pylint: disable-next=protected-access
         original_apply = engine._apply_upsert
         attempts = 0
 

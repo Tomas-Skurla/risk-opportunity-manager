@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import Mock
 
 import pytest
 import riskapp_client.app.application_bootstrap as bootstrap
 from PySide6.QtWidgets import QDialog, QMessageBox
+from riskapp_client.adapters.local_storage.sqlite_data_store import LocalStore
 from riskapp_client.adapters.remote_api.rest_api_client import ApiError
 from riskapp_client.app.environment_config import AppConfig
 from riskapp_client.ui_v2.components.custom_gui_widgets import ServerDownDialog
+
+# These tests deliberately exercise the bootstrap's internal fallback flows.
+# pylint: disable=protected-access
 
 
 class FakeStore:
@@ -25,7 +30,7 @@ class FakeStore:
 
 
 class FakeRegistrationDialog:
-    result = QDialog.Accepted
+    result = QDialog.DialogCode.Accepted
     values_result = (
         "https://api.example.test",
         "new@example.test",
@@ -59,13 +64,13 @@ def test_registration_flow_handles_cancel_success_and_server_validation(
         lambda _parent, _title, message, *_args: warnings.append(message),
     )
 
-    FakeRegistrationDialog.result = QDialog.Rejected
+    FakeRegistrationDialog.result = QDialog.DialogCode.Rejected
     assert (
         bootstrap._handle_registration("https://api.example.test", allow_http=False)
         is None
     )
 
-    FakeRegistrationDialog.result = QDialog.Accepted
+    FakeRegistrationDialog.result = QDialog.DialogCode.Accepted
     register = Mock(return_value={"id": "user-1"})
     monkeypatch.setattr(bootstrap, "register_account", register)
     credentials = bootstrap._handle_registration(
@@ -81,7 +86,11 @@ def test_registration_flow_handles_cancel_success_and_server_validation(
         Mock(
             side_effect=ApiError(
                 422,
-                {"password": ["too short", "needs a symbol"], "email": "invalid"},
+                # Exercise a server validation mapping despite the str annotation.
+                cast(
+                    str,
+                    {"password": ["too short", "needs a symbol"], "email": "invalid"},
+                ),
             )
         ),
     )
@@ -99,15 +108,15 @@ def test_registration_flow_handles_cancel_success_and_server_validation(
 @pytest.mark.parametrize(
     ("result", "choice", "email", "anonymous", "expected"),
     [
-        (QDialog.Rejected, 0, "cached@example.test", None, None),
+        (QDialog.DialogCode.Rejected, 0, "cached@example.test", None, None),
         (
-            QDialog.Accepted,
+            QDialog.DialogCode.Accepted,
             ServerDownDialog.OFFLINE_WITH_ACCOUNT,
             "cached@example.test",
             False,
             "window",
         ),
-        (QDialog.Accepted, ServerDownDialog.FULLY_LOCAL, "", True, "window"),
+        (QDialog.DialogCode.Accepted, ServerDownDialog.FULLY_LOCAL, "", True, "window"),
     ],
 )
 def test_server_down_flow_selects_account_or_anonymous_offline_mode(
@@ -136,12 +145,20 @@ def test_server_down_flow_selects_account_or_anonymous_offline_mode(
     monkeypatch.setattr(bootstrap, "OfflineFirstBackend", make_backend)
     monkeypatch.setattr(bootstrap, "MainWindow", lambda _backend: "window")
 
-    assert bootstrap._show_server_down("offline", email=email, store=store) == expected
+    assert (
+        bootstrap._show_server_down(
+            "offline", email=email, store=cast(LocalStore, store)
+        )
+        == expected
+    )
     if expected is None:
-        assert backends == []
+        assert not backends
     else:
         assert backends[0].anonymous_offline is anonymous
-    if choice == ServerDownDialog.OFFLINE_WITH_ACCOUNT and result == QDialog.Accepted:
+    if (
+        choice == ServerDownDialog.OFFLINE_WITH_ACCOUNT
+        and result == QDialog.DialogCode.Accepted
+    ):
         assert store.meta["last_email"] == email
 
 
@@ -197,11 +214,11 @@ def test_build_main_window_supports_local_login_and_connection_fallback(
             pass
 
         def exec(self):
-            return QDialog.Accepted + 2
+            return QDialog.DialogCode.Accepted + 2
 
     monkeypatch.setattr(bootstrap, "LoginDialog", LocalDialog)
     local = bootstrap.build_main_window(_config(tmp_path, email="", password=""))
-    assert local.anonymous_offline is True
+    assert getattr(local, "anonymous_offline", None) is True
 
     class CredentialsDialog:
         wants_register = False
@@ -211,7 +228,7 @@ def test_build_main_window_supports_local_login_and_connection_fallback(
             pass
 
         def exec(self):
-            return QDialog.Accepted
+            return QDialog.DialogCode.Accepted
 
         def values(self):
             return "https://other.example.test", "other@example.test", "pw"
@@ -242,7 +259,7 @@ def test_build_main_window_exits_when_registration_or_fallback_is_cancelled(
             pass
 
         def exec(self):
-            return QDialog.Accepted + 1
+            return QDialog.DialogCode.Accepted + 1
 
     monkeypatch.setattr(bootstrap, "LoginDialog", RegisterLogin)
     monkeypatch.setattr(bootstrap, "_handle_registration", Mock(return_value=None))

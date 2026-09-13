@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 from PySide6.QtGui import QCloseEvent  # pylint: disable=no-name-in-module
@@ -19,8 +18,10 @@ from riskapp_client.ui_v2.mixins.risks_mixin import RisksMixin
 from riskapp_client.ui_v2.mixins.top_history_mixin import TopHistoryMixin
 from riskapp_client.ui_v2.window_state import MainWindowState
 
-
-class MainWindow(  # pylint: disable=too-many-ancestors
+# The sibling mixins only declare these attributes; CoreMixin supplies the
+# state-backed properties at runtime.
+# pylint: disable-next=too-many-ancestors
+class MainWindow(  # pyright: ignore[reportIncompatibleVariableOverride]
     QMainWindow,
     LayoutMixin,
     BackgroundJobsMixin,

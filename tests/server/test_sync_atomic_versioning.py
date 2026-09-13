@@ -11,6 +11,9 @@ from unittest.mock import Mock
 import pytest
 from fastapi.testclient import TestClient
 
+# Keep imports local to use the modules reloaded for each isolated test app.
+# pylint: disable=import-outside-toplevel
+
 
 def _setup_entities(client: TestClient) -> tuple[str, dict[str, str], dict[str, dict]]:
     registered = client.post(
@@ -226,6 +229,8 @@ def test_version_claim_sql_is_conditional_for_every_entity(entity, table) -> Non
     db = Mock()
     db.execute.return_value = SimpleNamespace(rowcount=1)
 
+    # This test checks the atomic version-claim seam directly.
+    # pylint: disable-next=protected-access
     engine._claim_base_version(
         db,
         entity,
@@ -251,6 +256,8 @@ def test_two_concurrent_sync_updates_cannot_claim_the_same_sqlite_version(
 
         from riskapp_server.sync import engine
 
+        # Wrap the transaction boundary to force concurrent claims.
+        # pylint: disable-next=protected-access
         original_begin = engine._begin_push_transaction
         barrier = threading.Barrier(2)
 

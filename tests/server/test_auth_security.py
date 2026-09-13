@@ -6,6 +6,9 @@ import hashlib
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
+# Server imports follow isolated_app_factory's environment and module reloads.
+# pylint: disable=import-outside-toplevel
+
 
 def _legacy_pbkdf2_hash(password: str, *, iterations: int = 100_000) -> str:
     salt = b"legacy-test-salt"

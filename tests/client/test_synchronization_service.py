@@ -10,6 +10,9 @@ import pytest
 from riskapp_client.domain.domain_models import Project
 from riskapp_client.services.synchronization_service import SyncService
 
+# These coordinator tests intentionally exercise protected synchronization seams.
+# pylint: disable=protected-access
+
 
 def _service(*, remote=None):
     store = Mock()

@@ -14,6 +14,7 @@ def _env_flag(name: str, default: bool) -> bool:
 
 def main() -> int:
     # Lazy import so this file stays importable even if uvicorn isn't installed.
+    # pylint: disable-next=import-outside-toplevel
     import uvicorn  # type: ignore
 
     env = os.getenv("ENV", "development").strip().lower()

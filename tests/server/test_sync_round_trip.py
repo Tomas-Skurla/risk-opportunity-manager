@@ -25,7 +25,7 @@ def test_pull_returns_items_created_via_rest(tmp_path, isolated_app_factory):
     """Sync pull returns risks that were created through the REST API"""
     app = isolated_app_factory(f"sqlite+pysqlite:///{tmp_path / 'sync.db'}")
     with TestClient(app) as c:
-        token, pid, h = _setup(c)
+        _token, pid, h = _setup(c)
 
         # Create a risk via REST.
         r = c.post(
@@ -57,7 +57,7 @@ def test_push_upsert_bumps_version(tmp_path, isolated_app_factory):
     """Sync push upsert applies the change and bumps the entity version"""
     app = isolated_app_factory(f"sqlite+pysqlite:///{tmp_path / 'sync2.db'}")
     with TestClient(app) as c:
-        token, pid, h = _setup(c)
+        _token, pid, h = _setup(c)
 
         # Create a risk via REST.
         r = c.post(
@@ -116,7 +116,7 @@ def test_push_duplicate_change_id_is_idempotent(tmp_path, isolated_app_factory):
     """Sync push with a duplicate change_id is idempotent (counted as duplicate)"""
     app = isolated_app_factory(f"sqlite+pysqlite:///{tmp_path / 'sync3.db'}")
     with TestClient(app) as c:
-        token, pid, h = _setup(c)
+        _token, pid, h = _setup(c)
 
         r = c.post(
             f"/projects/{pid}/risks",

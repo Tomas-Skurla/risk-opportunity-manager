@@ -9,7 +9,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import QModelIndex
-from riskapp_client.adapters.local_storage import csv_data_exporter as export_csv
+from riskapp_client.adapters.export import csv_data_exporter as export_csv
 from riskapp_client.services import entity_filters as filters
 from riskapp_client.ui_v2.mixins.scored_entity_mixin import ScoredEntityMixin
 
@@ -119,7 +119,7 @@ class RisksMixin(ScoredEntityMixin):
     def _fit_table_card(self, max_height: int = 260) -> None:
         self._fit_table_to_contents(self.risks_table, max_height=max_height)
 
-    def _mark_editor_dirty(self, *args) -> None:
+    def _mark_editor_dirty(self, *_args) -> None:
         self._editor_dirty = True
 
     def _commit_editor_changes(

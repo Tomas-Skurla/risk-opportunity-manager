@@ -4,6 +4,11 @@ from __future__ import annotations
 
 import pytest
 
+# These tests intentionally inspect private environment-parsing helpers.
+# pylint: disable=protected-access
+# Keep imports local to use the configuration currently loaded by the tests.
+# pylint: disable=import-outside-toplevel
+
 
 def test_environment_helpers_reject_malformed_and_out_of_range_values(
     monkeypatch,

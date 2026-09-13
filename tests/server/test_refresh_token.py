@@ -12,7 +12,7 @@ def _register(c, email="user@example.com", password="SecurePass123!"):
 
 
 def test_refresh_rotates_tokens(tmp_path, isolated_app_factory):
-    """Refresh endpoint rotates both access and refresh tokens, revokes the old refresh"""
+    """Refresh rotates both tokens and revokes the old refresh token."""
     app = isolated_app_factory(f"sqlite+pysqlite:///{tmp_path / 'ref.db'}")
     with TestClient(app) as c:
         tokens = _register(c)

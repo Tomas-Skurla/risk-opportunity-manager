@@ -38,7 +38,7 @@ def test_sql_splitter_handles_quotes_comments_and_dollar_blocks() -> None:
     assert "semi;colon" in statements[1]
     assert statements[2].endswith("$body$")
     assert statements[3] == "SELECT 3"
-    assert list(apply_sql._split_sql(" ; ; ")) == []
+    assert not list(apply_sql._split_sql(" ; ; "))
 
 
 def test_sql_file_resolution_deduplicates_and_validates(tmp_path: Path) -> None:
@@ -58,6 +58,8 @@ def test_sql_file_resolution_deduplicates_and_validates(tmp_path: Path) -> None:
 def test_database_url_resolution_prefers_config_then_environment(
     monkeypatch,
 ) -> None:
+    # Use the config module currently loaded by the isolated test environment.
+    # pylint: disable-next=import-outside-toplevel
     import riskapp_server.core.config as config
 
     monkeypatch.setattr(config, "DATABASE_URL", " sqlite:///config.db ")

@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import Mock
 
 from riskapp_client.ui_v2.mixins.risks_mixin import RisksMixin
+
+# This focused test intentionally invokes a protected mixin hook on a test double.
+# pylint: disable=protected-access
 
 
 def test_fit_table_card_delegates_to_shared_table_sizing() -> None:
@@ -15,6 +19,6 @@ def test_fit_table_card_delegates_to_shared_table_sizing() -> None:
         _fit_table_to_contents=Mock(),
     )
 
-    RisksMixin._fit_table_card(host, max_height=144)
+    RisksMixin._fit_table_card(cast(RisksMixin, host), max_height=144)
 
     host._fit_table_to_contents.assert_called_once_with(table, max_height=144)

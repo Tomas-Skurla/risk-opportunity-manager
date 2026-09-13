@@ -6,6 +6,9 @@ import uuid
 
 from fastapi.testclient import TestClient
 
+# The database imports run after isolated_app_factory sets the test database.
+# pylint: disable=import-outside-toplevel
+
 
 def _register(client: TestClient, email: str) -> tuple[dict, dict[str, str]]:
     response = client.post(

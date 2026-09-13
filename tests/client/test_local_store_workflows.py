@@ -9,6 +9,9 @@ from riskapp_client.adapters.local_storage.sqlite_data_store import LocalStore
 from riskapp_client.adapters.local_storage.sync_outbox_queue import OutboxStore
 from riskapp_client.domain.domain_models import Project
 
+# Pytest injects the store fixture into tests using the same parameter name.
+# pylint: disable=redefined-outer-name
+
 
 @pytest.fixture
 def store(tmp_path) -> Iterator[LocalStore]:

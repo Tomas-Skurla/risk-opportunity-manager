@@ -8,7 +8,7 @@ from typing import Any, cast
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QFileDialog, QMessageBox, QWidget
-from riskapp_client.ui_v2.mixins.scored_entities_ui_helpers import (
+from riskapp_client.ui_v2.helpers.scored_entities_ui_helpers import (
     date_bounds,
     form_values_for_entity,
     populate_scored_table,

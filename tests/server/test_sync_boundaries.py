@@ -193,10 +193,13 @@ def test_sync_engine_records_invalid_changes_and_member_delete_denials(
             "insufficient_permissions",
         ]
 
+        # These imports follow isolated_app_factory's module reloads.
+        # pylint: disable=import-outside-toplevel
         import riskapp_server.db.session as session
         import riskapp_server.sync.engine as engine
         from riskapp_server.schemas.models import SyncChange
         from sqlalchemy.orm import Session
+        # pylint: enable=import-outside-toplevel
 
         def constructed(*, entity: str, op: str, record: dict) -> SyncChange:
             return SyncChange.model_construct(

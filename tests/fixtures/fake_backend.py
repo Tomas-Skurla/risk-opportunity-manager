@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from typing import TypeVar
 
 from riskapp_client.domain.domain_models import (
     Assessment,
@@ -10,6 +11,8 @@ from riskapp_client.domain.domain_models import (
     Project,
     Risk,
 )
+
+_Scored = TypeVar("_Scored", Risk, Opportunity)
 
 
 class FakeBackend:
@@ -85,21 +88,19 @@ class FakeBackend:
         # Minimal in-memory assessments store.
         self._assessments: dict[tuple[str, str], list[Assessment]] = {}
 
-    def _sorted_scored(
-        self, items: list[Risk] | list[Opportunity]
-    ) -> list[Risk] | list[Opportunity]:
+    def _sorted_scored(self, items: list[_Scored]) -> list[_Scored]:
         return sorted(items, key=lambda item: (item.score, item.title), reverse=True)
 
     def _create_scored(
         self,
         project_id: str,
-        store: dict[str, list[Risk]] | dict[str, list[Opportunity]],
-        model_cls: type[Risk] | type[Opportunity],
+        store: dict[str, list[_Scored]],
+        model_cls: type[_Scored],
         *,
         title: str,
         probability: int,
         impact: int,
-    ) -> Risk | Opportunity:
+    ) -> _Scored:
         item = model_cls(
             id=str(uuid.uuid4()),
             project_id=project_id,
@@ -113,14 +114,14 @@ class FakeBackend:
     def _update_scored(
         self,
         entity_id: str,
-        store: dict[str, list[Risk]] | dict[str, list[Opportunity]],
-        model_cls: type[Risk] | type[Opportunity],
+        store: dict[str, list[_Scored]],
+        model_cls: type[_Scored],
         *,
         title: str,
         probability: int,
         impact: int,
         missing_message: str,
-    ) -> Risk | Opportunity:
+    ) -> _Scored:
         for items in store.values():
             for index, item in enumerate(items):
                 if item.id == entity_id:
@@ -209,6 +210,7 @@ class FakeBackend:
         notes: str | None = None,
     ) -> Assessment:
         """Upsert the current user's assessment for a given item."""
+        _ = item_type  # demo items share UUID space
         assessor = "demo-user"
         aid = str(uuid.uuid5(uuid.NAMESPACE_URL, f"assessment:{item_id}:{assessor}"))
         a = Assessment(

@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import ctypes
 import logging
 import sys
 from collections.abc import Callable
 from typing import Any, cast
 
 import qdarktheme
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QApplication,
     QLabel,
@@ -23,7 +25,7 @@ from riskapp_client.ui_v2.tabs.members_tab import MembersTab
 from riskapp_client.ui_v2.tabs.opportunities_tab import OpportunitiesTab
 from riskapp_client.ui_v2.tabs.risks_tab import RisksTab
 from riskapp_client.ui_v2.tabs.top_history_tab import TopHistoryTab
-from riskapp_client.ui_v2.ui_main_window_design import Ui_MainWindow
+from riskapp_client.ui_v2.ui.ui_main_window_design import Ui_MainWindow
 
 logger = logging.getLogger(__name__)
 
@@ -56,13 +58,11 @@ def _set_titlebar_dark(window, dark: bool) -> None:
     """Set the title bar to dark or light mode."""
     # Qt 6.5+ color scheme API
     try:
-        from PySide6.QtCore import Qt as QtCore_Qt
-        from PySide6.QtWidgets import QApplication
         app = cast(QApplication | None, QApplication.instance())
         if app and hasattr(app, "styleHints"):
             hints = app.styleHints()
             if hasattr(hints, "setColorScheme"):
-                scheme = QtCore_Qt.ColorScheme.Dark if dark else QtCore_Qt.ColorScheme.Light
+                scheme = Qt.ColorScheme.Dark if dark else Qt.ColorScheme.Light
                 hints.setColorScheme(scheme)
                 return
     except (AttributeError, ImportError, RuntimeError):
@@ -71,12 +71,11 @@ def _set_titlebar_dark(window, dark: bool) -> None:
     # Windows DWM API
     try:
         if sys.platform == "win32":
-            import ctypes
             hwnd = int(window.winId())
-            DWMWA_USE_IMMERSIVE_DARK_MODE = 20
+            dark_mode_attribute = 20
             value = ctypes.c_int(1 if dark else 0)
             ctypes.windll.dwmapi.DwmSetWindowAttribute(
-                hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE,
+                hwnd, dark_mode_attribute,
                 ctypes.byref(value), ctypes.sizeof(value),
             )
             return
@@ -169,7 +168,9 @@ class LayoutMixin:
             "Manually synchronize local offline changes with the server"
         )
         self.new_project_btn.setToolTip("Create a new project")
-        self.delete_project_btn.setToolTip("Permanently delete the selected project (superadmin only)")
+        self.delete_project_btn.setToolTip(
+            "Permanently delete the selected project (superadmin only)"
+        )
         self.ui.theme_toggle.setToolTip("Toggle between Dark Mode and Light Mode")
         self.ui.sidebar_list.setToolTip(
             "Navigate between different views and tools for the current project"
@@ -235,7 +236,7 @@ class LayoutMixin:
                 self._start_new_risk,
             ),
             on_mark_dirty=self._mark_editor_dirty,
-            on_fit_table_card=lambda: self._fit_table_card(),
+            on_fit_table_card=self._fit_table_card,
         )
         self.ui.main_stacked_widget.addWidget(self.risks_tab)
         bind(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import cast
 from unittest.mock import Mock
 
 from PySide6.QtCore import Qt
@@ -19,6 +20,9 @@ from riskapp_client.ui_v2.mixins.members_mixin import MembersMixin
 from riskapp_client.ui_v2.mixins.projects_sync_mixin import ProjectsSyncMixin
 from riskapp_client.ui_v2.tabs.members_tab import MembersTab
 from riskapp_client.ui_v2.window_state import MainWindowState
+
+# These tests intentionally exercise mixin internals and their state transitions.
+# pylint: disable=protected-access
 
 
 class ProjectSyncHost(ProjectsSyncMixin):
@@ -115,7 +119,7 @@ class MembersHost(MembersMixin):
     def _mk_item(text, *, entity_id=None):
         item = QTableWidgetItem(str(text))
         if entity_id is not None:
-            item.setData(Qt.UserRole, entity_id)
+            item.setData(Qt.ItemDataRole.UserRole, entity_id)
         return item
 
 
@@ -263,8 +267,10 @@ def test_open_conflict_center_resolves_through_backend(
             dialogs.append(self)
 
         def exec(self):
-            self.conflict_resolved.slot("change-1", "keep_mine")
-            return QDialog.Accepted
+            slot = self.conflict_resolved.slot
+            assert slot is not None
+            slot("change-1", "keep_mine")
+            return QDialog.DialogCode.Accepted
 
     monkeypatch.setattr(
         "riskapp_client.ui_v2.mixins.projects_sync_mixin.ConflictCenterDialog",
@@ -305,7 +311,7 @@ def test_open_conflict_center_reports_when_no_conflicts(
     host._open_conflict_center()
 
     assert "no unresolved conflicts" in information.call_args.args[2].lower()
-    assert host._refresh_calls == []
+    assert not host._refresh_calls
 
 
 def test_project_sync_status_falls_back_when_backend_queries_fail(qtbot) -> None:
@@ -406,7 +412,7 @@ def test_sync_now_handles_missing_project_unsupported_and_failed_backend(
 
     host.current_project_id = None
     host._sync_now()
-    assert messages == []
+    assert not messages
 
     host.current_project_id = "project-1"
     host._sync_now()
@@ -473,7 +479,7 @@ def test_project_list_labels_local_state_owner_and_selection(qtbot) -> None:
     assert host.project_list.item(0).text() == "Private  (local only)"
     assert host.project_list.item(1).text() == "Draft  (offline, will sync)"
     assert host.project_list.item(2).text() == "Remote  (owner@example.test)"
-    assert host.project_list.currentItem().data(Qt.UserRole) == "server-1"
+    assert host.project_list.currentItem().data(Qt.ItemDataRole.UserRole) == "server-1"
 
 
 def test_project_list_can_select_without_triggering_refresh(qtbot) -> None:
@@ -488,6 +494,8 @@ def test_project_list_can_select_without_triggering_refresh(qtbot) -> None:
     host = ProjectListHost(Backend())
     qtbot.addWidget(host.project_list)
     selections: list[int] = []
+    # PySide6 exposes this signal through compiled bindings that Pylint cannot inspect.
+    # pylint: disable-next=no-member
     host.project_list.currentRowChanged.connect(selections.append)
 
     host._load_projects(
@@ -495,8 +503,8 @@ def test_project_list_can_select_without_triggering_refresh(qtbot) -> None:
         notify_selection=False,
     )
 
-    assert host.project_list.currentItem().data(Qt.UserRole) == "project-2"
-    assert selections == []
+    assert host.project_list.currentItem().data(Qt.ItemDataRole.UserRole) == "project-2"
+    assert not selections
 
 
 def test_members_refresh_populates_widgets_and_protects_superuser(qtbot) -> None:
@@ -530,10 +538,11 @@ def test_members_refresh_populates_widgets_and_protects_superuser(qtbot) -> None
     host._refresh_members()
 
     assert host.members_tab.members_table.rowCount() == 2
-    assert host.members_tab.members_table.item(1, 1).text() == "superadmin"
+    role_cell = host.members_tab.members_table.item(1, 1)
+    assert role_cell is not None and role_cell.text() == "superadmin"
     host.risk_form.set_members.assert_called_once_with(members)
     host.opps_tab.set_owner_filter_members.assert_called_once_with(members)
-    host._set_role_status.assert_called_with(
+    cast(Mock, host._set_role_status).assert_called_with(
         role="manager", offline=False, assumed=False
     )
     host.members_tab.members_table.selectRow(1)
@@ -565,8 +574,13 @@ def test_member_add_remove_validation_and_success(monkeypatch, qtbot) -> None:
         "warning",
         lambda _parent, _title, message, *_args: warnings.append(message),
     )
-    monkeypatch.setattr(QMessageBox, "question", lambda *_args: QMessageBox.Yes)
-    host._refresh_members = Mock()
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *_args: QMessageBox.StandardButton.Yes,
+    )
+    refresh_members = Mock()
+    host._refresh_members = refresh_members
 
     host.members_tab.member_email.setText("invalid")
     host._add_or_update_member()
@@ -589,7 +603,7 @@ def test_member_add_remove_validation_and_success(monkeypatch, qtbot) -> None:
     backend.remove_member.assert_called_once_with(
         "project-1", member_user_id="user-9"
     )
-    assert host._refresh_members.call_count == 2
+    assert refresh_members.call_count == 2
 
 
 def test_members_refresh_handles_no_project_and_offline_mode(qtbot) -> None:
@@ -601,7 +615,7 @@ def test_members_refresh_handles_no_project_and_offline_mode(qtbot) -> None:
     host.current_project_id = None
     host._refresh_members()
     assert host.members_tab.members_hint.text().startswith("Select a project")
-    host._apply_permissions.assert_called_once()
+    cast(Mock, host._apply_permissions).assert_called_once()
 
     host.current_project_id = "local-1"
     host._offline = True

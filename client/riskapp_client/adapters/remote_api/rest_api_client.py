@@ -525,7 +525,7 @@ class ApiBackend:
             for item in _require_object_list(payload, "project")
         ]
 
-    def create_project(self, *, name: str, description: str = "") -> Project:
+    def create_project(self, *, name: str, description: str | None = "") -> Project:
         """Create a project on the server.
 
         This is used by the offline-first sync when promoting a local-only project

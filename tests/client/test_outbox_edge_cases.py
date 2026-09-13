@@ -5,12 +5,13 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
+from riskapp_client.adapters.local_storage.sqlite_data_store import LocalStore
+from riskapp_client.adapters.local_storage.sync_outbox_queue import OutboxStore
 
+# Recovery boundaries deliberately call the outbox's internal JSON fallback.
+# pylint: disable=protected-access
 
 def test_outbox_recovery_helpers_handle_invalid_and_missing_inputs(tmp_path) -> None:
-    from riskapp_client.adapters.local_storage.sqlite_data_store import LocalStore
-    from riskapp_client.adapters.local_storage.sync_outbox_queue import OutboxStore
-
     with LocalStore(str(tmp_path / "outbox-edges.db")) as store:
         project = store.create_local_project(name="Offline", project_id="project-1")
         store.upsert_local_risk(
@@ -73,9 +74,6 @@ def test_outbox_recovery_helpers_handle_invalid_and_missing_inputs(tmp_path) -> 
 
 
 def test_all_delete_queue_entry_points_preserve_local_versions(tmp_path) -> None:
-    from riskapp_client.adapters.local_storage.sqlite_data_store import LocalStore
-    from riskapp_client.adapters.local_storage.sync_outbox_queue import OutboxStore
-
     with LocalStore(str(tmp_path / "outbox-deletes.db")) as store:
         project = store.create_local_project(name="Offline", project_id="project-1")
         store.upsert_local_risk(
@@ -123,9 +121,6 @@ def test_all_delete_queue_entry_points_preserve_local_versions(tmp_path) -> None
 
 
 def test_transient_retry_backoff_is_persistent_and_filters_until_due(tmp_path) -> None:
-    from riskapp_client.adapters.local_storage.sqlite_data_store import LocalStore
-    from riskapp_client.adapters.local_storage.sync_outbox_queue import OutboxStore
-
     with LocalStore(str(tmp_path / "outbox-retry.db")) as store:
         project = store.create_local_project(name="Offline", project_id="project-1")
         store.upsert_local_risk(
@@ -158,9 +153,9 @@ def test_transient_retry_backoff_is_persistent_and_filters_until_due(tmp_path) -
         assert outbox.pending_count(project.id) == 1
         assert outbox.deferred_count(project.id) == 1
         assert outbox.next_retry_at(project.id) == first_retry
-        assert outbox.get_pending_changes(
+        assert not outbox.get_pending_changes(
             project.id, now="2026-09-04T12:00:01"
-        ) == []
+        )
         assert outbox.get_pending_changes(
             project.id, now="2026-09-04T12:00:02"
         )[0]["change_id"] == change_id
@@ -179,9 +174,6 @@ def test_transient_retry_backoff_is_persistent_and_filters_until_due(tmp_path) -
 
 
 def test_authentication_block_is_released_for_a_new_online_session(tmp_path) -> None:
-    from riskapp_client.adapters.local_storage.sqlite_data_store import LocalStore
-    from riskapp_client.adapters.local_storage.sync_outbox_queue import OutboxStore
-
     with LocalStore(str(tmp_path / "outbox-auth.db")) as store:
         project = store.create_local_project(name="Offline", project_id="project-1")
         store.upsert_local_risk(
@@ -214,9 +206,6 @@ def test_authentication_block_is_released_for_a_new_online_session(tmp_path) -> 
 def test_pull_does_not_overwrite_an_unresolved_local_change(
     tmp_path, outbox_state: str
 ) -> None:
-    from riskapp_client.adapters.local_storage.sqlite_data_store import LocalStore
-    from riskapp_client.adapters.local_storage.sync_outbox_queue import OutboxStore
-
     with LocalStore(str(tmp_path / f"pull-{outbox_state}.db")) as store:
         project = store.create_local_project(name="Offline", project_id="project-1")
         store.upsert_local_risk(
@@ -263,6 +252,7 @@ def test_pull_does_not_overwrite_an_unresolved_local_change(
         )
 
         row = store.get_risk_row("risk-1")
+        assert row is not None
         assert row["title"] == "Unsynced local title"
         assert row["probability"] == 5
         assert row["version"] == 7

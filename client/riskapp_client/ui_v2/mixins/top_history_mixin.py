@@ -28,10 +28,16 @@ class TopHistoryMixin:
     top_tab: TopHistoryTab
     _last_auto_snapshot_by_project: dict[str, datetime]
     _detect_offline_mode: Callable[[], bool]
-    _dtedit_to_iso_utc_naive: Callable[[QDateTimeEdit], str]
     _is_local_project: Callable[[], bool]
     _mk_item: Callable[..., QTableWidgetItem]
     _start_background_job: Callable[..., bool]
+
+    if TYPE_CHECKING:
+        # Implemented by CoreMixin in the concrete MainWindow class.
+        # pylint: disable=unused-argument
+        def _dtedit_to_iso_utc_naive(self, w: QDateTimeEdit) -> str:
+            return ""
+        # pylint: enable=unused-argument
 
     def _history_job_payload(self, project_id: str) -> dict[str, object]:
         tab = self.top_tab
@@ -157,7 +163,9 @@ class TopHistoryMixin:
             return
         if self._is_local_project():
             tab.top_table.setRowCount(0)
-            tab.top_report.setText("Local project: sync to the server to use top history.")
+            tab.top_report.setText(
+                "Local project: sync to the server to use top history."
+            )
             return
         if not hasattr(self.backend, "top_history"):
             tab.top_table.setRowCount(0)
@@ -270,7 +278,7 @@ class TopHistoryMixin:
         tab.top_table.resizeColumnsToContents()
 
     def _on_top_period_changed(self, _text: str) -> None:
-        """Update the From/To widgets and toggle editability based on selected period."""
+        """Update the date range and its editability for the selected period."""
         tab = self.top_tab
         period = tab.top_period.currentText()
         now = QDateTime.currentDateTime()

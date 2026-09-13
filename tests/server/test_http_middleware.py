@@ -6,6 +6,9 @@ import logging
 import pytest
 from fastapi.testclient import TestClient
 
+# Keep local server imports after isolated_app_factory configures the test app.
+# pylint: disable=import-outside-toplevel
+
 
 def test_request_size_limit_and_security_headers(tmp_path, isolated_app_factory):
     """Oversized requests are rejected and every response gets defensive headers."""
@@ -150,7 +153,7 @@ async def test_streamed_body_is_limited_without_content_length() -> None:
     """Chunked bodies cannot bypass the request limit."""
     from riskapp_server.main.http_middleware import RequestBodyLimitMiddleware
 
-    async def consume_body(scope, receive, send):
+    async def consume_body(_scope, receive, send):
         while True:
             message = await receive()
             if not message.get("more_body", False):

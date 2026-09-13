@@ -5,11 +5,19 @@ from __future__ import annotations
 from datetime import datetime
 
 import pytest
+from riskapp_client.domain.domain_models import Opportunity, Risk
+from riskapp_client.services.entity_filters import (
+    OpportunityFilterCriteria,
+    RiskFilterCriteria,
+    ScoredFilterCriteria,
+    filter_opportunities,
+    filter_risks,
+    filter_scored,
+    parse_date,
+)
 
 
 def _entities():
-    from riskapp_client.domain.domain_models import Opportunity, Risk
-
     return [
         Risk(
             id="risk-1",
@@ -66,8 +74,6 @@ def _entities():
 def test_parse_date_accepts_supported_formats_and_rejects_invalid_values(
     raw: str, expected: datetime | None
 ) -> None:
-    from riskapp_client.services.entity_filters import parse_date
-
     assert parse_date(raw) == expected
 
 
@@ -95,23 +101,11 @@ def test_parse_date_accepts_supported_formats_and_rejects_invalid_values(
     ],
 )
 def test_filter_scored_exercises_each_boundary(criteria, expected_ids) -> None:
-    from riskapp_client.services.entity_filters import (
-        ScoredFilterCriteria,
-        filter_scored,
-    )
-
     result = filter_scored(_entities(), ScoredFilterCriteria(**criteria))
     assert [item.id for item in result] == expected_ids
 
 
 def test_typed_wrappers_delegate_to_the_shared_filter() -> None:
-    from riskapp_client.services.entity_filters import (
-        OpportunityFilterCriteria,
-        RiskFilterCriteria,
-        filter_opportunities,
-        filter_risks,
-    )
-
     risk, other_risk, opportunity = _entities()
     assert filter_risks([risk, other_risk], RiskFilterCriteria(search="R-101")) == [
         risk

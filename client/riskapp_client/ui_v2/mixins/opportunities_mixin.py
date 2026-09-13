@@ -8,7 +8,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from riskapp_client.adapters.local_storage import csv_data_exporter as export_csv
+from riskapp_client.adapters.export import csv_data_exporter as export_csv
 from riskapp_client.services import entity_filters as filters
 from riskapp_client.ui_v2.mixins.scored_entity_mixin import ScoredEntityMixin
 
@@ -54,7 +54,7 @@ class OpportunitiesMixin(ScoredEntityMixin):
     _refresh_matrix: Callable[[], None]
     _sync_assessment_state: Callable[..., None]
 
-    def _mark_opp_editor_dirty(self, *args) -> None:
+    def _mark_opp_editor_dirty(self, *_args) -> None:
         self._opp_editor_dirty = True
 
     def _commit_opp_editor_changes(

@@ -1,13 +1,16 @@
+# pylint: disable=too-many-lines
+# The sync engine is organized into helpers; further file splitting is separate work.
 from __future__ import annotations
 
 import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 from fastapi import HTTPException
 from sqlalchemy import or_, select, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.inspection import inspect as sa_inspect
 from sqlalchemy.orm import Session
 
@@ -97,6 +100,8 @@ ENTITY_MODELS = {k: v["model"] for k, v in ENTITY_REGISTRY.items()}
 OPS = {"upsert", "delete"}
 
 
+# Keep the public 'field' parameter name for existing keyword callers.
+# pylint: disable-next=redefined-outer-name
 def parse_uuid(value: Any, field: str) -> uuid.UUID:
     try:
         return value if isinstance(value, uuid.UUID) else uuid.UUID(str(value))
@@ -946,6 +951,8 @@ def _process_new_push_change(ctx: _PushContext, change: SyncChange) -> None:
             retryable=retryable,
             store_receipt=not retryable,
         )
+    # This boundary converts an unexpected per-change failure to a retryable result.
+    # pylint: disable-next=broad-exception-caught
     except Exception:
         logging.getLogger("riskapp_server.sync").exception(
             "Unexpected error processing sync change %s", change.change_id
@@ -1104,8 +1111,8 @@ def _maybe_entity_id(record: dict[str, Any]) -> uuid.UUID | None:
 
 def _parse_record(entity: str, record: dict) -> dict:
     try:
-        Schema = ENTITY_REGISTRY[entity]["schema"]
-        val = Schema(**record).model_dump(exclude_unset=True)
+        schema_cls = ENTITY_REGISTRY[entity]["schema"]
+        val = schema_cls(**record).model_dump(exclude_unset=True)
 
         if entity in {"action", "assessment"}:
             rid, oid = val.pop("risk_id", None), val.pop("opportunity_id", None)
@@ -1181,14 +1188,14 @@ def _ensure_item_in_project(
 
 
 def _fetch_obj(db: Session, entity: str, entity_id: uuid.UUID, project_id: uuid.UUID):
-    Model = ENTITY_MODELS[entity]
+    model_cls = ENTITY_MODELS[entity]
     config = ENTITY_REGISTRY[entity]
 
     if "parent_model" not in config:
         return (
             db.execute(
-                select(Model).where(
-                    Model.id == entity_id, Model.project_id == project_id
+                select(model_cls).where(
+                    model_cls.id == entity_id, model_cls.project_id == project_id
                 )
             )
             .scalars()
@@ -1198,9 +1205,9 @@ def _fetch_obj(db: Session, entity: str, entity_id: uuid.UUID, project_id: uuid.
     # Parent-scoped entity.
     return (
         db.execute(
-            select(Model)
-            .join(Item, Model.item_id == Item.id)
-            .where(Model.id == entity_id, Item.project_id == project_id)
+            select(model_cls)
+            .join(Item, model_cls.item_id == Item.id)
+            .where(model_cls.id == entity_id, Item.project_id == project_id)
         )
         .scalars()
         .first()
@@ -1239,23 +1246,22 @@ def _version_scope(
     project_id: uuid.UUID,
     user_id: uuid.UUID,
 ) -> tuple[Any, list[Any]]:
-    Model = ENTITY_MODELS[entity]
-    where: list[Any] = [Model.id == entity_id]
+    model_cls = ENTITY_MODELS[entity]
+    where: list[Any] = [model_cls.id == entity_id]
     if entity in {"risk", "opportunity"}:
-        where.extend((Model.project_id == project_id, Model.type == entity))
+        where.extend((model_cls.project_id == project_id, model_cls.type == entity))
     elif entity == "assessment":
         where.extend(
             (
-                Model.assessor_user_id == user_id,
-                Model.item_id.in_(
+                model_cls.assessor_user_id == user_id,
+                model_cls.item_id.in_(
                     select(Item.id).where(Item.project_id == project_id)
                 ),
             )
         )
     else:
-        where.append(Model.project_id == project_id)
-    return Model, where
-
+        where.append(model_cls.project_id == project_id)
+    return model_cls, where
 
 def _current_server_state(
     db: Session,
@@ -1264,10 +1270,10 @@ def _current_server_state(
     project_id: uuid.UUID,
     user_id: uuid.UUID,
 ) -> tuple[int | None, dict[str, Any] | None]:
-    Model, where = _version_scope(entity, entity_id, project_id, user_id)
+    model_cls, where = _version_scope(entity, entity_id, project_id, user_id)
     obj = (
         db.execute(
-            select(Model)
+            select(model_cls)
             .where(*where)
             .execution_options(populate_existing=True)
         )
@@ -1292,12 +1298,16 @@ def _claim_base_version(
     base_version: int,
 ) -> None:
     """Atomically advance one row only when its version still matches."""
-    Model, where = _version_scope(entity, entity_id, project_id, user_id)
-    result = db.execute(
-        update(Model)
-        .where(*where, Model.version == base_version)
-        .values(version=Model.version + 1, updated_at=utcnow())
-        .execution_options(synchronize_session=False)
+    model_cls, where = _version_scope(entity, entity_id, project_id, user_id)
+    # A single UPDATE returns a cursor result with the matched-row count.
+    result = cast(
+        CursorResult[Any],
+        db.execute(
+            update(model_cls)
+            .where(*where, model_cls.version == base_version)
+            .values(version=model_cls.version + 1, updated_at=utcnow())
+            .execution_options(synchronize_session=False)
+        ),
     )
     if result.rowcount != 1:
         server_version, server_record = _current_server_state(
@@ -1316,7 +1326,7 @@ def _validate_existing_obj(
     obj: Any,
     entity: str,
     entity_id: uuid.UUID,
-    project_id: uuid.UUID,
+    project_id: uuid.UUID, # pylint: disable=unused-argument
     user_id: uuid.UUID,
     base_version: Any,
 ) -> int:
@@ -1447,7 +1457,7 @@ def _create_new(
 ):
     now = utcnow()
     val = _parse_record(entity, record)
-    Model = ENTITY_MODELS[entity]
+    model_cls = ENTITY_MODELS[entity]
     config = ENTITY_REGISTRY[entity]
     defaults = dict(config.get("defaults") or {})
 
@@ -1464,7 +1474,7 @@ def _create_new(
         # Assessments belong to the assessor.
         common |= {"assessor_user_id": user_id}
 
-    obj = Model(**common)
+    obj = model_cls(**common)
 
     for k, v in val.items():
         if k.startswith("_"):
@@ -1479,7 +1489,7 @@ def _create_new(
 
 def _update_existing(
     db: Session,
-    user_id: uuid.UUID,
+    user_id: uuid.UUID, # pylint: disable=unused-argument
     project_id: uuid.UUID,
     entity: str,
     obj: Any,

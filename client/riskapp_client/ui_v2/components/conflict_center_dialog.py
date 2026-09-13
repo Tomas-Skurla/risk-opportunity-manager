@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (  # pylint: disable=no-name-in-module
     QWidget,
 )
 
-from riskapp_client.ui_v2.components.ui_conflict_center_dialog import (
+from riskapp_client.ui_v2.ui.ui_conflict_center_dialog import (
     Ui_ConflictCenterDialog,
 )
 
@@ -46,16 +46,20 @@ class ConflictCenterDialog(QDialog):
         self.later_btn = self.ui.later_btn
 
         header = self.table.horizontalHeader()
-        header.setSectionResizeMode(QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.Stretch)
-        header.setSectionResizeMode(3, QHeaderView.Stretch)
+        resize_mode = QHeaderView.ResizeMode
+        header.setSectionResizeMode(resize_mode.ResizeToContents)
+        header.setSectionResizeMode(1, resize_mode.Stretch)
+        header.setSectionResizeMode(3, resize_mode.Stretch)
 
+        # PySide signals are runtime descriptors that Pylint cannot infer.
+        # pylint: disable=no-member
         self.table.itemSelectionChanged.connect(self._show_selection)
         self.keep_mine_btn.clicked.connect(lambda: self._resolve_selected("keep_mine"))
         self.use_server_btn.clicked.connect(
             lambda: self._resolve_selected("use_server")
         )
         self.later_btn.clicked.connect(self.reject)
+        # pylint: enable=no-member
 
         self._populate_table()
 
@@ -83,7 +87,10 @@ class ConflictCenterDialog(QDialog):
             for column, value in enumerate(values):
                 item = QTableWidgetItem(value)
                 if column == 0:
-                    item.setData(Qt.UserRole, str(conflict.get("change_id") or ""))
+                    item.setData(
+                        Qt.ItemDataRole.UserRole,
+                        str(conflict.get("change_id") or ""),
+                    )
                 self.table.setItem(row, column, item)
         if self._conflicts:
             self.table.selectRow(0)
@@ -134,15 +141,17 @@ class ConflictCenterDialog(QDialog):
                 f"Use the server version of “{title}”?\n\n"
                 "Your queued local edits for this item will be discarded."
             )
+        yes = QMessageBox.StandardButton.Yes
+        no = QMessageBox.StandardButton.No
         return (
             QMessageBox.question(
                 self,
                 "Resolve synchronization conflict",
                 prompt,
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No,
+                yes | no,
+                no,
             )
-            == QMessageBox.Yes
+            == yes
         )
 
     def _resolve_selected(self, resolution: str) -> None:

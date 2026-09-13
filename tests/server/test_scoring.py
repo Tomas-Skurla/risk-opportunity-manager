@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 
+# Keep the import local so each test uses the current server module.
+# pylint: disable=import-outside-toplevel
+
 def test_recalculate_item_scores_uses_max_impact_dimension() -> None:
-    """recalculate_item_scores picks the max impact dimension and computes prob*impact"""
+    """Use the largest impact dimension to recalculate the score."""
     from riskapp_server.core.scoring import recalculate_item_scores
 
     class Obj:

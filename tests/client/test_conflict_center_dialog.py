@@ -9,6 +9,9 @@ from riskapp_client.ui_v2.components.conflict_center_dialog import (
     ConflictCenterDialog,
 )
 
+# These tests intentionally call the private resolution step to cover its outcomes.
+# pylint: disable=protected-access
+
 
 def _conflict(
     change_id: str = "change-1", *, server_record: dict | None = None
@@ -54,9 +57,12 @@ def test_dialog_lists_conflict_and_compares_both_copies(qtbot) -> None:
     assert dialog.ui.local_group.title() == "Local copy"
     assert dialog.ui.server_group.title() == "Server copy"
     assert dialog.table.rowCount() == 1
-    assert dialog.table.item(0, 0).text() == "Risk"
-    assert dialog.table.item(0, 1).text() == "Supplier outage"
-    assert dialog.table.item(0, 3).text() == "version_mismatch"
+    entity_item = dialog.table.item(0, 0)
+    title_item = dialog.table.item(0, 1)
+    reason_item = dialog.table.item(0, 3)
+    assert entity_item is not None and entity_item.text() == "Risk"
+    assert title_item is not None and title_item.text() == "Supplier outage"
+    assert reason_item is not None and reason_item.text() == "version_mismatch"
     assert '"title": "Local title"' in dialog.local_copy.toPlainText()
     assert '"title": "Server title"' in dialog.server_copy.toPlainText()
     assert dialog.keep_mine_btn.isEnabled()
@@ -81,7 +87,7 @@ def test_keep_mine_requires_confirmation_and_removes_resolved_row(
     monkeypatch.setattr(
         QMessageBox,
         "question",
-        lambda *args, **kwargs: QMessageBox.Yes,
+        lambda *args, **kwargs: QMessageBox.StandardButton.Yes,
     )
 
     dialog._resolve_selected("keep_mine")
@@ -89,7 +95,7 @@ def test_keep_mine_requires_confirmation_and_removes_resolved_row(
     resolver.assert_called_once_with("change-1", "keep_mine")
     resolved.assert_called_once_with("change-1", "keep_mine")
     assert dialog.conflicts_remaining() == 0
-    assert dialog.result() == QDialog.Accepted
+    assert dialog.result() == QDialog.DialogCode.Accepted
 
 
 def test_declining_confirmation_does_not_resolve(qtbot, monkeypatch) -> None:
@@ -99,7 +105,7 @@ def test_declining_confirmation_does_not_resolve(qtbot, monkeypatch) -> None:
     monkeypatch.setattr(
         QMessageBox,
         "question",
-        lambda *args, **kwargs: QMessageBox.No,
+        lambda *args, **kwargs: QMessageBox.StandardButton.No,
     )
 
     dialog._resolve_selected("use_server")
@@ -118,7 +124,7 @@ def test_resolution_failure_is_reported_and_conflict_remains(
     monkeypatch.setattr(
         QMessageBox,
         "question",
-        lambda *args, **kwargs: QMessageBox.Yes,
+        lambda *args, **kwargs: QMessageBox.StandardButton.Yes,
     )
     monkeypatch.setattr(QMessageBox, "critical", critical)
 
@@ -137,7 +143,7 @@ def test_later_closes_without_mutating_conflicts(qtbot) -> None:
     dialog.later_btn.click()
 
     resolver.assert_not_called()
-    assert dialog.result() == QDialog.Rejected
+    assert dialog.result() == QDialog.DialogCode.Rejected
     assert dialog.conflicts_remaining() == 1
 
 

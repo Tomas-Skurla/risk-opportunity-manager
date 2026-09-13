@@ -84,7 +84,7 @@ def test_assessment_on_nonexistent_item_returns_404(tmp_path, isolated_app_facto
     """Assessing a non-existent risk returns HTTP 404"""
     app = isolated_app_factory(f"sqlite+pysqlite:///{tmp_path / 'assess3.db'}")
     with TestClient(app) as c:
-        h, pid, rid = _setup(c)
+        h, pid, _rid = _setup(c)
         fake_id = str(uuid.uuid4())
         r = c.put(
             f"/projects/{pid}/risks/{fake_id}/assessment",

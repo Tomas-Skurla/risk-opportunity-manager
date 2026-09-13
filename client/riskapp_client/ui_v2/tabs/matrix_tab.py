@@ -16,7 +16,7 @@ from riskapp_client.ui_v2.components.custom_gui_widgets import (
     CrispHeader,
     setup_readonly_table,
 )
-from riskapp_client.ui_v2.tabs.ui_matrix_tab import Ui_Form as Ui_MatrixTab
+from riskapp_client.ui_v2.ui.ui_matrix_tab import Ui_Form as Ui_MatrixTab
 
 
 class MatrixTab(QWidget):
@@ -27,27 +27,35 @@ class MatrixTab(QWidget):
         self.ui = Ui_MatrixTab()
         self.ui.setupUi(self)
         if on_kind_changed:
+            # PySide exposes bound signals dynamically to Pylint.
+            # pylint: disable-next=no-member
             self.ui.kind_combo.currentTextChanged.connect(on_kind_changed)
 
         def style_matrix(table: QTableWidget) -> None:
             setup_readonly_table(table)
-            table.setFrameShape(QFrame.Box)
-            table.setFrameShadow(QFrame.Plain)
+            table.setFrameShape(QFrame.Shape.Box)
+            table.setFrameShadow(QFrame.Shadow.Plain)
             table.setLineWidth(0)
-            table.setHorizontalHeader(CrispHeader(Qt.Horizontal, table))
+            table.setHorizontalHeader(
+                CrispHeader(Qt.Orientation.Horizontal, table)
+            )
             hh, vh = table.horizontalHeader(), table.verticalHeader()
             hh.setSectionsClickable(False)
             hh.setHighlightSections(False)
-            hh.setSectionResizeMode(QHeaderView.Fixed)
+            hh.setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
             hh.setDefaultSectionSize(70)
             vh.setVisible(True)
             vh.setSectionsClickable(False)
             vh.setHighlightSections(False)
-            vh.setSectionResizeMode(QHeaderView.Fixed)
+            vh.setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
             vh.setDefaultSectionSize(50)
-            vh.setDefaultAlignment(Qt.AlignCenter)
-            table.setSizeAdjustPolicy(QAbstractScrollArea.AdjustToContents)
-            table.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Maximum)
+            vh.setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
+            table.setSizeAdjustPolicy(
+                QAbstractScrollArea.SizeAdjustPolicy.AdjustToContents
+            )
+            table.setSizePolicy(
+                QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Maximum
+            )
             table.setCornerButtonEnabled(True)
             table.setShowGrid(True)
 

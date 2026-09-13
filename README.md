@@ -15,7 +15,7 @@ RiskApp is an offline-first risk and opportunity manager: a FastAPI/SQLAlchemy A
 
 ## Quick start
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for boundaries, invariants, security choices, and explicit production trade-offs.
+See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for boundaries, invariants, security choices, and explicit production trade-offs.
 
 ## Run the review checks
 
@@ -99,10 +99,10 @@ client/       PySide6 application, domain services, local store, HTTP adapter
 server/       FastAPI routers, auth/RBAC, persistence, sync, operations
 tests/        Canonical headless client-core and API regression suite
 scripts/      Setup, quality, run, reset, and dependency-lock workflows
+docs/         Setup, testing, architecture, and quality guides
 ```
 
-Detailed setup and manual acceptance flows remain in [SETUP_GUIDE.md](SETUP_GUIDE.md) and [TEST_GUIDE.md](TEST_GUIDE.md). Development commands are summarized in
-[README_QA.md](README_QA.md).
+Setup, testing, architecture, and development commands are linked from the [documentation index](docs/README.md).
 
 ## License
 

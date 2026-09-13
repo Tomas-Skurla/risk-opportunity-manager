@@ -41,6 +41,8 @@ def isolated_app_factory(monkeypatch: pytest.MonkeyPatch):
         for name, value in settings.items():
             monkeypatch.setenv(name, value)
 
+        # Imports must follow the settings patch so reloaded modules use this test DB.
+        # pylint: disable=import-outside-toplevel
         import riskapp_server.core.config as cfg
 
         importlib.reload(cfg)
@@ -102,6 +104,7 @@ def isolated_app_factory(monkeypatch: pytest.MonkeyPatch):
 
         import riskapp_server.main.app as main_app
 
+        # pylint: enable=import-outside-toplevel
         importlib.reload(main_app)
 
         return main_app.create_app()

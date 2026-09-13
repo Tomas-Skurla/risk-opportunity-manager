@@ -3,12 +3,13 @@ from __future__ import annotations
 import sqlite3
 
 import pytest
+from riskapp_client.adapters.local_storage.sqlite_data_store import LocalStore
+from riskapp_client.adapters.local_storage.sync_outbox_queue import OutboxStore
+from riskapp_client.services.helpdesk_service import HelpDeskService
 
 
 def test_outbox_squashes_multiple_changes_for_same_entity_id(tmp_path) -> None:
-    """Outbox squashes successive upserts for the same risk into a single pending change"""
-    from riskapp_client.adapters.local_storage.sqlite_data_store import LocalStore
-    from riskapp_client.adapters.local_storage.sync_outbox_queue import OutboxStore
+    """Squash successive risk upserts into one pending change."""
 
     db_file = tmp_path / "client_outbox.db"
     store = LocalStore(str(db_file))
@@ -53,9 +54,7 @@ def test_outbox_squashes_multiple_changes_for_same_entity_id(tmp_path) -> None:
 def test_requeue_conflict_creates_new_change_id_and_updates_base_version(
     tmp_path,
 ) -> None:
-    """Requeueing a conflicted change assigns a new change_id and the server's base_version"""
-    from riskapp_client.adapters.local_storage.sqlite_data_store import LocalStore
-    from riskapp_client.adapters.local_storage.sync_outbox_queue import OutboxStore
+    """Requeue a conflict with a new ID and the server's base version."""
 
     db_file = tmp_path / "client_outbox_conflict.db"
     store = LocalStore(str(db_file))
@@ -91,9 +90,7 @@ def test_requeue_conflict_creates_new_change_id_and_updates_base_version(
 
 
 def test_get_blocked_changes_exposes_conflict_reason_and_title(tmp_path) -> None:
-    """Blocked outbox entries expose the conflict reason, server_version, and entity title"""
-    from riskapp_client.adapters.local_storage.sqlite_data_store import LocalStore
-    from riskapp_client.adapters.local_storage.sync_outbox_queue import OutboxStore
+    """Expose a blocked change's reason, version, and entity title."""
 
     db_file = tmp_path / "client_outbox_blocked.db"
     store = LocalStore(str(db_file))
@@ -141,8 +138,6 @@ def test_get_blocked_changes_exposes_conflict_reason_and_title(tmp_path) -> None
 
 def test_complete_conflict_payload_survives_database_restart(tmp_path) -> None:
     """Conflict records are stored losslessly instead of in the 500-char summary."""
-    from riskapp_client.adapters.local_storage.sqlite_data_store import LocalStore
-    from riskapp_client.adapters.local_storage.sync_outbox_queue import OutboxStore
 
     db_file = tmp_path / "persistent-conflict.db"
     store = LocalStore(str(db_file))
@@ -200,8 +195,6 @@ def test_complete_conflict_payload_survives_database_restart(tmp_path) -> None:
 
 def test_helpdesk_outbox_uses_ticket_version_for_base_version(tmp_path) -> None:
     """Helpdesk outbox upsert records the ticket's local version as the base_version"""
-    from riskapp_client.adapters.local_storage.sqlite_data_store import LocalStore
-    from riskapp_client.adapters.local_storage.sync_outbox_queue import OutboxStore
 
     db_file = tmp_path / "client_helpdesk_outbox.db"
     store = LocalStore(str(db_file))
@@ -247,9 +240,6 @@ def test_helpdesk_outbox_uses_ticket_version_for_base_version(tmp_path) -> None:
 
 def test_helpdesk_delete_unsynced_ticket_discards_pending_change(tmp_path) -> None:
     """Deleting an unsynced helpdesk ticket discards its pending outbox change"""
-    from riskapp_client.adapters.local_storage.sqlite_data_store import LocalStore
-    from riskapp_client.adapters.local_storage.sync_outbox_queue import OutboxStore
-    from riskapp_client.services.helpdesk_service import HelpDeskService
 
     db_file = tmp_path / "client_helpdesk_delete.db"
     store = LocalStore(str(db_file))
@@ -282,8 +272,6 @@ def test_helpdesk_delete_unsynced_ticket_discards_pending_change(tmp_path) -> No
 
 def test_requeue_rolls_back_if_replacement_insert_fails(tmp_path) -> None:
     """A failed conflict requeue cannot delete the existing offline change."""
-    from riskapp_client.adapters.local_storage.sqlite_data_store import LocalStore
-    from riskapp_client.adapters.local_storage.sync_outbox_queue import OutboxStore
 
     store = LocalStore(str(tmp_path / "outbox_atomic.db"))
     try:

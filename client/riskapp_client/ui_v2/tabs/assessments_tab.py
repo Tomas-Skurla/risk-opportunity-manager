@@ -7,7 +7,7 @@ from collections.abc import Callable
 from PySide6.QtWidgets import QAbstractScrollArea, QHeaderView, QSizePolicy, QWidget
 
 from riskapp_client.ui_v2.components.custom_gui_widgets import setup_readonly_table
-from riskapp_client.ui_v2.tabs.ui_assessments_tab import Ui_Form as Ui_AssessmentsTab
+from riskapp_client.ui_v2.ui.ui_assessments_tab import Ui_Form as Ui_AssessmentsTab
 
 
 class AssessmentsTab(QWidget):
@@ -20,12 +20,12 @@ class AssessmentsTab(QWidget):
         self.assessments_table = self.ui.assessments_table
         setup_readonly_table(self.assessments_table)
         hh = self.ui.assessments_table.horizontalHeader()
-        hh.setSectionResizeMode(QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         self.ui.assessments_table.setSizeAdjustPolicy(
-            QAbstractScrollArea.AdjustToContents
+            QAbstractScrollArea.SizeAdjustPolicy.AdjustToContents
         )
         self.ui.assessments_table.setSizePolicy(
-            QSizePolicy.Maximum, QSizePolicy.Maximum
+            QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Maximum
         )
         self.ui.verticalLayout_2.addStretch()
         self.ui.verticalLayout_3.addStretch()
@@ -41,8 +41,11 @@ class AssessmentsTab(QWidget):
             5: "Updated: When this assessment was last modified",
         }
         for col, text in tooltips.items():
-            if self.assessments_table.horizontalHeaderItem(col):
-                self.assessments_table.horizontalHeaderItem(col).setToolTip(text)
+            header_item = self.assessments_table.horizontalHeaderItem(col)
+            if header_item is not None:
+                header_item.setToolTip(text)
+        # PySide exposes bound signals dynamically to Pylint.
+        # pylint: disable-next=no-member
         self.ui.assess_save_btn.clicked.connect(on_save_assessment)
         self.target_label = self.ui.target_label
         self.assess_p = self.ui.assess_p

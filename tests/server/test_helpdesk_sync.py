@@ -238,7 +238,6 @@ def test_helpdesk_sync_delete_marks_deleted_and_is_pulled(
 
 def test_helpdesk_update_requires_matching_base_version(isolated_app_factory, tmp_path):
     """Helpdesk PATCH with stale base_version returns HTTP 409 with version_mismatch"""
-    from fastapi.testclient import TestClient
 
     app = isolated_app_factory(f"sqlite+pysqlite:///{tmp_path/'helpdesk_version.db'}")
     # client = TestClient(app)

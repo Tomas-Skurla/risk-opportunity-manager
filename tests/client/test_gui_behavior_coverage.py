@@ -18,6 +18,9 @@ from riskapp_client.domain.domain_models import (
 )
 from riskapp_client.ui_v2.main_application_window import MainWindow
 
+# These tests deliberately invoke mixin internals to exercise UI behavior.
+# pylint: disable=protected-access
+
 
 class FakeStore:
     def __init__(self, project: Project) -> None:
@@ -34,6 +37,8 @@ class FakeStore:
         return self.project
 
 
+# Preserve the Backend protocol's keyword names even when this fake ignores them.
+# pylint: disable=unused-argument
 class GuiBackend:
     """In-memory backend implementing every main-window feature."""
 
@@ -132,10 +137,10 @@ class GuiBackend:
     def is_superuser(self):
         return self.superuser
 
-    def list_risks(self, _project_id):
+    def list_risks(self, project_id):
         return list(self.risks)
 
-    def risks_report(self, _project_id, **_filters):
+    def risks_report(self, project_id, **filters):
         return {
             "total": len(self.risks),
             "project_total": len(self.risks),
@@ -158,14 +163,14 @@ class GuiBackend:
         self.calls.append(("update_risk", risk_id))
         return risk
 
-    def delete_risk(self, _project_id, risk_id):
+    def delete_risk(self, project_id, risk_id):
         self.risks = [item for item in self.risks if item.id != risk_id]
         self.calls.append(("delete_risk", risk_id))
 
-    def list_opportunities(self, _project_id):
+    def list_opportunities(self, project_id):
         return list(self.opportunities)
 
-    def opportunities_report(self, _project_id, **_filters):
+    def opportunities_report(self, project_id, **filters):
         return {
             "total": 1,
             "project_total": 1,
@@ -193,13 +198,13 @@ class GuiBackend:
         self.calls.append(("update_opportunity", opportunity_id))
         return opportunity
 
-    def delete_opportunity(self, _project_id, opportunity_id):
+    def delete_opportunity(self, project_id, opportunity_id):
         self.opportunities = [
             item for item in self.opportunities if item.id != opportunity_id
         ]
         self.calls.append(("delete_opportunity", opportunity_id))
 
-    def list_actions(self, _project_id):
+    def list_actions(self, project_id):
         return list(self.actions)
 
     def create_action(self, project_id, **values):
@@ -232,29 +237,35 @@ class GuiBackend:
         self.calls.append(("update_action", action_id))
         return action
 
-    def list_assessments(self, _project_id, _item_type, item_id):
+    def list_assessments(self, project_id, item_type, item_id):
         return [item for item in self.assessments if item.item_id == item_id]
 
     def upsert_my_assessment(
-        self, _project_id, _item_type, item_id, probability, impact, notes
+        self,
+        project_id,
+        item_type,
+        item_id,
+        probability,
+        impact,
+        notes: str | None = None,
     ):
         assessment = Assessment(
-            "assessment-new", item_id, "user-1", probability, impact, notes
+            "assessment-new", item_id, "user-1", probability, impact, notes or ""
         )
         self.assessments = [assessment]
         self.calls.append(("assessment", item_id))
         return assessment
 
-    def list_members(self, _project_id):
+    def list_members(self, project_id):
         return list(self.members)
 
-    def add_member(self, _project_id, **values):
+    def add_member(self, project_id, **values):
         self.calls.append(("add_member", values["user_email"]))
 
-    def remove_member(self, _project_id, **values):
+    def remove_member(self, project_id, **values):
         self.calls.append(("remove_member", values["member_user_id"]))
 
-    def list_helpdesk_tickets(self, _project_id):
+    def list_helpdesk_tickets(self, project_id):
         return list(self.tickets)
 
     def create_helpdesk_ticket(self, project_id, **values):
@@ -312,7 +323,7 @@ class GuiBackend:
         return {"id": "snapshot-1"}
 
     @staticmethod
-    def top_history(_project_id, **_filters):
+    def top_history(project_id, **filters):
         return [
             {
                 "captured_at": "2026-01-02T03:04:05",
@@ -341,7 +352,7 @@ class GuiBackend:
     def delete_project(self, project_id):
         self.calls.append(("delete_project", project_id))
 
-
+# pylint: enable=unused-argument
 def _window(qtbot):
     backend = GuiBackend()
     window = MainWindow(backend)
@@ -353,7 +364,11 @@ def _window(qtbot):
 
 def test_real_window_risk_and_opportunity_crud(monkeypatch, qtbot) -> None:
     window, backend = _window(qtbot)
-    monkeypatch.setattr(QMessageBox, "question", lambda *_args: QMessageBox.Yes)
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *_args: QMessageBox.StandardButton.Yes,
+    )
     warnings: list[str] = []
     monkeypatch.setattr(
         QMessageBox,
@@ -532,15 +547,18 @@ def test_actions_assessments_and_matrix_behaviors(monkeypatch, qtbot) -> None:
 
     window.matrix_tab.kind_combo.setCurrentText("Opportunities")
     window._refresh_matrix()
-    assert window.opps_matrix_table.item(2, 3).text() == "1"
+    opportunity_count = window.opps_matrix_table.item(2, 3)
+    assert opportunity_count is not None and opportunity_count.text() == "1"
     window.matrix_tab.kind_combo.setCurrentText("Both")
     window._refresh_matrix()
-    assert window.risks_matrix_table.item(3, 4).text() == "1"
+    risk_count = window.risks_matrix_table.item(3, 4)
+    assert risk_count is not None and risk_count.text() == "1"
     window._render_matrix(
         window.risks_matrix_table,
         [SimpleNamespace(probability=0, impact=99)],
     )
-    assert window.risks_matrix_table.item(0, 4).text() == "1"
+    clamped_count = window.risks_matrix_table.item(0, 4)
+    assert clamped_count is not None and clamped_count.text() == "1"
 
 
 def test_helpdesk_crud_filters_and_failures(monkeypatch, qtbot) -> None:
@@ -583,10 +601,18 @@ def test_helpdesk_crud_filters_and_failures(monkeypatch, qtbot) -> None:
     created = window._current_ticket_id
     assert ("create_ticket", created) in backend.calls
 
-    monkeypatch.setattr(QMessageBox, "question", lambda *_args: QMessageBox.No)
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *_args: QMessageBox.StandardButton.No,
+    )
     window._delete_helpdesk_ticket()
     assert ("delete_ticket", created) not in backend.calls
-    monkeypatch.setattr(QMessageBox, "question", lambda *_args: QMessageBox.Yes)
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *_args: QMessageBox.StandardButton.Yes,
+    )
     window._delete_helpdesk_ticket()
     assert ("delete_ticket", created) in backend.calls
 
@@ -661,7 +687,7 @@ def test_history_snapshot_periods_and_auto_snapshot(monkeypatch, qtbot) -> None:
     assert len(backend.calls) == before
 
 
-def test_core_permissions_context_and_layout_helpers(monkeypatch, qtbot) -> None:
+def test_core_permissions_context_and_layout_helpers(qtbot) -> None:
     window, backend = _window(qtbot)
     window.current_role = "unknown"
     window._offline_mode = True
@@ -676,11 +702,14 @@ def test_core_permissions_context_and_layout_helpers(monkeypatch, qtbot) -> None
     window._set_role_status(role="admin", offline=False, assumed=False)
     assert window.role_status.text() == "Role: superadmin"
 
-    window.tabs = window.ui.main_stacked_widget
     window.ui.main_stacked_widget.setCurrentWidget(window.risks_tab)
-    assert window._active_scored_tab_context()[1] is window.risks_table
+    risk_context = window._active_scored_tab_context()
+    assert risk_context is not None
+    assert risk_context[1] is window.risks_table
     window.ui.main_stacked_widget.setCurrentWidget(window.opps_tab)
-    assert window._active_scored_tab_context()[1] is window.opps_table
+    opportunity_context = window._active_scored_tab_context()
+    assert opportunity_context is not None
+    assert opportunity_context[1] is window.opps_table
     window.ui.main_stacked_widget.setCurrentWidget(window.matrix_tab)
     assert window._active_scored_tab_context() is None
 

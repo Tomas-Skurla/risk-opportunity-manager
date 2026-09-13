@@ -10,6 +10,9 @@ from riskapp_client.domain.domain_models import Project
 from riskapp_client.ui_v2.mixins import projects_sync_mixin
 from riskapp_client.ui_v2.mixins.projects_sync_mixin import ProjectsSyncMixin
 
+# These regressions directly exercise the project-sync mixin's internal flows.
+# pylint: disable=protected-access
+
 
 class ProjectHost(ProjectsSyncMixin):
     def __init__(self, backend) -> None:
@@ -51,7 +54,7 @@ def test_duplicate_check_uses_original_name_not_decorated_label(
 
         @staticmethod
         def exec() -> int:
-            return QDialog.Accepted
+            return int(QDialog.DialogCode.Accepted)
 
         @staticmethod
         def values() -> tuple[str, str]:

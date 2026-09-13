@@ -60,7 +60,9 @@ def test_scored_update_rolls_back_with_failed_outbox_replacement(
                 impact=5,
             )
 
-        assert get_row(entity.id)["title"] == "Original"
+        row = get_row(entity.id)
+        assert row is not None
+        assert row["title"] == "Original"
         remaining = backend.outbox.get_pending_changes(project_id)
         assert remaining == [original_change]
     finally:

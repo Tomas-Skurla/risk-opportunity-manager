@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 
 import pytest
+from riskapp_client.adapters.local_storage.sqlite_data_store import LocalStore
 
 
 def _create_legacy_db(path: str) -> None:
@@ -64,11 +65,10 @@ def _create_legacy_db(path: str) -> None:
 def test_assessment_fk_migration_removes_risks_fk_and_adds_opportunity_id(
     tmp_path,
 ) -> None:
-    """SQLite migration drops legacy risks-FK on assessments and adds opportunity_id/item_* columns"""
+    """Migrating legacy assessments drops the risk FK and adds item columns."""
     db_file = tmp_path / "legacy.db"
     _create_legacy_db(str(db_file))
     # Opening LocalStore triggers ensure_schema() and runs the migration.
-    from riskapp_client.adapters.local_storage.sqlite_data_store import LocalStore
 
     store = LocalStore(str(db_file))
     try:
@@ -95,7 +95,6 @@ def test_assessment_fk_migration_removes_risks_fk_and_adds_opportunity_id(
 
 def test_project_id_migration_is_atomic_and_keeps_foreign_keys_enabled(tmp_path):
     """Promoting a local project migrates children without disabling FK checks."""
-    from riskapp_client.adapters.local_storage.sqlite_data_store import LocalStore
 
     store = LocalStore(str(tmp_path / "promotion.db"))
     try:
@@ -146,7 +145,6 @@ def test_existing_outbox_gains_failure_and_result_columns(tmp_path) -> None:
     conn.commit()
     conn.close()
 
-    from riskapp_client.adapters.local_storage.sqlite_data_store import LocalStore
 
     with LocalStore(str(db_file)) as store:
         columns = {
@@ -175,8 +173,6 @@ def test_existing_sync_state_gains_a_zero_sequence_watermark(tmp_path) -> None:
             "INSERT INTO sync_state VALUES (?, ?)",
             ("project-1", "2026-01-01T00:00:00"),
         )
-
-    from riskapp_client.adapters.local_storage.sqlite_data_store import LocalStore
 
     with LocalStore(str(db_file)) as store:
         assert store.get_last_server_time("project-1") == "2026-01-01T00:00:00"

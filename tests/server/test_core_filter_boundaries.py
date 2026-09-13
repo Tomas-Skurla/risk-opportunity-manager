@@ -9,6 +9,9 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy import select
 
+# Local imports use the models currently loaded by the isolated test environment.
+# pylint: disable=import-outside-toplevel
+
 
 def test_item_filter_params_rejects_conflicting_owner_modes() -> None:
     from riskapp_server.core.filters import ItemFilterParams
@@ -46,6 +49,7 @@ def test_small_filter_helpers_cover_empty_swapped_and_date_ranges() -> None:
         from_date=date(2025, 1, 1),
         to_date=date(2025, 1, 31),
     )
+    # pylint: disable-next=protected-access
     assert len(bounded._where_criteria) == 2
 
 
@@ -115,6 +119,7 @@ def test_apply_item_filters_supports_non_deleted_owner_and_empty_filters() -> No
         from_date=None,
         to_date=None,
     )
+    # pylint: disable-next=protected-access
     assert len(unfiltered._where_criteria) == 1
 
     deleted_only = apply_item_filters(

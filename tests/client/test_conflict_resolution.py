@@ -68,6 +68,12 @@ def _risk_conflict(
     return store, outbox, SyncService(store, outbox, None), change_id
 
 
+def _risk_row(store: LocalStore) -> sqlite3.Row:
+    row = store.get_risk_row("risk-1")
+    assert row is not None
+    return row
+
+
 def test_keep_mine_requeues_with_fresh_id_and_newest_known_version(tmp_path) -> None:
     store, outbox, service, old_change_id = _risk_conflict(
         tmp_path, local_version=6, server_version=5
@@ -83,8 +89,10 @@ def test_keep_mine_requeues_with_fresh_id_and_newest_known_version(tmp_path) -> 
         assert len(pending) == 1
         assert pending[0]["change_id"] == result["replacement_change_id"]
         assert pending[0]["base_version"] == 6
-        assert pending[0]["record"]["title"] == "Local title"
-        assert store.get_risk_row("risk-1")["title"] == "Local title"
+        record = pending[0]["record"]
+        assert isinstance(record, dict)
+        assert record["title"] == "Local title"
+        assert _risk_row(store)["title"] == "Local title"
     finally:
         store.close()
 
@@ -108,7 +116,7 @@ def test_use_server_atomically_replaces_local_copy_and_rewinds_watermark(
         }
         assert outbox.get_blocked_change(change_id) is None
         assert outbox.pending_count("project-1") == 0
-        row = store.get_risk_row("risk-1")
+        row = _risk_row(store)
         assert row["title"] == "Server title"
         assert row["description"] == "Server description"
         assert row["probability"] == 2
@@ -124,14 +132,14 @@ def test_use_server_atomically_replaces_local_copy_and_rewinds_watermark(
 def test_later_leaves_conflict_and_local_copy_untouched(tmp_path) -> None:
     store, outbox, service, change_id = _risk_conflict(tmp_path)
     try:
-        before = dict(store.get_risk_row("risk-1"))
+        before = dict(_risk_row(store))
 
         result = service.resolve_conflict(change_id, "later")
 
         assert result["resolved"] is False
         assert result["resolution"] == "later"
         assert outbox.get_blocked_change(change_id) is not None
-        assert dict(store.get_risk_row("risk-1")) == before
+        assert dict(_risk_row(store)) == before
     finally:
         store.close()
 
@@ -144,6 +152,7 @@ def test_use_server_validation_failure_preserves_conflict_and_local_copy(
         result_row = store.conn.execute(
             "SELECT result_json FROM outbox WHERE change_id=?;", (change_id,)
         ).fetchone()
+        assert result_row is not None
         outcome = json.loads(result_row["result_json"])
         outcome["server_record"]["project_id"] = "another-project"
         store.conn.execute(
@@ -151,13 +160,13 @@ def test_use_server_validation_failure_preserves_conflict_and_local_copy(
             (json.dumps(outcome), change_id),
         )
         store.conn.commit()
-        before = dict(store.get_risk_row("risk-1"))
+        before = dict(_risk_row(store))
 
         with pytest.raises(RuntimeError, match="another project"):
             service.resolve_conflict(change_id, "use_server")
 
         assert outbox.get_blocked_change(change_id) is not None
-        assert dict(store.get_risk_row("risk-1")) == before
+        assert dict(_risk_row(store)) == before
     finally:
         store.close()
 
@@ -165,7 +174,7 @@ def test_use_server_validation_failure_preserves_conflict_and_local_copy(
 def test_use_server_rolls_back_outbox_delete_when_local_apply_fails(tmp_path) -> None:
     store, outbox, service, change_id = _risk_conflict(tmp_path)
     try:
-        before = dict(store.get_risk_row("risk-1"))
+        before = dict(_risk_row(store))
         store.conn.execute("""
             CREATE TRIGGER reject_conflict_resolution
             BEFORE UPDATE ON risks
@@ -179,7 +188,7 @@ def test_use_server_rolls_back_outbox_delete_when_local_apply_fails(tmp_path) ->
             service.resolve_conflict(change_id, "use_server")
 
         assert outbox.get_blocked_change(change_id) is not None
-        assert dict(store.get_risk_row("risk-1")) == before
+        assert dict(_risk_row(store)) == before
     finally:
         store.close()
 

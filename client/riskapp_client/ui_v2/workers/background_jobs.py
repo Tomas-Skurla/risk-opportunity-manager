@@ -18,7 +18,7 @@ FailureCallback = Callable[[str], None]
 CancelledCallback = Callable[[], None]
 
 
-def _accepts_keyword(fn: object, keyword: str) -> bool:
+def _accepts_keyword(fn: Callable[..., object], keyword: str) -> bool:
     """Return whether a callable accepts a named keyword argument."""
     try:
         parameters = inspect.signature(fn).parameters.values()
@@ -76,6 +76,8 @@ class _BackgroundJobWorker(QObject):
             try:
                 self.progress.emit("Refreshing project list")
                 result["_visible_projects"] = list(backend.list_projects() or [])
+            # Refresh is secondary and must not turn a successful sync into failure.
+            # pylint: disable-next=broad-exception-caught
             except Exception:  # noqa: BLE001 - sync itself already succeeded
                 logger.warning(
                     "Could not refresh projects after synchronization",
@@ -114,6 +116,8 @@ class _BackgroundJobWorker(QObject):
         if isinstance(history, dict):
             try:
                 result.update(self._run_history(backend))
+            # The snapshot is already committed; preserve that successful result.
+            # pylint: disable-next=broad-exception-caught
             except Exception as exc:  # noqa: BLE001 - snapshot already committed
                 logger.warning(
                     "Snapshot succeeded but history refresh failed",
@@ -149,6 +153,8 @@ class _BackgroundJobWorker(QObject):
                 self.cancelled.emit(self._kind)
             else:
                 self.succeeded.emit(self._kind, result)
+        # Nothing may escape the worker-thread boundary into Qt's event loop.
+        # pylint: disable-next=broad-exception-caught
         except Exception as exc:  # noqa: BLE001 - thread boundary
             logger.exception("Background %s job failed", self._kind)
             self.failed.emit(self._kind, str(exc))
@@ -158,7 +164,9 @@ class _BackgroundJobWorker(QObject):
                 close = getattr(store, "close", None)
                 if callable(close):
                     try:
-                        close()
+                        close()  # pylint: disable=not-callable
+                    # Store cleanup is best-effort after the job result is known.
+                    # pylint: disable-next=broad-exception-caught
                     except Exception:  # noqa: BLE001 - best-effort cleanup
                         logger.warning(
                             "Could not close background local store",
@@ -229,6 +237,8 @@ class BackgroundJobRunner(QObject):
         self._on_failure = on_failure
         self._on_cancelled = on_cancelled
 
+        # PySide exposes these bound signals dynamically to Pylint.
+        # pylint: disable=no-member
         thread.started.connect(worker.run)
         worker.progress.connect(self.progress_changed)
         worker.succeeded.connect(self._handle_success)
@@ -243,6 +253,7 @@ class BackgroundJobRunner(QObject):
             Qt.ConnectionType.DirectConnection,
         )
         thread.finished.connect(self._handle_thread_finished)
+        # pylint: enable=no-member
 
         self.busy_changed.emit(True, kind)
         thread.start()

@@ -1,3 +1,5 @@
+# pylint: disable=invalid-name,no-member
+# Alembic requires revision identifiers and dynamically proxies op directives.
 """baseline server schema
 
 Revision ID: 0001

@@ -4,21 +4,10 @@ from __future__ import annotations
 
 import logging
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from contextlib import suppress
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, TypeVar, cast
-
-if TYPE_CHECKING:
-    from PySide6.QtWidgets import QPushButton
-    from riskapp_client.domain.domain_models import Opportunity, Risk
-    from riskapp_client.ui_v2.components.custom_gui_widgets import RiskForm
-    from riskapp_client.ui_v2.tabs.actions_tab import ActionsTab
-    from riskapp_client.ui_v2.tabs.assessments_tab import AssessmentsTab
-    from riskapp_client.ui_v2.tabs.members_tab import MembersTab
-    from riskapp_client.ui_v2.tabs.opportunities_tab import OpportunitiesTab
-    from riskapp_client.ui_v2.tabs.risks_tab import RisksTab
-    from riskapp_client.ui_v2.tabs.top_history_tab import TopHistoryTab
 
 from PySide6.QtCore import QEvent, QModelIndex, QObject, Qt
 from PySide6.QtGui import QMouseEvent
@@ -27,6 +16,7 @@ from PySide6.QtWidgets import (
     QDateTimeEdit,
     QLabel,
     QMessageBox,
+    QPushButton,
     QTableWidget,
     QTableWidgetItem,
     QWidget,
@@ -34,6 +24,16 @@ from PySide6.QtWidgets import (
 from riskapp_client.domain.scored_entity_fields import ALL_STATUSES, DEFAULT_STATUS
 from riskapp_client.ui_v2.window_state import MainWindowState
 from riskapp_client.utils.roles import role_at_least
+
+if TYPE_CHECKING:
+    from riskapp_client.domain.domain_models import Opportunity, Risk
+    from riskapp_client.ui_v2.components.custom_gui_widgets import RiskForm
+    from riskapp_client.ui_v2.tabs.actions_tab import ActionsTab
+    from riskapp_client.ui_v2.tabs.assessments_tab import AssessmentsTab
+    from riskapp_client.ui_v2.tabs.members_tab import MembersTab
+    from riskapp_client.ui_v2.tabs.opportunities_tab import OpportunitiesTab
+    from riskapp_client.ui_v2.tabs.risks_tab import RisksTab
+    from riskapp_client.ui_v2.tabs.top_history_tab import TopHistoryTab
 
 T = TypeVar("T")
 
@@ -62,6 +62,7 @@ class CoreMixin:
         # Implemented by sibling mixins in the concrete MainWindow class. Keeping
         # these declarations behind TYPE_CHECKING avoids shadowing those methods
         # at runtime through MainWindow's multiple-inheritance method order.
+        # pylint: disable=unused-argument
         def _commit_editor_changes(
             self, *, refresh: bool, select_id: str | None = None
         ) -> None: ...
@@ -69,6 +70,8 @@ class CoreMixin:
         def _commit_opp_editor_changes(
             self, *, refresh: bool, select_id: str | None = None
         ) -> None: ...
+
+        # pylint: enable=unused-argument
 
     state: MainWindowState
 
@@ -173,7 +176,7 @@ class CoreMixin:
         return bool(hasattr(self.backend, "remote") and self.backend.remote is None)
 
     def _is_local_project(self) -> bool:
-        """Return True if the current project is local-only (not yet synced to server)."""
+        """Return whether the selected project is local-only."""
         return bool(
             self.state.project_id and str(self.state.project_id).startswith("local-")
         )
@@ -335,7 +338,7 @@ class CoreMixin:
         self,
         label: QLabel,
         full_count: int,
-        filtered: list[object],
+        filtered: Sequence[object],
         *,
         server_report: dict | None = None,
     ) -> None:
@@ -460,7 +463,8 @@ class CoreMixin:
             )
         return None
 
-    def eventFilter(self, _obj: QObject, event: QEvent) -> bool:
+    # pylint: disable-next=invalid-name
+    def eventFilter(self, _obj: QObject, event: QEvent, /) -> bool:
         if event.type() == QEvent.Type.MouseButtonPress and isinstance(
             event, QMouseEvent
         ):

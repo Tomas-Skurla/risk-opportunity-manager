@@ -27,9 +27,9 @@ from PySide6.QtWidgets import (  # pylint: disable=no-name-in-module
     QWidget,
 )  # pylint: disable=no-name-in-module
 
-from riskapp_client.ui_v2.components.ui_dialog import Ui_Dialog
-from riskapp_client.ui_v2.components.ui_register_dialog import Ui_RegisterDialog
-from riskapp_client.ui_v2.components.ui_risk_form import Ui_Form as Ui_RiskForm
+from riskapp_client.ui_v2.ui.ui_dialog import Ui_Dialog
+from riskapp_client.ui_v2.ui.ui_register_dialog import Ui_RegisterDialog
+from riskapp_client.ui_v2.ui.ui_risk_form import Ui_Form as Ui_RiskForm
 
 
 class LoginDialog(QDialog):
@@ -60,22 +60,27 @@ class LoginDialog(QDialog):
         self.ui.verticalLayout.insertWidget(btn_idx, self.register_btn)
 
         self.local_btn = QPushButton("Work Fully Local (no account, no sync)")
-        self.local_btn.setToolTip("Work offline without any account. Data stays local only.")
+        self.local_btn.setToolTip(
+            "Work offline without any account. Data stays local only."
+        )
         self.ui.verticalLayout.insertWidget(btn_idx + 1, self.local_btn)
 
+        # PySide6 signals are runtime descriptors that Pylint cannot infer.
+        # pylint: disable=no-member
         self.register_btn.clicked.connect(self._on_register_clicked)
         self.local_btn.clicked.connect(self._on_local_clicked)
 
         self.ui.buttonBox.accepted.connect(self.accept)
         self.ui.buttonBox.rejected.connect(self.reject)
+        # pylint: enable=no-member
 
     def _on_register_clicked(self) -> None:
         self.wants_register = True
-        self.done(QDialog.Accepted + 1)
+        self.done(int(QDialog.DialogCode.Accepted) + 1)
 
     def _on_local_clicked(self) -> None:
         self.wants_local = True
-        self.done(QDialog.Accepted + 2)
+        self.done(int(QDialog.DialogCode.Accepted) + 2)
 
     def values(self) -> tuple[str, str, str]:
         return (
@@ -110,6 +115,8 @@ class ServerDownDialog(QDialog):
         msg.setWordWrap(True)
         layout.addWidget(msg)
 
+        # PySide6 signals are runtime descriptors that Pylint cannot infer.
+        # pylint: disable=no-member
         if has_credentials and email:
             sync_btn = QPushButton(f"Work Offline as {email} (will sync later)")
             sync_btn.setToolTip(
@@ -119,12 +126,15 @@ class ServerDownDialog(QDialog):
             layout.addWidget(sync_btn)
 
         local_btn = QPushButton("Work Fully Local (no account, no sync)")
-        local_btn.setToolTip("Work offline without any account. Data stays local only.")
+        local_btn.setToolTip(
+            "Work offline without any account. Data stays local only."
+        )
         local_btn.clicked.connect(self._choose_fully_local)
         layout.addWidget(local_btn)
 
         quit_btn = QPushButton("Quit")
         quit_btn.clicked.connect(self.reject)
+        # pylint: enable=no-member
         layout.addWidget(quit_btn)
 
     def _choose_fully_local(self) -> None:
@@ -148,9 +158,11 @@ class RegisterDialog(QDialog):
         self.setWindowTitle("Register new account")
         self.ui.url.setText(default_url)
         # Override accept to run client-side validation first.
+        # pylint: disable=no-member
         self.ui.buttonBox.accepted.disconnect()
         self.ui.buttonBox.accepted.connect(self._validate_and_accept)
         self.ui.buttonBox.rejected.connect(self.reject)
+        # pylint: enable=no-member
 
     # ---- public API --------------------------------------------------------
 
@@ -239,8 +251,11 @@ class NewProjectDialog(QDialog):
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
+        # PySide6 signals are runtime descriptors that Pylint cannot infer.
+        # pylint: disable=no-member
         buttons.accepted.connect(self._validate_and_accept)
         buttons.rejected.connect(self.reject)
+        # pylint: enable=no-member
         layout.addWidget(buttons)
 
     def _validate_and_accept(self) -> None:
@@ -274,6 +289,8 @@ class ExcelSelectionDelegate(QStyledItemDelegate):
 
     def paint(self, painter, option, index):
         """Paint item."""
+        # Qt exposes these value-type properties through compiled descriptors.
+        # pylint: disable=no-member
         opt = QStyleOptionViewItem(option)
         # --- DYNAMIC THEME COLORS ---
         base_color = opt.palette.base().color()
@@ -281,9 +298,9 @@ class ExcelSelectionDelegate(QStyledItemDelegate):
         highlight_bg = opt.palette.highlight().color()
         grid_color = QColor(text_color)
         grid_color.setAlpha(50)
-        if opt.state & QStyle.State_Selected:
+        if opt.state & QStyle.StateFlag.State_Selected:
             bg = highlight_bg
-        elif opt.state & QStyle.State_MouseOver:
+        elif opt.state & QStyle.StateFlag.State_MouseOver:
             if base_color.lightness() > 128:
                 bg = base_color.darker(105)
             else:
@@ -300,7 +317,7 @@ class ExcelSelectionDelegate(QStyledItemDelegate):
             painter.save()
             pen = QPen(grid_color, 1)
             pen.setCosmetic(True)
-            pen.setCapStyle(Qt.FlatCap)
+            pen.setCapStyle(Qt.PenCapStyle.FlatCap)
             painter.setPen(pen)
             x = rect.left() + self.GUTTER_W
             painter.drawLine(x, rect.top(), x, rect.bottom() - 1)
@@ -308,26 +325,36 @@ class ExcelSelectionDelegate(QStyledItemDelegate):
             # number (row index)
             num = str(index.row() + 1)
             painter.save()
-            if opt.state & QStyle.State_Selected:
+            if opt.state & QStyle.StateFlag.State_Selected:
                 painter.setPen(opt.palette.highlightedText().color())
             else:
                 painter.setPen(text_color)
-            painter.drawText(gutter.adjusted(0, 0, -1, 0), Qt.AlignCenter, num)
+            painter.drawText(
+                gutter.adjusted(0, 0, -1, 0),
+                Qt.AlignmentFlag.AlignCenter,
+                num,
+            )
             painter.restore()
             # title text
             title = index.data() or ""
             pad = 8
             title_rect = rect.adjusted(self.GUTTER_W + pad, 0, -pad, 0)
             painter.save()
-            if opt.state & QStyle.State_Selected:
+            if opt.state & QStyle.StateFlag.State_Selected:
                 painter.setPen(opt.palette.highlightedText().color())
             else:
                 painter.setPen(text_color)
             fm = opt.fontMetrics
             full_w = fm.horizontalAdvance(title)
-            elided = fm.elidedText(title, Qt.ElideRight, max(0, title_rect.width()))
-            align = Qt.AlignVCenter | (
-                Qt.AlignHCenter if full_w <= title_rect.width() else Qt.AlignLeft
+            elided = fm.elidedText(
+                title,
+                Qt.TextElideMode.ElideRight,
+                max(0, title_rect.width()),
+            )
+            align = Qt.AlignmentFlag.AlignVCenter | (
+                Qt.AlignmentFlag.AlignHCenter
+                if full_w <= title_rect.width()
+                else Qt.AlignmentFlag.AlignLeft
             )
             painter.drawText(title_rect, align, elided)
             painter.restore()
@@ -336,25 +363,25 @@ class ExcelSelectionDelegate(QStyledItemDelegate):
             val = index.data()
             text = str(val) if val is not None else ""
             painter.save()
-            if opt.state & QStyle.State_Selected:
+            if opt.state & QStyle.StateFlag.State_Selected:
                 painter.setPen(opt.palette.highlightedText().color())
             else:
                 painter.setPen(text_color)
-            painter.drawText(opt.rect, Qt.AlignCenter, text)
+            painter.drawText(opt.rect, Qt.AlignmentFlag.AlignCenter, text)
             painter.restore()
         # active cell border
-        if opt.state & QStyle.State_HasFocus:
+        if opt.state & QStyle.StateFlag.State_HasFocus:
             painter.save()
             pen = QPen(highlight_bg, 2)
             painter.setPen(pen)
-            painter.setBrush(Qt.NoBrush)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRect(opt.rect.adjusted(1, 1, -1, -1))
             painter.restore()
         # excel-like internal gridlines
         painter.save()
         pen = QPen(grid_color, 1)
         pen.setCosmetic(True)
-        pen.setCapStyle(Qt.FlatCap)
+        pen.setCapStyle(Qt.PenCapStyle.FlatCap)
         painter.setPen(pen)
         r = opt.rect
         model = index.model()
@@ -369,6 +396,7 @@ class ExcelSelectionDelegate(QStyledItemDelegate):
             x2 = r.right() if index.column() == last_col else (r.right() - 1)
             painter.drawLine(r.left(), y, x2, y)
         painter.restore()
+        # pylint: enable=no-member
 
 
 def setup_readonly_table(table: QTableWidget, *, excel_delegate: bool = False) -> None:
@@ -377,12 +405,15 @@ def setup_readonly_table(table: QTableWidget, *, excel_delegate: bool = False) -
     Call-sites import this from ``riskapp_client.ui_v2.components.custom_gui_widgets``.
     """
     table.verticalHeader().setVisible(False)
-    table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-    table.setSelectionBehavior(QAbstractItemView.SelectRows)
-    table.setSelectionMode(QAbstractItemView.SingleSelection)
-    table.setFocusPolicy(Qt.StrongFocus)
+
+    table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+    table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+    table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+    table.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
     table.horizontalHeader().setStretchLastSection(False)
-    table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+    table.horizontalHeader().setSectionResizeMode(
+        QHeaderView.ResizeMode.Stretch
+    )
     if excel_delegate:
         table.setItemDelegate(ExcelSelectionDelegate(table))
 
@@ -427,7 +458,9 @@ class RiskForm(QWidget):
             self.impact_scope,
             self.impact_quality,
         ):
+            # pylint: disable-next=no-member
             w.valueChanged.connect(self._recompute_overall_impact)
+        # pylint: disable-next=no-member
         self.btn.clicked.connect(self._submit)
 
         self.code.setToolTip("Code: A unique identifier or short reference")
@@ -473,10 +506,13 @@ class RiskForm(QWidget):
             "Status Changed At: Auto-recorded when the status is updated"
         )
         self.status_changed_at.setEnabled(False)  # Aggressively lock the widget
+        # pylint: disable-next=no-member
         self.status.currentTextChanged.connect(self._on_status_changed)
 
     def track_dirty_state(self, callback) -> None:
-        """Connect all input fields to a callback so the app knows when the form has unsaved changes."""
+        """Connect inputs to the callback that tracks unsaved changes."""
+        # PySide6 signals are runtime descriptors that Pylint cannot infer.
+        # pylint: disable=no-member
         for w in (self.code, self.title, self.category, self.document_url):
             w.textChanged.connect(lambda *_: callback())
         for w in (self.description, self.threat, self.triggers, self.mitigation_plan):
@@ -492,10 +528,8 @@ class RiskForm(QWidget):
         self.status.currentTextChanged.connect(lambda *_: callback())
         self.owner_user_id.currentTextChanged.connect(lambda *_: callback())
         for w in (self.identified_at, self.response_at, self.occurred_at):
-            if hasattr(w, "dateTimeChanged"):
-                w.dateTimeChanged.connect(lambda *_: callback())
-            elif hasattr(w, "textChanged"):
-                w.textChanged.connect(lambda *_: callback())
+            w.dateTimeChanged.connect(lambda *_: callback())
+        # pylint: enable=no-member
 
     def set_allow_deleted_status(self, allowed: bool) -> None:
         """Enable/disable the 'deleted' lifecycle state in the dropdown.
@@ -527,7 +561,9 @@ class RiskForm(QWidget):
         if hasattr(widget, "setDateTime"):
             widget.setSpecialValueText("Not set")  # Shows this when empty!
             if dt_str:
-                widget.setDateTime(QDateTime.fromString(dt_str[:19], Qt.ISODate))
+                widget.setDateTime(
+                    QDateTime.fromString(dt_str[:19], Qt.DateFormat.ISODate)
+                )
             else:
                 widget.setDateTime(
                     widget.minimumDateTime()
@@ -538,7 +574,8 @@ class RiskForm(QWidget):
     def set_editable(self, editable: bool) -> None:
         """Enable/disable editing while keeping fields readable.
 
-        - When editable=False, text fields become read-only and selectors/spinboxes are disabled.
+        - When editable=False, text fields become read-only and selectors and
+        spinboxes are disabled.
         - Save button is disabled.
         """
         # Save
@@ -633,21 +670,16 @@ class RiskForm(QWidget):
         )
         self.i.setValue(overall)
 
-    def _on_status_changed(self, text: str) -> None:
-        """Automatically stamp the current date/time when the status dropdown is modified."""
-        if hasattr(self.status_changed_at, "setDateTime"):
-            self.status_changed_at.setDateTime(QDateTime.currentDateTime())
-        else:
-            from datetime import datetime
-
-            self.status_changed_at.setText(datetime.now().strftime("%Y-%m-%dT%H:%M:%S"))
+    def _on_status_changed(self, _text: str) -> None:
+        """Stamp the current time when the status dropdown changes."""
+        self.status_changed_at.setDateTime(QDateTime.currentDateTime())
 
     def _read_date(self, widget) -> str | None:
-        """Helper to safely read from a QDateTimeEdit to prevent sending 'Not set' to DB."""
+        """Read a date field without sending its ``Not set`` placeholder."""
         if hasattr(widget, "dateTime"):
             if widget.dateTime() == widget.minimumDateTime():
                 return None
-            return widget.dateTime().toString(Qt.ISODate)
+            return widget.dateTime().toString(Qt.DateFormat.ISODate)
         return widget.text().strip() or None
 
     def get_payload(self) -> dict:
@@ -766,7 +798,9 @@ class RiskForm(QWidget):
         if not title:
             QMessageBox.warning(self, "Validation", "Title is required.")
             return
-        self.on_submit(payload)
+        on_submit = self.on_submit
+        if on_submit is not None:
+            on_submit(payload)
 
 
 class CrispHeader(QHeaderView):

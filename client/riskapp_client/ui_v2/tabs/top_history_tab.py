@@ -6,7 +6,7 @@ from PySide6.QtCore import QDateTime, Qt, QTimer
 from PySide6.QtWidgets import QAbstractScrollArea, QHeaderView, QSizePolicy, QWidget
 
 from riskapp_client.ui_v2.components.custom_gui_widgets import setup_readonly_table
-from riskapp_client.ui_v2.tabs.ui_top_history_tab import Ui_Form as Ui_TopHistoryTab
+from riskapp_client.ui_v2.ui.ui_top_history_tab import Ui_Form as Ui_TopHistoryTab
 
 
 class TopHistoryTab(QWidget):
@@ -26,10 +26,16 @@ class TopHistoryTab(QWidget):
         self.ui.setupUi(self)
         setup_readonly_table(self.ui.top_table)
         hh = self.ui.top_table.horizontalHeader()
-        hh.setSectionResizeMode(QHeaderView.ResizeToContents)
-        self.ui.top_table.setSizeAdjustPolicy(QAbstractScrollArea.AdjustToContents)
-        self.ui.top_table.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Maximum)
-        self.ui.verticalLayout_2.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        hh.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self.ui.top_table.setSizeAdjustPolicy(
+            QAbstractScrollArea.SizeAdjustPolicy.AdjustToContents
+        )
+        self.ui.top_table.setSizePolicy(
+            QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Maximum
+        )
+        self.ui.verticalLayout_2.setAlignment(
+            Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft
+        )
         self.ui.splitter.setStretchFactor(0, 17)
         self.ui.splitter.setStretchFactor(1, 3)
         self.ui.splitter.setSizes([85000, 15000])
@@ -42,18 +48,22 @@ class TopHistoryTab(QWidget):
             5: "Score: The calculated score (P × I) at the time of the snapshot",
         }
         for col, text in tooltips.items():
-            if self.ui.top_table.horizontalHeaderItem(col):
-                self.ui.top_table.horizontalHeaderItem(col).setToolTip(text)
+            header_item = self.ui.top_table.horizontalHeaderItem(col)
+            if header_item is not None:
+                header_item.setToolTip(text)
         now = QDateTime.currentDateTime()
         self.ui.top_to.setDateTime(now)
         self.ui.top_from.setDateTime(now.addDays(-30))
         self.auto_snap_timer = QTimer(self)
         self.auto_snap_timer.setInterval(60 * 60 * 1000)
+        # PySide exposes bound signals dynamically to Pylint.
+        # pylint: disable=no-member
         self.auto_snap_timer.timeout.connect(on_maybe_auto_snapshot)
         self.auto_snap_timer.start()
         self.ui.snapshot_btn.clicked.connect(on_snapshot_now)
         self.ui.refresh_top_btn.clicked.connect(on_refresh_history)
         self.ui.top_period.currentTextChanged.connect(on_period_changed)
+        # pylint: enable=no-member
         self.snapshot_btn = self.ui.snapshot_btn
         self.auto_snapshot_chk = self.ui.auto_snapshot_chk
         self.auto_snapshot_kind = self.ui.auto_snapshot_kind

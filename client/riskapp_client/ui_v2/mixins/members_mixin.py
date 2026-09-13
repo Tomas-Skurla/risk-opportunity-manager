@@ -108,7 +108,9 @@ class MembersMixin:
                 if self.backend.is_superuser():
                     role = "admin"
             except (AttributeError, RuntimeError):
-                logging.getLogger(__name__).debug("Failed to resolve role for member", exc_info=True)
+                logging.getLogger(__name__).debug(
+                    "Failed to resolve role for member", exc_info=True
+                )
         self._set_role_status(role=role, offline=offline, assumed=False)
         self._apply_permissions()
 
@@ -118,8 +120,12 @@ class MembersMixin:
         if not items:
             return
         row = items[0].row()
-        email = tab.members_table.item(row, 0).text()
-        role = tab.members_table.item(row, 1).text()
+        email_item = tab.members_table.item(row, 0)
+        role_item = tab.members_table.item(row, 1)
+        if email_item is None or role_item is None:
+            return
+        email = email_item.text()
+        role = role_item.text()
         tab.member_email.setText(email)
         idx = tab.member_role.findText(role)
         if idx >= 0:
@@ -127,7 +133,7 @@ class MembersMixin:
         else:
             tab.member_role.setEditText(role)
         # Disable controls if selected member is a superuser and current user is not.
-        user_id = tab.members_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+        user_id = email_item.data(Qt.ItemDataRole.UserRole)
         selected_is_super = False
         for m in getattr(self, "_cached_members", []):
             if str(m.user_id) == str(user_id) and m.is_superuser:
@@ -137,7 +143,9 @@ class MembersMixin:
         try:
             current_is_super = self.backend.is_superuser()
         except (AttributeError, RuntimeError):
-            logging.getLogger(__name__).debug("Failed to check superuser status", exc_info=True)
+            logging.getLogger(__name__).debug(
+                "Failed to check superuser status", exc_info=True
+            )
         protected = selected_is_super and not current_is_super
         tab.member_role.setEnabled(not protected)
         tab.member_add_btn.setEnabled(not protected)
@@ -178,6 +186,9 @@ class MembersMixin:
             return
         row = items[0].row()
         email_item = tab.members_table.item(row, 0)
+        if email_item is None:
+            QMessageBox.warning(parent, "Members", "Missing member user_id.")
+            return
         user_id = email_item.data(Qt.ItemDataRole.UserRole)
         email = email_item.text()
         if not user_id:

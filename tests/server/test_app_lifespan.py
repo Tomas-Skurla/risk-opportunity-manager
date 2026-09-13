@@ -8,6 +8,9 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+# Imports stay local to respect fixture-driven module reloads and test settings.
+# pylint: disable=import-outside-toplevel
+
 
 class _ScalarResult:
     def __init__(self, value):
@@ -113,9 +116,7 @@ async def test_lifespan_rejects_weak_bootstrap_password_and_logs_dispose_failure
     monkeypatch.setattr(main_app, "INITIAL_SUPERUSER_EMAIL", "root@example.test")
     monkeypatch.setattr(main_app, "INITIAL_SUPERUSER_PASSWORD", "weak")
     monkeypatch.setattr(main_app, "engine", SimpleNamespace(dispose=fail_dispose))
-    monkeypatch.setattr(
-        main_app.logger, "exception", lambda message: logged.append(message)
-    )
+    monkeypatch.setattr(main_app.logger, "exception", logged.append)
 
     with pytest.raises(RuntimeError, match="does not satisfy password policy"):
         async with main_app.lifespan(FastAPI()):
@@ -134,7 +135,9 @@ def test_create_app_optional_middleware_and_health_states(
     monkeypatch.setattr(main_app, "ALLOWED_HOSTS", [])
     monkeypatch.setattr(main_app, "validate_runtime_config", lambda: None)
     configured = main_app.create_app()
-    middleware_names = {entry.cls.__name__ for entry in configured.user_middleware}
+    middleware_names = {
+        getattr(entry.cls, "__name__") for entry in configured.user_middleware
+    }
     assert "CORSMiddleware" in middleware_names
     assert "GZipMiddleware" not in middleware_names
     assert "TrustedHostMiddleware" not in middleware_names

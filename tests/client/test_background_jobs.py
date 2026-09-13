@@ -11,7 +11,12 @@ from riskapp_client.services.offline_first_facade import OfflineFirstBackend
 from riskapp_client.ui_v2.workers import BackgroundJobRunner
 from riskapp_client.ui_v2.workers import background_jobs as jobs
 
+# Worker dispatch is tested directly before the runner's thread boundary.
+# pylint: disable=protected-access
 
+
+# The qtbot fixture initializes Qt before these direct QObject signal tests.
+# pylint: disable-next=unused-argument
 def test_worker_dispatches_sync_progress_and_project_migration(qtbot) -> None:
     progress_messages: list[str] = []
     outcomes: list[tuple[str, object]] = []
@@ -49,7 +54,7 @@ def test_worker_dispatches_sync_progress_and_project_migration(qtbot) -> None:
     assert result["_visible_projects"] == [Project("project-1", "Published")]
 
 
-def test_worker_dispatches_history_and_preserves_snapshot_after_history_error(
+def test_worker_dispatches_history_and_preserves_snapshot_after_history_error( # pylint: disable-next=unused-argument
     qtbot,
 ) -> None:
     outcomes: list[tuple[str, object]] = []
@@ -86,7 +91,7 @@ def test_worker_dispatches_history_and_preserves_snapshot_after_history_error(
     assert result["history_error"] == "history unavailable"
 
 
-def test_worker_reports_prestart_cancellation_invalid_results_and_unknown_jobs(
+def test_worker_reports_prestart_cancellation_invalid_results_and_unknown_jobs( # pylint: disable-next=unused-argument
     qtbot,
 ) -> None:
     factory_called = False
@@ -258,14 +263,14 @@ def test_failed_shutdown_wait_restores_runner_until_job_finishes(qtbot) -> None:
 def test_snapshot_and_history_requests_run_in_worker_thread(qtbot) -> None:
     main_thread_id = threading.get_ident()
     calls: list[tuple[str, int, object]] = []
-    results: list[dict] = []
+    results: list[object] = []
 
     class Backend:
         def create_snapshot(self, project_id, *, kind=None):
             calls.append(("snapshot", threading.get_ident(), kind))
             return {"id": "snapshot-1", "project_id": project_id}
 
-        def top_history(self, project_id, **filters):
+        def top_history(self, _project_id, **filters):
             calls.append(("history", threading.get_ident(), filters))
             return [{"captured_at": "2026-09-06T12:00:00", "top": []}]
 
@@ -284,8 +289,10 @@ def test_snapshot_and_history_requests_run_in_worker_thread(qtbot) -> None:
 
     assert [call[0] for call in calls] == ["snapshot", "history"]
     assert all(call[1] != main_thread_id for call in calls)
-    assert results[0]["snapshot"]["id"] == "snapshot-1"
-    assert len(results[0]["history"]) == 1
+    result = results[0]
+    assert isinstance(result, dict)
+    assert result["snapshot"]["id"] == "snapshot-1"
+    assert len(result["history"]) == 1
     assert runner.shutdown()
 
 
@@ -294,7 +301,7 @@ def test_offline_facade_worker_uses_a_separate_sqlite_connection(
 ) -> None:
     main_thread_id = threading.get_ident()
     calls: dict[str, int] = {}
-    results: list[dict] = []
+    results: list[object] = []
 
     class Remote:
         def fork_authenticated(self):
@@ -328,7 +335,9 @@ def test_offline_facade_worker_uses_a_separate_sqlite_connection(
         )
         qtbot.waitUntil(lambda: bool(results) and not runner.is_busy)
 
-        assert results[0]["state"] == "complete"
+        result = results[0]
+        assert isinstance(result, dict)
+        assert result["state"] == "complete"
         assert calls["fork"] == calls["pull"]
         assert calls["fork"] != main_thread_id
         # The original connection remains owned and usable by the GUI thread.

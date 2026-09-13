@@ -6,8 +6,8 @@ Start here if you are setting up, testing, or running RiskApp locally.
 
 - [`SETUP_GUIDE.md`](SETUP_GUIDE.md) — clean local setup, supported Python versions, script-based environment setup, server/client startup, login, offline modes, roles, tabs, and environment variables.
 - [`TEST_GUIDE.md`](TEST_GUIDE.md) — manual and automated verification checklist for a clean install.
-- [`client/README_CLIENT.md`](client/README_CLIENT.md) — client-specific usage, configuration, offline behavior, sync notes, and Qt/PySide diagnostics.
-- [`server/README_SERVER.md`](server/README_SERVER.md) — backend startup, auth/bootstrap, configuration, and operational notes.
+- [`client/README_CLIENT.md`](../client/README_CLIENT.md) — client-specific usage, configuration, offline behavior, sync notes, and Qt/PySide diagnostics.
+- [`server/README_SERVER.md`](../server/README_SERVER.md) — backend startup, auth/bootstrap, configuration, and operational notes.
 - [`README_QA.md`](README_QA.md) — pytest, mypy, Ruff, Black, and quality command details.
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) — boundaries, sync invariants, security, and trade-offs.
 

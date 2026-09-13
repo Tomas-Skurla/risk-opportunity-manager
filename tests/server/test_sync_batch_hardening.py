@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import uuid
+from typing import cast
 
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from riskapp_server.sync import engine
+from sqlalchemy.orm import Session
 
 
 def _register_and_create_project(client: TestClient) -> tuple[str, dict[str, str]]:
@@ -92,7 +94,8 @@ def test_commit_failure_rolls_back_without_exposing_database_details(
     monkeypatch.setattr(engine, "ensure_member", lambda *_args: "member")
 
     with pytest.raises(HTTPException) as caught:
-        engine.push_changes(session, uuid.uuid4(), uuid.uuid4(), [])
+        # The failure-injection double implements only the exercised Session calls.
+        engine.push_changes(cast(Session, session), uuid.uuid4(), uuid.uuid4(), [])
 
     assert caught.value.status_code == 500
     assert caught.value.detail == "Sync push commit failed"

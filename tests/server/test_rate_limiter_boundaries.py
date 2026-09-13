@@ -6,6 +6,11 @@ from collections import deque
 
 import pytest
 
+# Tests intentionally inspect and seed the limiter's private counter state.
+# pylint: disable=protected-access
+# Keep server imports local to the configured test environment.
+# pylint: disable=import-outside-toplevel
+
 
 @pytest.mark.parametrize(
     "kwargs",
@@ -42,7 +47,7 @@ def test_limiter_expires_hits_and_returns_retry_after(monkeypatch) -> None:
     now[0] = 111.5
     assert limiter.check("account") == (True, 0)
     limiter.reset()
-    assert limiter._hits == {}
+    assert not limiter._hits
 
 
 def test_limiter_prunes_stale_keys_and_bounds_untrusted_cardinality(
