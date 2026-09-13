@@ -58,6 +58,10 @@ RUN bash scripts/check_project.sh
 
 FROM base AS server
 
+RUN apt-get update \
+    && apt-get install --no-install-recommends --only-upgrade -y libpcre2-8-0 \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 COPY server/requirements.lock /tmp/server-requirements.lock
