@@ -6,9 +6,10 @@ from typing import Any
 
 from riskapp_client.adapters.local_storage.sqlite_data_store import LocalStore, utc_iso
 from riskapp_client.adapters.local_storage.sync_outbox_queue import OutboxStore
+from riskapp_client.services.conflict_merge import merged_record
 
 _SYNC_EPOCH = "1970-01-01T00:00:00"
-_CONFLICT_RESOLUTIONS = {"keep_mine", "use_server", "later"}
+_CONFLICT_RESOLUTIONS = {"keep_mine", "use_server", "later", "merge"}
 
 
 class _SyncCancelled(RuntimeError):
@@ -197,13 +198,14 @@ class SyncService:
         apply_record(project_id, [record])
 
     def resolve_conflict(
-        self, change_id: str, resolution: str
+        self, change_id: str, resolution: str,
+        choices: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Resolve one persisted conflict without silently discarding either side."""
         choice = str(resolution or "").strip().lower()
         if choice not in _CONFLICT_RESOLUTIONS:
             raise ValueError(
-                "resolution must be one of: keep_mine, use_server, later"
+                "resolution must be one of: keep_mine, use_server, later, merge"
             )
 
         if choice == "later":
@@ -255,6 +257,41 @@ class SyncService:
                 }
 
             server_record = self._normalize_server_record(conflict)
+            if choice == "merge":
+                version = conflict.get("server_version")
+                if (
+                    not isinstance(version, int)
+                    or isinstance(version, bool)
+                    or version < 1
+                    or int(server_record.get("version") or 0) != version
+                    or self._current_local_version(conflict) > version
+                ):
+                    raise RuntimeError(
+                        "The saved server copy is stale; synchronize again "
+                        "before merging"
+                    )
+                merge_source = {**conflict, "server_record": server_record}
+                record, selected = merged_record(merge_source, choices or {})
+                self._outbox.delete_outbox_ids([str(change_id)])
+                self._apply_server_record(conflict, server_record)
+                self._store.apply_merged_fields(
+                    str(conflict["entity"]), project_id,
+                    str(conflict["entity_id"]), record,
+                )
+                replacement_id = self._outbox.queue_merged_upsert(
+                    project_id, str(conflict["entity"]),
+                    str(conflict["entity_id"]), version, record,
+                )
+                self._store.reset_sync_watermark(project_id, _SYNC_EPOCH)
+                return {
+                    "change_id": str(change_id),
+                    "replacement_change_id": replacement_id,
+                    "resolution": choice,
+                    "resolved": True,
+                    "project_id": project_id,
+                    "base_version": version,
+                    "local_fields": sorted(selected),
+                }
             self._outbox.delete_outbox_ids([str(change_id)])
             self._apply_server_record(conflict, server_record)
             # The saved conflict record is a point-in-time copy. Rewind the

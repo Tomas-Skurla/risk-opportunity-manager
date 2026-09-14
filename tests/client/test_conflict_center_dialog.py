@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import sqlite3
 from unittest.mock import Mock
 
-from PySide6.QtWidgets import QDialog, QMessageBox
+from PySide6.QtWidgets import QComboBox, QDialog, QMessageBox
 from riskapp_client.ui_v2.components.conflict_center_dialog import (
     ConflictCenterDialog,
+)
+from riskapp_client.ui_v2.components.conflict_field_merge_dialog import (
+    ConflictFieldMergeDialog,
 )
 
 # These tests intentionally call the private resolution step to cover its outcomes.
@@ -155,3 +159,72 @@ def test_use_server_is_disabled_without_a_saved_server_copy(qtbot) -> None:
 
     assert not dialog.use_server_btn.isEnabled()
     assert "Server copy unavailable" in dialog.server_copy.toPlainText()
+
+
+def test_field_choices_send_explicit_selection_to_resolver(qtbot, monkeypatch) -> None:
+    resolver = Mock(return_value={"resolved": True, "resolution": "merge"})
+    dialog = ConflictCenterDialog([_conflict()], resolver)
+    qtbot.addWidget(dialog)
+    assert dialog.merge_btn.isEnabled()
+    assert dialog.ui.merge_btn is dialog.merge_btn
+    assert not hasattr(dialog, "field_table")
+
+    def choose_title(merge: ConflictFieldMergeDialog) -> int:
+        assert merge.ui.field_table.rowCount() == 3
+        choice = merge.ui.field_table.cellWidget(0, 3)
+        assert isinstance(choice, QComboBox)
+        choice.setCurrentIndex(1)
+        merge.ui.queue_merge_btn.click()
+        return merge.result()
+
+    monkeypatch.setattr(ConflictFieldMergeDialog, "exec", choose_title)
+    dialog.merge_btn.click()
+    resolver.assert_called_once_with(
+        "change-1", "merge",
+        {"title": "mine", "probability": "server", "impact": "server"},
+    )
+
+
+def test_cancelling_merge_leaves_conflict_blocked(qtbot, monkeypatch) -> None:
+    resolver = Mock()
+    dialog = ConflictCenterDialog([_conflict()], resolver)
+    qtbot.addWidget(dialog)
+
+    def cancel(merge: ConflictFieldMergeDialog) -> int:
+        merge.ui.cancel_btn.click()
+        return merge.result()
+
+    monkeypatch.setattr(ConflictFieldMergeDialog, "exec", cancel)
+    dialog.merge_btn.click()
+    resolver.assert_not_called()
+    assert dialog.conflicts_remaining() == 1
+
+
+def test_deleted_record_cannot_be_merged(qtbot) -> None:
+    conflict = _conflict()
+    conflict["server_record"]["is_deleted"] = True
+    dialog = ConflictCenterDialog([conflict], Mock())
+    qtbot.addWidget(dialog)
+    assert not dialog.merge_btn.isEnabled()
+
+
+def test_merge_sqlite_failure_is_reported_and_conflict_remains(
+    qtbot, monkeypatch
+) -> None:
+    resolver = Mock(side_effect=sqlite3.IntegrityError("merged write failed"))
+    dialog = ConflictCenterDialog([_conflict()], resolver)
+    qtbot.addWidget(dialog)
+    critical = Mock()
+    monkeypatch.setattr(QMessageBox, "critical", critical)
+
+    dialog._resolve_selected(
+        "merge", {"title": "mine", "probability": "server", "impact": "server"}
+    )
+
+    resolver.assert_called_once_with(
+        "change-1", "merge",
+        {"title": "mine", "probability": "server", "impact": "server"},
+    )
+    critical.assert_called_once()
+    assert "merged write failed" in critical.call_args.args[2]
+    assert dialog.conflicts_remaining() == 1

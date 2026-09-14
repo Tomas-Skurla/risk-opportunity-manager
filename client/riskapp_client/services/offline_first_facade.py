@@ -585,9 +585,12 @@ class OfflineFirstBackend(Backend):
         return self._sync.conflict_details(project_id)
 
     def resolve_conflict(
-        self, change_id: str, resolution: str
+        self, change_id: str, resolution: str,
+        choices: dict[str, str] | None = None,
     ) -> dict[str, Any]:
-        return self._sync.resolve_conflict(change_id, resolution)
+        if choices is None:
+            return self._sync.resolve_conflict(change_id, resolution)
+        return self._sync.resolve_conflict(change_id, resolution, choices)
 
     # ---- Help Desk ---------------------------------------------------------
 

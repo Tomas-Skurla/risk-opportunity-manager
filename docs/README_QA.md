@@ -43,16 +43,18 @@ Ruff includes its Bandit-derived `S` security rules. The configured test excepti
 
 ## Qt Designer forms
 
-The Conflict Center layout is maintained in the editable Designer source:
+The editable Qt Designer sources live in:
 
 ```text
-client/riskapp_client/ui_v2/ui/conflict_center_dialog.ui
+client/riskapp_client/ui_v2/forms/
 ```
 
-After saving it in Qt Designer, regenerate the Python form class from the repository root:
+After editing a form in Qt Designer, regenerate only its matching `ui_*.py` from the repository root using the pinned PySide6 environment. For example:
 
 ```bash
-pyside6-uic client/riskapp_client/ui_v2/ui/conflict_center_dialog.ui -o client/riskapp_client/ui_v2/ui/ui_conflict_center_dialog.py
+pyside6-uic client/riskapp_client/ui_v2/forms/conflict_center_dialog.ui -o client/riskapp_client/ui_v2/ui/ui_conflict_center_dialog.py
 ```
 
-Do not edit `ui_conflict_center_dialog.py` directly; keep behavior in `conflict_center_dialog.py` so regenerating the form cannot overwrite it.
+For a different form, substitute its name in both paths. Regenerate only forms whose designs you intend to integrate.
+
+Keep button behavior and dynamic merge rows in the `components/` files so form regeneration cannot overwrite them. The conflict forms use lowercase names in their Designer `<class>` tags; the components alias the resulting generated class names on import.

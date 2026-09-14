@@ -30,6 +30,54 @@
          </widget>
         </item>
         <item>
+         <widget class="QLabel" name="project_list_label">
+          <property name="text">
+           <string>Projects</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QListWidget" name="project_list"/>
+        </item>
+        <item>
+         <layout class="QHBoxLayout" name="project_actions_layout">
+          <item>
+           <widget class="QPushButton" name="delete_project_btn">
+            <property name="text">
+             <string>Delete Project</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QPushButton" name="new_project_btn">
+            <property name="text">
+             <string>New Project</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QPushButton" name="sync_btn">
+            <property name="text">
+             <string>Sync Now</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <spacer name="horizontalSpacer">
+            <property name="orientation">
+             <enum>Qt::Orientation::Horizontal</enum>
+            </property>
+            <property name="sizeHint" stdset="0">
+             <size>
+              <width>40</width>
+              <height>20</height>
+             </size>
+            </property>
+           </spacer>
+          </item>
+         </layout>
+        </item>
+        <item>
          <widget class="QListWidget" name="sidebar_list"/>
         </item>
        </layout>

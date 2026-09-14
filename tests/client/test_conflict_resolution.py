@@ -144,6 +144,133 @@ def test_later_leaves_conflict_and_local_copy_untouched(tmp_path) -> None:
         store.close()
 
 
+def test_field_merge_requeues_only_chosen_local_values_at_server_version(
+    tmp_path,
+) -> None:
+    store, outbox, service, change_id = _risk_conflict(tmp_path)
+    try:
+        store.set_sync_watermark("project-1", "2026-09-04T13:00:00", 12)
+        result = service.resolve_conflict(
+            change_id, "merge", {
+                "title": "mine", "probability": "server", "impact": "mine",
+            }
+        )
+        assert result["base_version"] == 5
+        assert result["replacement_change_id"] != change_id
+        assert result["local_fields"] == ["impact", "title"]
+        assert outbox.get_blocked_change(change_id) is None
+        pending = outbox.get_pending_changes("project-1")
+        assert len(pending) == 1
+        assert pending[0]["base_version"] == 5
+        assert pending[0]["record"]["title"] == "Local title"
+        assert pending[0]["record"]["probability"] == 2
+        assert pending[0]["record"]["impact"] == 4
+        row = _risk_row(store)
+        assert row["title"] == "Local title"
+        assert row["probability"] == 2
+        assert row["impact"] == 4
+        assert row["version"] == 5 and row["dirty"] == 1
+        assert store.get_last_server_sequence("project-1") == 0
+    finally:
+        store.close()
+
+
+def test_assessment_merge_recalculates_persisted_score(tmp_path) -> None:
+    store = LocalStore(str(tmp_path / "assessment-merge.db"))
+    try:
+        store.create_local_project(name="Project", project_id="project-1")
+        store.upsert_local_risk(
+            risk_id="risk-1", project_id="project-1", title="Risk",
+            probability=2, impact=2, version=3,
+            updated_at="2026-09-04T10:00:00",
+        )
+        store.upsert_local_assessment(
+            assessment_id="assessment-1", project_id="project-1",
+            item_type="risk", item_id="risk-1", assessor_user_id="user-1",
+            probability=5, impact=4, notes="Local notes", version=2,
+            is_deleted=False, updated_at="2026-09-04T10:00:00", dirty=1,
+        )
+        outbox = OutboxStore(store)
+        outbox.queue_assessment_upsert(
+            "assessment-1", "project-1", item_id="risk-1", risk_id="risk-1",
+            assessor_user_id="user-1", probability=5, impact=4,
+            notes="Local notes",
+        )
+        change_id = outbox.get_pending_changes("project-1")[0]["change_id"]
+        outbox.block_outbox_id(
+            change_id,
+            {
+                "change_id": change_id, "status": "conflict",
+                "reason": "version_mismatch", "server_version": 3,
+                "server_record": {
+                    "id": "assessment-1", "project_id": "project-1",
+                    "item_id": "risk-1", "risk_id": "risk-1",
+                    "assessor_user_id": "user-1", "probability": 2, "impact": 3,
+                    "score": 6, "notes": "Server notes", "version": 3,
+                    "is_deleted": False,
+                },
+            },
+            failure_kind="conflict",
+        )
+
+        SyncService(store, outbox, None).resolve_conflict(
+            change_id, "merge",
+            {"probability": "mine", "impact": "server", "notes": "server"},
+        )
+
+        row = store.conn.execute(
+            "SELECT probability, impact, score, version, dirty "
+            "FROM assessments WHERE id=?;", ("assessment-1",),
+        ).fetchone()
+        assert row is not None
+        assert (row["probability"], row["impact"], row["score"]) == (5, 3, 15)
+        assert row["version"] == 3 and row["dirty"] == 1
+        pending = outbox.get_pending_changes("project-1")
+        assert len(pending) == 1
+        assert pending[0]["base_version"] == 3
+        assert pending[0]["record"]["probability"] == 5
+        assert pending[0]["record"]["impact"] == 3
+        assert "score" not in pending[0]["record"]
+    finally:
+        store.close()
+
+
+def test_merge_rejects_stale_server_copy_without_discarding_conflict(tmp_path) -> None:
+    store, outbox, service, change_id = _risk_conflict(
+        tmp_path, local_version=6, server_version=5
+    )
+    try:
+        before = dict(_risk_row(store))
+        with pytest.raises(RuntimeError, match="stale"):
+            service.resolve_conflict(change_id, "merge", {
+                "title": "mine", "probability": "server", "impact": "server",
+            })
+        assert outbox.get_blocked_change(change_id) is not None
+        assert dict(_risk_row(store)) == before
+    finally:
+        store.close()
+
+
+def test_merge_rolls_back_when_local_write_fails(tmp_path) -> None:
+    store, outbox, service, change_id = _risk_conflict(tmp_path)
+    try:
+        before = dict(_risk_row(store))
+        store.conn.execute("""
+            CREATE TRIGGER reject_merged_risk BEFORE UPDATE ON risks BEGIN
+                SELECT RAISE(ABORT, 'simulated merged write failure');
+            END;
+            """)
+        store.conn.commit()
+        with pytest.raises(sqlite3.IntegrityError, match="simulated merged write"):
+            service.resolve_conflict(change_id, "merge", {
+                "title": "mine", "probability": "server", "impact": "server",
+            })
+        assert outbox.get_blocked_change(change_id) is not None
+        assert dict(_risk_row(store)) == before
+    finally:
+        store.close()
+
+
 def test_use_server_validation_failure_preserves_conflict_and_local_copy(
     tmp_path,
 ) -> None:
@@ -304,12 +431,22 @@ def test_conflict_details_excludes_other_blocked_failures(tmp_path) -> None:
         store.close()
 
 
-@pytest.mark.parametrize("resolution", ["", "merge", "discard_everything"])
+@pytest.mark.parametrize("resolution", ["", "discard_everything"])
 def test_unknown_conflict_resolution_is_rejected(tmp_path, resolution) -> None:
     store, outbox, service, change_id = _risk_conflict(tmp_path)
     try:
         with pytest.raises(ValueError, match="resolution must be"):
             service.resolve_conflict(change_id, resolution)
+        assert outbox.get_blocked_change(change_id) is not None
+    finally:
+        store.close()
+
+
+def test_merge_requires_explicit_field_choices(tmp_path) -> None:
+    store, outbox, service, change_id = _risk_conflict(tmp_path)
+    try:
+        with pytest.raises(ValueError, match="Choose local or server"):
+            service.resolve_conflict(change_id, "merge")
         assert outbox.get_blocked_change(change_id) is not None
     finally:
         store.close()

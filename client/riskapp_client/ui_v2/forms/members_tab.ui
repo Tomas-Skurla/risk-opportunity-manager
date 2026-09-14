@@ -96,6 +96,9 @@
    </item>
    <item>
     <widget class="QTableWidget" name="members_table">
+     <attribute name="horizontalHeaderCascadingSectionResizes">
+      <bool>true</bool>
+     </attribute>
      <column>
       <property name="text">
        <string>Email</string>

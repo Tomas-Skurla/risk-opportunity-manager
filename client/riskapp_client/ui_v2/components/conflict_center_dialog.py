@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from collections.abc import Callable
 from typing import Any
 
@@ -15,11 +16,15 @@ from PySide6.QtWidgets import (  # pylint: disable=no-name-in-module
     QWidget,
 )
 
+from riskapp_client.services.conflict_merge import mergeable_fields
+from riskapp_client.ui_v2.components.conflict_field_merge_dialog import (
+    ConflictFieldMergeDialog,
+)
 from riskapp_client.ui_v2.ui.ui_conflict_center_dialog import (
-    Ui_ConflictCenterDialog,
+    Ui_conflict_center_dialog as Ui_ConflictCenterDialog,
 )
 
-ResolveCallback = Callable[[str, str], dict[str, Any]]
+ResolveCallback = Callable[..., dict[str, Any]]
 
 
 class ConflictCenterDialog(QDialog):
@@ -42,8 +47,14 @@ class ConflictCenterDialog(QDialog):
         self.local_copy = self.ui.local_copy
         self.server_copy = self.ui.server_copy
         self.keep_mine_btn = self.ui.keep_mine_btn
+        self.merge_btn = self.ui.merge_btn
         self.use_server_btn = self.ui.use_server_btn
         self.later_btn = self.ui.later_btn
+        self.merge_btn.setAccessibleName("Merge selected fields")
+        self.merge_btn.setToolTip(
+            "Choose values from both copies, then queue an update at the "
+            "saved server version"
+        )
 
         header = self.table.horizontalHeader()
         resize_mode = QHeaderView.ResizeMode
@@ -58,6 +69,7 @@ class ConflictCenterDialog(QDialog):
         self.use_server_btn.clicked.connect(
             lambda: self._resolve_selected("use_server")
         )
+        self.merge_btn.clicked.connect(self._open_merge_dialog)
         self.later_btn.clicked.connect(self.reject)
         # pylint: enable=no-member
 
@@ -109,7 +121,10 @@ class ConflictCenterDialog(QDialog):
         self.keep_mine_btn.setEnabled(
             bool(conflict and conflict.get("server_version") is not None)
         )
-        self.use_server_btn.setEnabled(bool(conflict and conflict.get("server_record")))
+        self.use_server_btn.setEnabled(
+            bool(conflict and conflict.get("server_record"))
+        )
+        self.merge_btn.setEnabled(bool(conflict and mergeable_fields(conflict)))
         if self.use_server_btn.isEnabled():
             self.use_server_btn.setToolTip(
                 "Discard this queued local write and replace it with the saved server copy"
@@ -128,6 +143,14 @@ class ConflictCenterDialog(QDialog):
             return
         self.local_copy.setPlainText(self._pretty_json(conflict.get("record")))
         self.server_copy.setPlainText(self._pretty_json(conflict.get("server_record")))
+
+    def _open_merge_dialog(self) -> None:
+        conflict = self._selected_conflict()
+        if conflict is None or not mergeable_fields(conflict):
+            return
+        dialog = ConflictFieldMergeDialog(conflict, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self._resolve_selected("merge", dialog.choices())
 
     def _confirm_resolution(self, resolution: str, title: str) -> bool:
         if resolution == "keep_mine":
@@ -154,19 +177,28 @@ class ConflictCenterDialog(QDialog):
             == yes
         )
 
-    def _resolve_selected(self, resolution: str) -> None:
+    def _resolve_selected(
+        self, resolution: str, choices: dict[str, str] | None = None
+    ) -> None:
         conflict = self._selected_conflict()
         if conflict is None:
             return
         change_id = str(conflict.get("change_id") or "")
         title = str(conflict.get("title") or conflict.get("entity_id") or "item")
-        if not change_id or not self._confirm_resolution(resolution, title):
+        if not change_id or (
+            resolution != "merge" and not self._confirm_resolution(resolution, title)
+        ):
             return
         try:
-            result = self._resolve_conflict(change_id, resolution)
+            if resolution == "merge":
+                if not choices or "mine" not in choices.values():
+                    raise ValueError("Choose at least one of your values")
+                result = self._resolve_conflict(change_id, resolution, choices)
+            else:
+                result = self._resolve_conflict(change_id, resolution)
             if not isinstance(result, dict) or not bool(result.get("resolved")):
                 raise RuntimeError("The conflict was not resolved")
-        except (KeyError, RuntimeError, ValueError) as exc:
+        except (KeyError, RuntimeError, ValueError, sqlite3.Error) as exc:
             QMessageBox.critical(self, "Conflict resolution failed", str(exc))
             return
 

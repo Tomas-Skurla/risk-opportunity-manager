@@ -18,6 +18,7 @@ from riskapp_client.adapters.mappers.action_assessment_mapper import (
 from riskapp_client.adapters.mappers.scored_entity_mapper import (
     scored_entity_from_mapping,
 )
+from riskapp_client.domain.conflict_fields import MERGE_FIELDS
 from riskapp_client.domain.domain_models import (
     Action,
     Assessment,
@@ -963,6 +964,37 @@ class LocalStore:
 
     def reset_sync_watermark(self, project_id: str, server_time: str) -> None:
         self.set_sync_watermark(project_id, server_time, 0)
+
+    def apply_merged_fields(
+        self, entity: str, project_id: str, entity_id: str, record: dict[str, Any]
+    ) -> None:
+        """Mark a server-based merge dirty while preserving its version."""
+        tables = {
+            "risk": "risks", "opportunity": "opportunities",
+            "action": "actions", "assessment": "assessments",
+            "helpdesk_ticket": "helpdesk_tickets",
+        }
+        if entity not in tables:
+            raise ValueError("Unsupported merge entity")
+        table = tables[entity]
+        names = [key for key in MERGE_FIELDS[entity] if key in record]
+        for key in names:
+            _check_identifier(key)
+        assignments = ", ".join(f"{key}=?" for key in names)
+        params = [record[key] for key in names]
+        if entity == "assessment":
+            # Unlike scored risks, assessments persist their derived score.
+            # Recompute it from the chosen values in the same atomic update.
+            assignments = f"{assignments}, score=?"
+            params.append(int(record["probability"]) * int(record["impact"]))
+        assignments = f"{assignments}, dirty=1" if assignments else "dirty=1"
+        result = self.conn.execute(
+            f"UPDATE {table} SET {assignments} WHERE id=? AND project_id=?;",  # noqa: S608
+            (*params, entity_id, project_id),
+        )
+        if result.rowcount != 1:
+            raise RuntimeError("The merged local item is unavailable")
+        self._commit_if_needed()
 
     def apply_pull_risks(
         self, project_id: str, server_risks: list[dict[str, Any]]

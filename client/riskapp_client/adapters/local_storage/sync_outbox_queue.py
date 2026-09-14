@@ -670,3 +670,21 @@ class OutboxStore:
             base_version=int(server_version),
             record=record,
         )
+
+    def queue_merged_upsert(
+        self,
+        project_id: str,
+        entity: str,
+        entity_id: str,
+        server_version: int,
+        record: dict[str, Any],
+    ) -> str:
+        """Queue a new receipt ID for an explicit server-based field merge."""
+        return self._replace_outbox_entry(
+            project_id=project_id,
+            entity=entity,
+            op="upsert",
+            entity_id=entity_id,
+            base_version=server_version,
+            record=record,
+        )
