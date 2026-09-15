@@ -7,6 +7,7 @@ import sqlite3
 import subprocess
 import sys
 import uuid
+from contextlib import closing
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -43,7 +44,10 @@ def _insert_revision_one_records(database_path: Path) -> tuple[str, str]:
     assessment_id = uuid.uuid4().hex
     ticket_id = uuid.uuid4().hex
 
-    with sqlite3.connect(database_path) as connection:
+    with (
+        closing(sqlite3.connect(database_path)) as connection,
+        connection,
+    ):
         connection.execute(
             """
             INSERT INTO users
@@ -175,7 +179,10 @@ def test_upgrade_backfills_all_syncable_rows_and_project_counters(tmp_path) -> N
 
     _run_alembic(database_path, "head")
 
-    with sqlite3.connect(database_path) as connection:
+    with(
+        closing(sqlite3.connect(database_path)) as connection,
+        connection,
+    ):
         sequences = [
             connection.execute(
                 f"SELECT change_sequence FROM {table_name}"  # noqa: S608

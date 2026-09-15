@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import pytest
 from PySide6.QtWidgets import QComboBox, QDialog
-
 from riskapp_client.ui_v2.components.conflict_field_merge_dialog import (
     ConflictFieldMergeDialog,
 )

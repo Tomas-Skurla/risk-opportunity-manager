@@ -243,7 +243,7 @@ In server-backed projects, Help Desk tickets participate in sync. In **Work Full
 3. Stop the server with `Ctrl+C`.
 4. Start the client again.
 5. Enter `admin@example.com` and password → **OK**.
-6. In the server-unavailable dialog, click **Work Offline as admin@example.com (will sync later)**.
+6. In the server-unavailable dialog, click **Work Offline as <admin@example.com> (will sync later)**.
 7. Verify the sidebar shows projects with `(offline, will sync)` where applicable.
 8. Create project `Offline Test` and add risks.
 9. Start the server again.

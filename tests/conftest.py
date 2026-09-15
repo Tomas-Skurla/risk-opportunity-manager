@@ -12,6 +12,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 @pytest.fixture
 def isolated_app_factory(monkeypatch: pytest.MonkeyPatch):
     """Create a FastAPI app with explicit test settings and an isolated database."""
+    created_engines = []
 
     def _make_app(
         db_url: str,
@@ -48,9 +49,12 @@ def isolated_app_factory(monkeypatch: pytest.MonkeyPatch):
         importlib.reload(cfg)
         import riskapp_server.db.session as session
 
+        # Reloading this module replaces its module-level SQLAlchemy engine.
+        # Dispose the previous engine first so its SQLite pool is not orphaned.
+        session.engine.dispose()
         importlib.reload(session)
         import riskapp_server.auth.service as auth_service
-
+        created_engines.append(session.engine)
         importlib.reload(auth_service)
 
         import riskapp_server.core.permissions as permissions
@@ -109,4 +113,9 @@ def isolated_app_factory(monkeypatch: pytest.MonkeyPatch):
 
         return main_app.create_app()
 
-    return _make_app
+    yield _make_app
+
+    # Some unit tests only need modules configured for an isolated database and
+    # never enter TestClient, so the FastAPI lifespan cannot perform cleanup.
+    for engine in reversed(created_engines):
+        engine.dispose()

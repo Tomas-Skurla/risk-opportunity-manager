@@ -79,3 +79,70 @@ def test_invalid_selected_value_keeps_conflict_for_user_decision() -> None:
     }
     with pytest.raises(ValueError, match="probability"):
         merged_record(conflict, {"probability": "mine"})
+
+
+def _risk_with_differing_title() -> dict:
+    return {
+        "entity": "risk", "entity_id": "risk-1", "op": "upsert",
+        "server_version": 3,
+        "record": {"id": "risk-1", "title": "Mine"},
+        "server_record": {"id": "risk-1", "title": "Server", "version": 3},
+    }
+
+
+@pytest.mark.parametrize(
+    ("server_id", "version"),
+    [
+        ("different-risk", 3),
+        (None, 3),
+        ("risk-1", 0),
+        ("risk-1", True),
+    ],
+)
+def test_merge_rejects_wrong_server_identity_or_version(server_id, version) -> None:
+    conflict = _risk_with_differing_title()
+    conflict["server_record"]["id"] = server_id
+    conflict["server_version"] = version
+
+    assert mergeable_fields(conflict) == ()
+    with pytest.raises(ValueError, match="cannot be merged"):
+        merged_record(conflict, {"title": "mine"})
+
+
+@pytest.mark.parametrize(
+    ("choices", "error"),
+    [
+        ({}, "Choose local or server"),
+        ({"title": "neither"}, "Invalid field choice"),
+        ({"title": "server"}, "Choose Use server"),
+        ({"title": "mine", "probability": "server"}, "Choose local or server"),
+    ],
+)
+def test_merge_rejects_incomplete_or_invalid_choices(choices, error) -> None:
+    conflict = _risk_with_differing_title()
+    local_before = conflict["record"].copy()
+    server_before = conflict["server_record"].copy()
+
+    with pytest.raises(ValueError, match=error):
+        merged_record(conflict, choices)
+
+    assert conflict["record"] == local_before
+    assert conflict["server_record"] == server_before
+
+
+def test_merge_rejects_non_text_value_for_text_field() -> None:
+    conflict = {
+        "entity": "helpdesk_ticket",
+        "entity_id": "ticket-1",
+        "op": "upsert",
+        "server_version": 3,
+        "record": {"id": "ticket-1", "description": 42},
+        "server_record": {
+            "id": "ticket-1",
+            "version": 3,
+            "description": "Server description",
+        },
+    }
+
+    with pytest.raises(ValueError, match="description must be text"):
+        merged_record(conflict, {"description": "mine"})

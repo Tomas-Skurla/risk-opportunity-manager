@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 
 import pytest
 from riskapp_client.adapters.local_storage.sqlite_data_store import LocalStore
@@ -160,7 +161,10 @@ def test_existing_outbox_gains_failure_and_result_columns(tmp_path) -> None:
 
 def test_existing_sync_state_gains_a_zero_sequence_watermark(tmp_path) -> None:
     db_file = tmp_path / "legacy-sync-state.db"
-    with sqlite3.connect(db_file) as connection:
+    with (
+        closing(sqlite3.connect(db_file)) as connection,
+        connection,
+    ):
         connection.execute(
             """
             CREATE TABLE sync_state (

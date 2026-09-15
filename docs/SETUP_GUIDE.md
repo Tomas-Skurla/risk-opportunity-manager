@@ -250,7 +250,7 @@ The login dialog has four options:
 
 If the server is unreachable after clicking **OK**, a **Server Unavailable** dialog appears with:
 
-- **Work Offline as user@example.com (will sync later)** — offline mode associated with that identity. Data can sync after the server is available and you click **Sync Now**.
+- **Work Offline as <user@example.com> (will sync later)** — offline mode associated with that identity. Data can sync after the server is available and you click **Sync Now**.
 - **Work Fully Local (no account, no sync)** — anonymous local mode; data never syncs.
 - **Quit** — exit.
 
@@ -314,7 +314,7 @@ This permanently deletes the project and its server-side data.
 - Projects show `(local only)`.
 - Data never syncs to the server.
 
-### Work Offline as user@example.com
+### Work Offline as <user@example.com>
 
 - Intended for a known identity when the server is unavailable.
 - Data is stored locally with that identity.
@@ -334,7 +334,7 @@ This permanently deletes the project and its server-side data.
 ## 14. Role hierarchy
 
 | Role | Scope | Typical permissions |
-|---|---|---|
+| --- | --- | --- |
 | **superadmin** | global | Full access, project deletion, all projects, global admin operations |
 | **admin** | per project | Manage project members, edit/delete project data, snapshots |
 | **manager** | per project | Manage project content and snapshots |
@@ -348,7 +348,7 @@ Superadmin is set at server startup through `INITIAL_SUPERUSER_EMAIL` and `INITI
 ## 15. Available tabs
 
 | Tab | Description |
-|---|---|
+| --- | --- |
 | Risks | Risk register with qualitative probability × impact scoring |
 | Opportunities | Opportunity register with qualitative probability × impact scoring |
 | Matrix | Probability × impact matrix view |
@@ -363,7 +363,7 @@ Superadmin is set at server startup through `INITIAL_SUPERUSER_EMAIL` and `INITI
 ## 16. Sidebar project labels
 
 | Label | Meaning |
-|---|---|
+| --- | --- |
 | `Project Name  (admin@example.com)` | Server project with owner email |
 | `Project Name  (offline, will sync)` | Local project associated with an identity; can sync later |
 | `Project Name  (local only)` | Anonymous local project; never syncs |
@@ -399,7 +399,7 @@ server/riskapp.db
 ### Server
 
 | Variable | Default / example | Notes |
-|---|---|---|
+| --- | --- | --- |
 | `DATABASE_URL` | `sqlite+pysqlite:///./riskapp.db` | Server database URL |
 | `ENV` | `development` | Use `production` in deployments |
 | `SECRET_KEY` | `change-me` | Set a real secret outside local development |
@@ -425,7 +425,7 @@ No password-table migration is required when upgrading. New and changed password
 ### Client
 
 | Variable | Default / example | Notes |
-|---|---|---|
+| --- | --- | --- |
 | `RISKAPP_URL` | `http://127.0.0.1:8000` | Server URL used by the client |
 | `RISKAPP_API_BASE_URL` | same as `RISKAPP_URL` | API base URL override |
 | `RISKAPP_ALLOW_HTTP` | unset | Set to `1` for local plain HTTP |

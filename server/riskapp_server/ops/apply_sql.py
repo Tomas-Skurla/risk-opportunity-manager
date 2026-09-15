@@ -173,29 +173,32 @@ def main(argv: list[str]) -> int:
     db_url = _resolve_database_url()
     engine = create_engine(db_url, pool_pre_ping=True)
 
-    applied = 0
-    for sql_path in sql_paths:
-        sql = sql_path.read_text(encoding="utf-8")
-        if args.autocommit:
-            with engine.connect() as conn:
-                conn = conn.execution_options(isolation_level="AUTOCOMMIT")
-                if args.no_split:
-                    conn.execute(text(sql))
-                else:
-                    for stmt in _split_sql(sql):
-                        conn.execute(text(stmt))
-        else:
-            with engine.begin() as conn:
-                if args.no_split:
-                    conn.execute(text(sql))
-                else:
-                    for stmt in _split_sql(sql):
-                        conn.execute(text(stmt))
-        applied += 1
-        print(f"Applied: {sql_path}")
+    try:
+        applied = 0
+        for sql_path in sql_paths:
+            sql = sql_path.read_text(encoding="utf-8")
+            if args.autocommit:
+                with engine.connect() as conn:
+                    conn = conn.execution_options(isolation_level="AUTOCOMMIT")
+                    if args.no_split:
+                        conn.execute(text(sql))
+                    else:
+                        for stmt in _split_sql(sql):
+                            conn.execute(text(stmt))
+            else:
+                with engine.begin() as conn:
+                    if args.no_split:
+                        conn.execute(text(sql))
+                    else:
+                        for stmt in _split_sql(sql):
+                            conn.execute(text(stmt))
+            applied += 1
+            print(f"Applied: {sql_path}")
 
-    print(f"Done. Applied {applied} file(s).")
-    return 0
+        print(f"Done. Applied {applied} file(s).")
+        return 0
+    finally:
+        engine.dispose()
 
 
 if __name__ == "__main__":
