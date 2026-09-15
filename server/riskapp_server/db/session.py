@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
@@ -26,16 +27,8 @@ from sqlalchemy import (
     update,
 )
 
-try:
-    # SQLAlchemy 2.x generic UUID type.
-    from sqlalchemy.types import Uuid as SAUuid
-except (ImportError, AttributeError):  # pragma: no cover
-    try:
-        from sqlalchemy import Uuid as SAUuid
-    except (ImportError, AttributeError):  # pragma: no cover
-        # Fallback for older SQLAlchemy releases.
-        from sqlalchemy.dialects.postgresql import UUID as SAUuid
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
+from sqlalchemy.types import Uuid as SAUuid
 
 from riskapp_server.core.config import (
     AUTO_CREATE_SCHEMA,
@@ -81,7 +74,7 @@ engine = create_engine(DATABASE_URL, **_engine_kwargs)
 if DATABASE_URL.startswith("sqlite"):
 
     @event.listens_for(engine, "connect")
-    def _enable_sqlite_foreign_keys(dbapi_conn, _):
+    def _enable_sqlite_foreign_keys(dbapi_conn: Any, _: Any) -> None:
         """Enable SQLite foreign-key enforcement for each connection."""
         cursor = dbapi_conn.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
@@ -91,7 +84,7 @@ if DATABASE_URL.startswith("sqlite"):
 if "postgresql" in DATABASE_URL and DB_STATEMENT_TIMEOUT_MS:
 
     @event.listens_for(engine, "connect")
-    def _set_statement_timeout(dbapi_conn, _):
+    def _set_statement_timeout(dbapi_conn: Any, _: Any) -> None:
         # Apply the timeout per connection.
         cur = dbapi_conn.cursor()
         cur.execute("SET statement_timeout = %s", (int(DB_STATEMENT_TIMEOUT_MS),))
@@ -104,7 +97,7 @@ SessionLocal = sessionmaker( # pylint: disable=invalid-name
 )
 
 
-def get_db():
+def get_db() -> Iterator[Session]:
     db = SessionLocal()
     try:
         yield db
@@ -482,7 +475,7 @@ class Assessment(Base, AssessmentMixin):
 @event.listens_for(Item, "before_update")
 @event.listens_for(Assessment, "before_insert")
 @event.listens_for(Assessment, "before_update")
-def _compute_score(_mapper, _connection, target: Any) -> None:
+def _compute_score(_mapper: Any, _connection: Any, target: Any) -> None:
     # Keep score in sync with probability × impact.
     _validate_scale_1_5("probability", getattr(target, "probability", None))
     _validate_scale_1_5("impact", getattr(target, "impact", None))

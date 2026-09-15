@@ -1,7 +1,16 @@
 from __future__ import annotations
 
+from typing import Protocol
 
-def recalculate_item_scores(item) -> None:
+class _ScoredItem(Protocol):
+    """Writable score fields shared by items and assessments."""
+
+    probability: int
+    impact: int
+    score: int
+
+
+def recalculate_item_scores(item: _ScoredItem) -> None:
     if not (hasattr(item, "probability") and hasattr(item, "impact")):
         return
 

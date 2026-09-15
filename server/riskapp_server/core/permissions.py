@@ -39,7 +39,7 @@ def get_member_role(
     db: Session, project_id: uuid.UUID, user_id: uuid.UUID
 ) -> str | None:
 
-    def _normalize_role(val) -> str | None:
+    def _normalize_role(val: object) -> str | None:
         if val is None:
             return None
         if isinstance(val, Role):

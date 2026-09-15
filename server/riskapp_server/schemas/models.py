@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Self
 
 from pydantic import (
     BaseModel,
@@ -300,7 +300,7 @@ class ActionCreate(BaseModel):
     owner_user_id: uuid.UUID | None = None
 
     @model_validator(mode="after")
-    def _validate_target(self):
+    def _validate_target(self) -> Self:
         # Avoid ambiguous linking. If global/project-level actions are supported,
         # allowing neither target is valid.
         if self.risk_id and self.opportunity_id:
@@ -319,7 +319,7 @@ class ActionUpdate(BaseModel):
     owner_user_id: uuid.UUID | None = None
 
     @model_validator(mode="after")
-    def _validate_target(self):
+    def _validate_target(self) -> Self:
         if self.risk_id and self.opportunity_id:
             raise ValueError("Provide only one of risk_id or opportunity_id.")
         return self
@@ -422,7 +422,7 @@ class SyncPullRequest(BaseModel):
     snapshot_sequence: int | None = Field(default=None, ge=0)
 
     @model_validator(mode="after")
-    def _validate_pagination_snapshot(self):
+    def _validate_pagination_snapshot(self) -> Self:
         if self.cursors and self.limit_per_entity is None:
             raise ValueError("cursors require limit_per_entity")
         if self.cursors and self.snapshot_time is None:
