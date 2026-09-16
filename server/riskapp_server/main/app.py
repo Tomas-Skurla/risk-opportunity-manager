@@ -167,7 +167,7 @@ def create_app() -> FastAPI:
     for r in ROUTERS:
         application.include_router(r)
 
-    @application.get("/health", tags=["ops"])
+    @application.get("/health", tags=["ops"], response_model=None)
     def health_check(
         db: Session = Depends(get_db),  # noqa: B008
     ) -> dict[str, str] | JSONResponse:
