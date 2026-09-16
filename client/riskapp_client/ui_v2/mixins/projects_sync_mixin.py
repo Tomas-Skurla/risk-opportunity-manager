@@ -317,32 +317,32 @@ class ProjectsSyncMixin:
         can_sync = False
         if hasattr(self.backend, "pending_count"):
             try:
-                pending = self.backend.pending_count(pid)  # type: ignore[attr-defined]
+                pending = self.backend.pending_count(pid)
             except (AttributeError, RuntimeError):
                 pending = 0
         if hasattr(self.backend, "conflict_count"):
             try:
-                conflicts = self.backend.conflict_count(pid)  # type: ignore[attr-defined]
+                conflicts = self.backend.conflict_count(pid)
             except (AttributeError, RuntimeError):
                 conflicts = 0
         if hasattr(self.backend, "deferred_count"):
             try:
-                deferred = self.backend.deferred_count(pid)  # type: ignore[attr-defined]
+                deferred = self.backend.deferred_count(pid)
             except (AttributeError, RuntimeError):
                 deferred = 0
         if hasattr(self.backend, "error_count"):
             try:
-                errors = self.backend.error_count(pid)  # type: ignore[attr-defined]
+                errors = self.backend.error_count(pid)
             except (AttributeError, RuntimeError):
                 errors = 0
         if hasattr(self.backend, "last_sync_time"):
             try:
-                last_sync = self.backend.last_sync_time(pid)  # type: ignore[attr-defined]
+                last_sync = self.backend.last_sync_time(pid)
             except (AttributeError, RuntimeError):
                 last_sync = None
         if hasattr(self.backend, "can_sync"):
             try:
-                can_sync = bool(self.backend.can_sync())  # type: ignore[attr-defined]
+                can_sync = bool(self.backend.can_sync())
             except (AttributeError, RuntimeError):
                 can_sync = False
         self.sync_btn.setEnabled(bool(pid) and can_sync)
@@ -378,7 +378,7 @@ class ProjectsSyncMixin:
             return
         conflicts = self._call_backend(
             "Could not load conflicts",
-            self.backend.conflict_details,  # type: ignore[attr-defined]
+            self.backend.conflict_details,
             pid,
         )
         if conflicts is None:
@@ -395,7 +395,7 @@ class ProjectsSyncMixin:
 
         dialog = ConflictCenterDialog(
             conflicts,
-            self.backend.resolve_conflict,  # type: ignore[attr-defined]
+            self.backend.resolve_conflict,
             parent=parent,
         )
         dialog.conflict_resolved.connect(

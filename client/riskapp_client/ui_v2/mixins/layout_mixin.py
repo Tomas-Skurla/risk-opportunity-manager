@@ -8,7 +8,7 @@ import sys
 from collections.abc import Callable
 from typing import Any, cast
 
-import qdarktheme
+import qdarktheme  # type: ignore[import-untyped]
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QApplication,
@@ -54,7 +54,7 @@ _OPPS_ALIASES = (
 )
 
 
-def _set_titlebar_dark(window, dark: bool) -> None:
+def _set_titlebar_dark(window: QMainWindow, dark: bool) -> None:
     """Set the title bar to dark or light mode."""
     # Qt 6.5+ color scheme API
     try:
@@ -176,7 +176,7 @@ class LayoutMixin:
             "Navigate between different views and tools for the current project"
         )
 
-        def apply_theme(is_dark: bool):
+        def apply_theme(is_dark: bool) -> None:
             theme = "dark" if is_dark else "light"
             bg_color = "#1e1e1e" if is_dark else "#ffffff"
             text_color = "#e0e0e0" if is_dark else "#000000"

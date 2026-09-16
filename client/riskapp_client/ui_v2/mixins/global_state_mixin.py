@@ -253,7 +253,7 @@ class CoreMixin:
                 with suppress(AttributeError, RuntimeError):
                     form.set_allow_deleted_status(bool(can_set_deleted))
         # Actions editor
-        for w in (
+        for action_widget in (
             self.actions_tab.action_target_type,
             self.actions_tab.action_risk_combo,
             self.actions_tab.action_opp_combo,
@@ -265,15 +265,15 @@ class CoreMixin:
             self.actions_tab.action_save_btn,
             self.actions_tab.action_new_btn,
         ):
-            w.setEnabled(can_edit_local)
+            action_widget.setEnabled(can_edit_local)
         # Assessments
-        for w in (
+        for assessment_widget in (
             self.assessments_tab.assess_p,
             self.assessments_tab.assess_i,
             self.assessments_tab.assess_notes,
             self.assessments_tab.assess_save_btn,
         ):
-            w.setEnabled(can_edit_local)
+            assessment_widget.setEnabled(can_edit_local)
         # Snapshots / history
         self.top_tab.snapshot_btn.setEnabled(can_take_snapshots)
         self.top_tab.auto_snapshot_chk.setEnabled(can_take_snapshots)
@@ -432,7 +432,15 @@ class CoreMixin:
             logging.getLogger(__name__).debug("Widget ancestry check failed", exc_info=True)
             return False
 
-    def _active_scored_tab_context(self):
+    def _active_scored_tab_context(
+        self,
+    ) -> tuple[
+        QWidget,
+        QTableWidget,
+        QWidget | None,
+        Callable[[], None],
+        Callable[[], None],
+    ] | None:
         """Return context for the currently active scored-entity tab.
         Returns:
             (tab_widget, table_widget, editor_card, commit_fn, clear_selection_fn)
@@ -444,7 +452,7 @@ class CoreMixin:
         current = ui.main_stacked_widget.currentWidget()
         if current is getattr(self, "risks_tab", None):
             return (
-                current,
+                self.risks_tab,
                 self.risks_table,
                 getattr(self, "_editor_card", None),
                 lambda: self._commit_editor_changes(refresh=True),
@@ -455,7 +463,7 @@ class CoreMixin:
             if editor is None and hasattr(self, "opps_tab"):
                 editor = getattr(self.opps_tab, "editor_card", None)
             return (
-                current,
+                self.opps_tab,
                 self.opps_table,
                 editor,
                 lambda: self._commit_opp_editor_changes(refresh=True),

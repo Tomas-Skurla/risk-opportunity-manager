@@ -119,7 +119,7 @@ class RisksMixin(ScoredEntityMixin):
     def _fit_table_card(self, max_height: int = 260) -> None:
         self._fit_table_to_contents(self.risks_table, max_height=max_height)
 
-    def _mark_editor_dirty(self, *_args) -> None:
+    def _mark_editor_dirty(self, *_args: object) -> None:
         self._editor_dirty = True
 
     def _commit_editor_changes(

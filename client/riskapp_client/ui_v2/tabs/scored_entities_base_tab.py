@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
+from typing import Any, cast
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QMouseEvent  # pylint: disable=no-name-in-module
 from PySide6.QtWidgets import (
     QAbstractScrollArea,
     QHeaderView,
@@ -124,36 +126,38 @@ class ScoredEntitiesTab(QWidget):
         self.ui.new_btn.clicked.connect(on_new_item)
         self.ui.delete_btn.clicked.connect(on_delete_item)
 
-        for w in (
+        for text_filter in (
             self.ui.filter_search,
             self.ui.filter_category,
             self.ui.filter_from,
             self.ui.filter_to,
         ):
-            w.textChanged.connect(lambda *_: self._on_refresh())
-        for w in (self.ui.filter_min_score, self.ui.filter_max_score):
-            w.valueChanged.connect(lambda *_: self._on_refresh())
+            text_filter.textChanged.connect(lambda *_: self._on_refresh())
+        for score_filter in (self.ui.filter_min_score, self.ui.filter_max_score):
+            score_filter.valueChanged.connect(lambda *_: self._on_refresh())
         self.ui.filter_status.currentTextChanged.connect(lambda *_: self._on_refresh())
         self.ui.filter_owner.currentIndexChanged.connect(lambda *_: self._on_refresh())
         # pylint: enable=no-member
         original_mouse_press = self.ui.table.mousePressEvent
 
-        def _table_mouse_press(event):
+        def _table_mouse_press(event: QMouseEvent) -> None:
             item = self.ui.table.itemAt(event.pos())
             if not item:  # No row was clicked
                 self.ui.table.clearSelection()
                 self._on_new_item()
             original_mouse_press(event)
 
-        self.ui.table.mousePressEvent = _table_mouse_press
+        # PySide permits per-instance event-handler replacement at runtime, but
+        # its type stubs model mousePressEvent as a non-assignable method.
+        cast(Any, self.ui.table).mousePressEvent = _table_mouse_press
         original_card_press = self.ui.table_card.mousePressEvent
 
-        def _card_mouse_press(event):
+        def _card_mouse_press(event: QMouseEvent) -> None:
             self.ui.table.clearSelection()
             self._on_new_item()
             original_card_press(event)
 
-        self.ui.table_card.mousePressEvent = _card_mouse_press
+        cast(Any, self.ui.table_card).mousePressEvent = _card_mouse_press
         self.table = self.ui.table
         self.form = self.ui.form
         self.form.on_submit = on_save_item
@@ -166,10 +170,12 @@ class ScoredEntitiesTab(QWidget):
         _label = self._entity_label
         # Match the generated Ui_Form callback's keyword parameter name.
         # pylint: disable-next=invalid-name
-        def _patched_retranslate(Form):  # noqa: N803 - generated Qt API
+        def _patched_retranslate(Form: QWidget) -> None:  # noqa: N803
             _original_retranslate(Form)
             _btn.setText(f"Save {_label}")
-        self.form.ui.retranslateUi = _patched_retranslate
+
+        # Generated Qt methods are intentionally replaceable at runtime.
+        cast(Any, self.form.ui).retranslateUi = _patched_retranslate
         if hasattr(self.form, "track_dirty_state"):
             self.form.track_dirty_state(on_mark_dirty)
         self.new_btn = self.ui.new_btn
@@ -214,7 +220,7 @@ class ScoredEntitiesTab(QWidget):
             w.blockSignals(False)
         self._on_refresh()
 
-    def set_owner_filter_members(self, members) -> None:
+    def set_owner_filter_members(self, members: Iterable[Any] | None) -> None:
         """Populate the Owner filter dropdown with project members.
 
         Keeps the current selection when possible.

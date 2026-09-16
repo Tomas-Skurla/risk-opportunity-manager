@@ -42,7 +42,15 @@ class _SameOriginRedirectHandler(urllib.request.HTTPRedirectHandler):
         self._allowed_scheme = allowed_scheme.lower()
         self._allowed_netloc = allowed_netloc.lower()
 
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D401
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: Any,
+        code: int,
+        msg: str,
+        headers: Any,
+        newurl: str,
+    ) -> urllib.request.Request | None:  # noqa: D401
         parsed = urllib.parse.urlparse(newurl)
         if parsed.scheme.lower() != self._allowed_scheme:
             raise urllib.error.HTTPError(

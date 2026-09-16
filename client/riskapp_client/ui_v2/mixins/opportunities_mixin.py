@@ -54,7 +54,7 @@ class OpportunitiesMixin(ScoredEntityMixin):
     _refresh_matrix: Callable[[], None]
     _sync_assessment_state: Callable[..., None]
 
-    def _mark_opp_editor_dirty(self, *_args) -> None:
+    def _mark_opp_editor_dirty(self, *_args: object) -> None:
         self._opp_editor_dirty = True
 
     def _commit_opp_editor_changes(
@@ -160,7 +160,7 @@ class OpportunitiesMixin(ScoredEntityMixin):
             self._sync_assessment_state("opportunity", saved_id, self.opps_tab)
 
     def _delete_opportunity(self) -> None:
-        def refresh_all():
+        def refresh_all() -> None:
             self._refresh_opportunities()
             self._refresh_action_opp_combo()
             self._refresh_actions()
