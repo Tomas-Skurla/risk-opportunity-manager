@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
+
 class _ScoredItem(Protocol):
     """Writable score fields shared by items and assessments."""
 

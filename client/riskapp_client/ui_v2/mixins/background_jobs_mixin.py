@@ -28,15 +28,19 @@ class BackgroundJobsMixin:
     _update_sync_status: Callable[[], None]
 
     def _init_background_jobs(self) -> None:
-        factory = getattr(self.backend, "create_background_backend", None)
-        owns_backend = callable(factory)
-        if not owns_backend:
+        candidate_factory = getattr(self.backend, "create_background_backend", None)
+        factory: Callable[[], Any]
+        if callable(candidate_factory):
+            owns_backend = True
+            factory = cast(Callable[[], Any], candidate_factory)
+        else:
+            owns_backend = False
             # Test or alternate backends without SQLite can still run outside
             # the event loop. Production OfflineFirstBackend always supplies a
             # factory which constructs a worker-owned LocalStore.
             shared_backend = self.backend
 
-            def shared_backend_factory():
+            def shared_backend_factory() -> Any:
                 return shared_backend
 
             factory = shared_backend_factory

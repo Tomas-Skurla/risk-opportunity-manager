@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from PySide6.QtWidgets import QAbstractScrollArea, QHeaderView, QSizePolicy, QWidget
 
 from riskapp_client.ui_v2.components.custom_gui_widgets import setup_readonly_table
@@ -14,11 +16,11 @@ class MembersTab(QWidget):
     def __init__(
         self,
         *,
-        on_add_or_update_member,
-        on_remove_selected_member,
-        on_refresh_members,
-        on_member_selected,
-        parent=None,
+        on_add_or_update_member: Callable[[], None],
+        on_remove_selected_member: Callable[[], None],
+        on_refresh_members: Callable[[], None],
+        on_member_selected: Callable[[], None],
+        parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.ui = Ui_MembersTab()

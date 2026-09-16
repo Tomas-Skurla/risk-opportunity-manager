@@ -1,10 +1,10 @@
 import csv
 import io
 import uuid
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from enum import Enum
-from types import FunctionType
-from typing import Any
+from types import FunctionType, GenericAlias
+from typing import Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.responses import StreamingResponse
@@ -29,10 +29,10 @@ from riskapp_server.schemas.models import AssessmentIn, ScoreReportOut
 
 
 def _set_payload_schema(
-    endpoint: FunctionType, schema: type[BaseModel]
+    endpoint: Callable[..., Any], schema: type[BaseModel]
 ) -> None:
     """Install a concrete request model before FastAPI inspects an endpoint."""
-    endpoint.__annotations__["payload"] = schema
+    cast(FunctionType, endpoint).__annotations__["payload"] = schema
 
 
 def create_crud_router(
@@ -68,13 +68,16 @@ def create_crud_router(
         status_code=201,
     )
 
-    @r.get(f"/projects/{{project_id}}/{prefix}", response_model=list[OutSchema])
+    @r.get(
+        f"/projects/{{project_id}}/{prefix}",
+        response_model=GenericAlias(list, OutSchema),
+    )
     def list_objs(
         project_id: uuid.UUID,
         filters: ItemFilterParams = Depends(),
         db: Session = Depends(get_db),
         user: User = Depends(get_current_user),
-    ):
+    ) -> Sequence[Any]:
 
         ensure_member(db, project_id, user.id)
         f = vars(filters)
@@ -88,7 +91,7 @@ def create_crud_router(
         filters: ItemFilterParams = Depends(),
         db: Session = Depends(get_db),
         user: User = Depends(get_current_user),
-    ):
+    ) -> StreamingResponse:
         """Export the current filtered page as CSV."""
         ensure_member(db, project_id, user.id)
         f = vars(filters)
@@ -125,7 +128,7 @@ def create_crud_router(
         if offset:
             stmt = stmt.offset(offset)
 
-        cols = [
+        raw_cols = [
             "id",
             "type" if hasattr(Model, "type") else None,
             "code",
@@ -141,7 +144,7 @@ def create_crud_router(
             "version",
             "is_deleted",
         ]
-        cols = [c for c in cols if c]
+        cols = [c for c in raw_cols if c is not None]
 
         def rows() -> Iterator[bytes]:
             buf = io.StringIO()
@@ -205,7 +208,7 @@ def create_crud_router(
         filters: ItemFilterParams = Depends(),
         db: Session = Depends(get_db),
         user: User = Depends(get_current_user),
-    ):
+    ) -> ScoreReportOut:
         ensure_member(db, project_id, user.id)
         f = vars(filters)
         if fixed_type:
@@ -217,14 +220,14 @@ def create_crud_router(
 
         @r.get(
             f"/projects/{{project_id}}/{prefix}/{{item_id}}/assessments",
-            response_model=list[AssessmentOutSchema],
+            response_model=GenericAlias(list, AssessmentOutSchema),
         )
         def list_assessments(
             project_id: uuid.UUID,
             item_id: uuid.UUID,
             db: Session = Depends(get_db),
             user: User = Depends(get_current_user),
-        ):
+        ) -> Sequence[Any]:
             ensure_member(db, project_id, user.id)
             if not db.execute(
                 select(Model.id).where(
@@ -262,7 +265,7 @@ def create_crud_router(
             payload: AssessmentIn,
             db: Session = Depends(get_db),
             user: User = Depends(get_current_user),
-        ):
+        ) -> Any:
             """Upsert the calling user's assessment for a scored item."""
             require_min_role(db, project_id, user.id, min_role=Role.member)
             if not db.execute(

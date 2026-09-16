@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from PySide6.QtWidgets import QHeaderView, QWidget
 
 from riskapp_client.domain.domain_models import (
@@ -19,13 +21,13 @@ class HelpDeskTab(QWidget):
     def __init__(
         self,
         *,
-        on_ticket_clicked,
-        on_new_ticket,
-        on_save_ticket,
-        on_delete_ticket,
-        on_refresh,
-        on_filter_changed,
-        parent=None,
+        on_ticket_clicked: Callable[[], None],
+        on_new_ticket: Callable[[], None],
+        on_save_ticket: Callable[[], None],
+        on_delete_ticket: Callable[[], None],
+        on_refresh: Callable[[], None],
+        on_filter_changed: Callable[[], None],
+        parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.ui = Ui_HelpDeskTab()

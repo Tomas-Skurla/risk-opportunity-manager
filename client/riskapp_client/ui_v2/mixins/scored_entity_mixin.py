@@ -7,7 +7,13 @@ from collections.abc import Callable
 from typing import Any, cast
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QFileDialog, QMessageBox, QWidget
+from PySide6.QtWidgets import (
+    QFileDialog,
+    QLabel,
+    QMessageBox,
+    QTableWidget,
+    QWidget,
+)
 from riskapp_client.ui_v2.helpers.scored_entities_ui_helpers import (
     date_bounds,
     form_values_for_entity,
@@ -26,7 +32,12 @@ class ScoredEntityMixin:
     _select_row_by_entity_id: Callable[..., None]
     _update_scored_filter_report: Callable[..., None]
 
-    def _export_entity_csv(self, filename: str, cache: dict, export_fn) -> None:
+    def _export_entity_csv(
+        self,
+        filename: str,
+        cache: dict[str, Any],
+        export_fn: Callable[..., Any],
+    ) -> None:
         if not self.current_project_id:
             return
         path, _ = QFileDialog.getSaveFileName(
@@ -43,16 +54,16 @@ class ScoredEntityMixin:
     def _refresh_entity(
         self,
         pid: str,
-        list_backend_fn,
-        filter_fn,
-        criteria_cls,
-        report_widget,
-        table_widget,
-        filters_dict,
-        mk_item_fn,
-        report_backend_fn=None,
+        list_backend_fn: Callable[..., Any],
+        filter_fn: Callable[..., Any],
+        criteria_cls: Callable[..., Any],
+        report_widget: Any,
+        table_widget: QTableWidget,
+        filters_dict: dict[str, Any],
+        mk_item_fn: Callable[..., Any],
+        report_backend_fn: Callable[..., Any] | None = None,
         select_id: str | None = None,
-    ) -> dict | None:
+    ) -> dict[str, Any] | None:
         full = self._call_backend("Backend error", list_backend_fn, pid)
         if full is None:
             return None
@@ -100,7 +111,7 @@ class ScoredEntityMixin:
         return cache
 
     @staticmethod
-    def _owner_filter_value(owner_widget):
+    def _owner_filter_value(owner_widget: Any) -> tuple[str | None, bool]:
         """Return (owner_user_id, owner_unassigned) from the owner filter widget."""
         try:
             data = owner_widget.currentData()  # QComboBox
@@ -122,14 +133,14 @@ class ScoredEntityMixin:
         self,
         row: int,
         col: int,
-        table,
-        cache,
-        current_id,
-        editor_dirty,
-        commit_fn,
-        form,
-        label_widget,
-        label_prefix,
+        table: QTableWidget,
+        cache: dict[str, Any],
+        current_id: str | None,
+        editor_dirty: bool,
+        commit_fn: Callable[..., Any],
+        form: Any,
+        label_widget: QLabel,
+        label_prefix: str,
     ) -> str | None:
         t_it = table.item(row, 1)
         if not t_it:
@@ -152,7 +163,13 @@ class ScoredEntityMixin:
         return ent.id
 
     def _commit_entity_editor_changes(
-        self, current_id, editor_dirty, form, update_backend_fn, refresh_fn, select_id
+        self,
+        current_id: str | None,
+        editor_dirty: bool,
+        form: Any,
+        update_backend_fn: Callable[..., Any],
+        refresh_fn: Callable[..., Any] | None,
+        select_id: str | None,
     ) -> bool:
         if not editor_dirty or not current_id:
             return False
@@ -187,7 +204,11 @@ class ScoredEntityMixin:
         return True
 
     def _delete_entity(
-        self, current_id: str | None, delete_backend_fn, refresh_fn, start_new_fn
+        self,
+        current_id: str | None,
+        delete_backend_fn: Callable[..., Any],
+        refresh_fn: Callable[[], None],
+        start_new_fn: Callable[[], None],
     ) -> None:
         """Safely prompt the user and delete the entity."""
         if not current_id:
@@ -211,15 +232,15 @@ class ScoredEntityMixin:
 
     def _save_entity(
         self,
-        payload,
-        current_id,
-        update_backend_fn,
-        create_backend_fn,
-        refresh_fn,
-        form,
-        label_widget,
-        label_prefix,
-        extra_refreshes,
+        payload: dict[str, Any],
+        current_id: str | None,
+        update_backend_fn: Callable[..., Any],
+        create_backend_fn: Callable[..., Any],
+        refresh_fn: Callable[..., Any] | None,
+        form: Any,
+        label_widget: QLabel,
+        label_prefix: str,
+        extra_refreshes: list[Callable[[], None]],
     ) -> str | None:
         pid = self.current_project_id
         if not pid:

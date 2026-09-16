@@ -540,7 +540,10 @@ def test_sync_snapshot_and_history_routes_shape_requests() -> None:
     assert "kind=opportunities" in backend._req.call_args.args[1]
     backend.latest_snapshot("project-1", kind="risks")
     assert "snapshots/latest?kind=risks" in backend._req.call_args.args[1]
-    backend.top_history("project-1", kind="risks", limit=5, from_ts="from", to_ts="to")
+    backend._req = Mock(return_value=[])
+    assert not backend.top_history(
+        "project-1", kind="risks", limit=5, from_ts="from", to_ts="to"
+    )
     query = urllib.parse.parse_qs(
         urllib.parse.urlparse(backend._req.call_args.args[1]).query
     )

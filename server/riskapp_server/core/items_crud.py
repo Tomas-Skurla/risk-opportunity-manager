@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 from fastapi import HTTPException
 from sqlalchemy import case, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+from sqlalchemy.sql import Select
 from sqlalchemy.sql.functions import count
 
 from riskapp_server.core.filters import apply_item_filters
@@ -14,7 +17,13 @@ from riskapp_server.db.session import RiskStatus, utcnow
 from riskapp_server.schemas.models import ScoreReportOut
 
 
-def create_item(db: Session, user_id: uuid.UUID, project_id: uuid.UUID, payload, model):
+def create_item(
+    db: Session,
+    user_id: uuid.UUID,
+    project_id: uuid.UUID,
+    payload: Any,
+    model: type[Any],
+) -> Any:
     now = utcnow()
     item_type = getattr(payload, "type", "risk").lower()
     prefix = "R" if item_type == "risk" else "O"
@@ -89,11 +98,11 @@ def update_item(
     db: Session,
     project_id: uuid.UUID,
     item_id: uuid.UUID,
-    payload,
-    model,
+    payload: Any,
+    model: type[Any],
     *,
     item_type: str | None = None,
-):
+) -> Any:
     now = utcnow()
     where = [model.project_id == project_id, model.id == item_id]
     if item_type and hasattr(model, "type"):
@@ -164,7 +173,12 @@ def update_item(
     return item
 
 
-def list_items(db: Session, project_id: uuid.UUID, model, filters: dict):
+def list_items(
+    db: Session,
+    project_id: uuid.UUID,
+    model: type[Any],
+    filters: Mapping[str, Any],
+) -> Sequence[Any]:
     stmt = (
         apply_item_filters(
             select(model).where(model.project_id == project_id),
@@ -191,10 +205,10 @@ def delete_item(
     db: Session,
     project_id: uuid.UUID,
     item_id: uuid.UUID,
-    model,
+    model: type[Any],
     *,
     item_type: str | None = None,
-):
+) -> None:
     where = [model.project_id == project_id, model.id == item_id]
     if item_type and hasattr(model, "type"):
         where.append(model.type == item_type)
@@ -207,13 +221,16 @@ def delete_item(
 
 
 def generate_report(
-    db: Session, project_id: uuid.UUID, model, filters: dict
+    db: Session,
+    project_id: uuid.UUID,
+    model: type[Any],
+    filters: Mapping[str, Any],
 ) -> ScoreReportOut:
 
     item_type = filters.get("item_type")
     status = filters.get("status")
 
-    def _filtered_query(stmt):
+    def _filtered_query(stmt: Select) -> Select:
         """applies standard report filters to any base SELECT statement."""
         return apply_item_filters(
             stmt.where(model.project_id == project_id),

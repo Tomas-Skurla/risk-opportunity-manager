@@ -6,6 +6,7 @@ versions trip over uuid.UUID here when building the schema.
 
 import uuid
 from datetime import date, datetime, timedelta
+from typing import Any
 
 from fastapi import HTTPException, Query
 from sqlalchemy import or_
@@ -66,7 +67,11 @@ def csv_list(value: str | None) -> list[str]:
 
 
 def apply_date_range(
-    stmt: Select, field, *, from_date: date | None, to_date: date | None
+    stmt: Select,
+    field: Any,
+    *,
+    from_date: date | None,
+    to_date: date | None,
 ) -> Select:
     if from_date is not None:
         stmt = stmt.where(field >= datetime.combine(from_date, datetime.min.time()))
@@ -89,7 +94,7 @@ def normalize_score_range(
 
 def apply_item_filters(
     stmt: Select,
-    model,
+    model: type[Any],
     *,
     search: str | None,
     item_type: str | None,
@@ -97,7 +102,7 @@ def apply_item_filters(
     max_score: int | None,
     status: str | None,
     category: str | None,
-    owner_user_id,
+    owner_user_id: uuid.UUID | None,
     owner_unassigned: bool = False,
     from_date: date | None,
     to_date: date | None,

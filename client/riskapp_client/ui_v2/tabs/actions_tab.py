@@ -21,7 +21,7 @@ class ActionsTab(QWidget):
         on_save_action: Callable[[], None],
         on_new_action: Callable[[], None],
         on_target_type_changed: Callable[[str], None],
-        parent=None,
+        parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.ui = Ui_ActionsTab()

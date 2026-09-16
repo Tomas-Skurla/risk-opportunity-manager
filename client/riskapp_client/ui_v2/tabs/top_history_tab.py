@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from PySide6.QtCore import QDateTime, Qt, QTimer
 from PySide6.QtWidgets import QAbstractScrollArea, QHeaderView, QSizePolicy, QWidget
 
@@ -15,11 +17,11 @@ class TopHistoryTab(QWidget):
     def __init__(
         self,
         *,
-        on_snapshot_now,
-        on_refresh_history,
-        on_period_changed,
-        on_maybe_auto_snapshot,
-        parent=None,
+        on_snapshot_now: Callable[[], None],
+        on_refresh_history: Callable[[], None],
+        on_period_changed: Callable[[str], None],
+        on_maybe_auto_snapshot: Callable[[], None],
+        parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.ui = Ui_TopHistoryTab()

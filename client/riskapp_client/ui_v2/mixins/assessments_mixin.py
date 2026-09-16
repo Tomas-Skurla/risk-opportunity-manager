@@ -74,7 +74,7 @@ class AssessmentsMixin:
         my_uid = None
         if hasattr(self.backend, "current_user_id"):
             try:
-                my_uid = self.backend.current_user_id()  # type: ignore[attr-defined]
+                my_uid = self.backend.current_user_id()
             except (AttributeError, RuntimeError):
                 my_uid = None
         my_row: Assessment | None = None

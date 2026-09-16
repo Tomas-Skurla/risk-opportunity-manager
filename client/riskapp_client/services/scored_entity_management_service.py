@@ -120,7 +120,7 @@ class ScoredEntityService(Generic[ModelT]):
                 return existing[key]  # sqlite3.Row
             except (RuntimeError, ValueError, KeyError):
                 # Mapping[str, Any]
-                return existing.get(key)  # type: ignore[return-value]
+                return existing.get(key)
 
         prev_status = _existing("status") or DEFAULT_STATUS
         new_status = meta.get("status") if "status" in meta else prev_status

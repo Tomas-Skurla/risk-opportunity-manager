@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import inspect
 import logging
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from typing import cast
 
@@ -70,7 +70,7 @@ async def _run_initializer(initializer: Callable[[], object]) -> None:
 
 
 @asynccontextmanager
-async def lifespan(_: FastAPI):
+async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     try:
         await _run_initializer(cast(Callable[[], object], init_db))
 
@@ -168,7 +168,9 @@ def create_app() -> FastAPI:
         application.include_router(r)
 
     @application.get("/health", tags=["ops"])
-    def health_check(db: Session = Depends(get_db)):  # noqa: B008
+    def health_check(
+        db: Session = Depends(get_db),  # noqa: B008
+    ) -> dict[str, str] | JSONResponse:
         try:
             db.execute(text("SELECT 1"))
             return {"status": "ok", "db": "ok"}

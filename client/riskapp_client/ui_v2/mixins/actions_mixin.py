@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from PySide6.QtCore import Qt  # pylint: disable=no-name-in-module
 from PySide6.QtWidgets import (  # pylint: disable=no-name-in-module
+    QComboBox,
     QMessageBox,
     QWidget,
 )
@@ -39,7 +40,12 @@ class ActionsMixin:
         tab.action_risk_combo.setEnabled(is_risk)
         tab.action_opp_combo.setEnabled(not is_risk)
 
-    def _refresh_target_combo(self, combo, fetch_method, cache_attr: str) -> None:
+    def _refresh_target_combo(
+        self,
+        combo: QComboBox,
+        fetch_method: Callable[..., Any],
+        cache_attr: str,
+    ) -> None:
         combo.setCurrentIndex(-1)
         pid = self.current_project_id
         if not pid:

@@ -347,7 +347,7 @@ class OfflineFirstBackend(Backend):
     def list_risks(self, project_id: str) -> list[Risk]:
         return self._risks.list(project_id)
 
-    def risks_report(self, project_id: str, **filters) -> dict:
+    def risks_report(self, project_id: str, **filters: Any) -> dict[str, Any]:
         report = _optional_callable(
             self._remote_for_project(project_id),
             "risks_report",
@@ -359,7 +359,13 @@ class OfflineFirstBackend(Backend):
         return self._generate_scored_report(items, filters)
 
     def create_risk(
-        self, project_id: str, *, title: str, probability: int, impact: int, **meta
+        self,
+        project_id: str,
+        *,
+        title: str,
+        probability: int,
+        impact: int,
+        **meta: Any,
     ) -> Risk:
         return self._risks.create(
             project_id,
@@ -378,7 +384,7 @@ class OfflineFirstBackend(Backend):
         probability: int,
         impact: int,
         base_version: int | None = None,
-        **meta,
+        **meta: Any,
     ) -> Risk:
         with self.store.write_transaction():
             ent = self._risks.update(
@@ -407,7 +413,9 @@ class OfflineFirstBackend(Backend):
     def list_opportunities(self, project_id: str) -> list[Opportunity]:
         return self._opps.list(project_id)
 
-    def opportunities_report(self, project_id: str, **filters) -> dict:
+    def opportunities_report(
+        self, project_id: str, **filters: Any
+    ) -> dict[str, Any]:
         report = _optional_callable(
             self._remote_for_project(project_id),
             "opportunities_report",
@@ -419,7 +427,13 @@ class OfflineFirstBackend(Backend):
         return self._generate_scored_report(items, filters)
 
     def create_opportunity(
-        self, project_id: str, *, title: str, probability: int, impact: int, **meta
+        self,
+        project_id: str,
+        *,
+        title: str,
+        probability: int,
+        impact: int,
+        **meta: Any,
     ) -> Opportunity:
         return self._opps.create(
             project_id,
@@ -438,7 +452,7 @@ class OfflineFirstBackend(Backend):
         probability: int,
         impact: int,
         base_version: int | None = None,
-        **meta,
+        **meta: Any,
     ) -> Opportunity:
         with self.store.write_transaction():
             ent = self._opps.update(
@@ -515,7 +529,9 @@ class OfflineFirstBackend(Backend):
 
     # ---- Snapshots / history ----
 
-    def create_snapshot(self, project_id: str, *, kind: str | None = None):
+    def create_snapshot(
+        self, project_id: str, *, kind: str | None = None
+    ) -> dict[str, Any]:
         remote = self._remote_for_project(project_id)
         if remote is None:
             raise RuntimeError("Snapshots require a synced project.")
@@ -529,7 +545,7 @@ class OfflineFirstBackend(Backend):
         limit: int = 10,
         from_ts: str | None = None,
         to_ts: str | None = None,
-    ):
+    ) -> list[dict[str, Any]]:
         remote = self._remote_for_project(project_id)
         if remote is None:
             return []
@@ -569,7 +585,7 @@ class OfflineFirstBackend(Backend):
         *,
         should_cancel: Callable[[], bool] | None = None,
         progress: Callable[[str], None] | None = None,
-    ):
+    ) -> dict[str, Any]:
         if should_cancel is None and progress is None:
             return self._sync.sync_project(project_id)
         return self._sync.sync_project(

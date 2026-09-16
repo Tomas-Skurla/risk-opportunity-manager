@@ -10,8 +10,9 @@ import threading
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Protocol
 
 from riskapp_client.adapters.mappers.action_assessment_mapper import (
     action_from_mapping,
@@ -37,6 +38,10 @@ _MAX_RESPONSE_BYTES = 5_000_000
 logger = logging.getLogger(__name__)
 
 
+class _ReadableResponse(Protocol):
+    def read(self, amount: int = -1, /) -> bytes: ...
+
+
 @dataclass
 class _AuthState:
     """Authentication state shared by thread-local API clients."""
@@ -48,7 +53,7 @@ class _AuthState:
     lock: Any = field(default_factory=threading.RLock, repr=False)
 
 
-def _build_api_opener(base_url: str):
+def _build_api_opener(base_url: str) -> urllib.request.OpenerDirector:
     """Build one HTTP opener for use by a single API client instance."""
     parsed_base = urllib.parse.urlparse(base_url)
     handlers: list[urllib.request.BaseHandler] = [
@@ -90,7 +95,15 @@ class _SameOriginRedirectHandler(urllib.request.HTTPRedirectHandler):
         self._allowed_scheme = allowed_scheme
         self._allowed_netloc = allowed_netloc
 
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D401
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: Any,
+        code: int,
+        msg: str,
+        headers: Any,
+        newurl: str,
+    ) -> urllib.request.Request | None:  # noqa: D401
         parsed = urllib.parse.urlparse(newurl)
         if parsed.scheme and parsed.scheme != self._allowed_scheme:
             raise urllib.error.HTTPError(
@@ -160,7 +173,7 @@ def _require_object(
     return payload
 
 
-def _read_limited(response, *, status: int = 0) -> bytes:
+def _read_limited(response: _ReadableResponse, *, status: int = 0) -> bytes:
     raw = response.read(_MAX_RESPONSE_BYTES + 1)
     if len(raw) > _MAX_RESPONSE_BYTES:
         raise ApiError(status, "Response too large")
@@ -499,17 +512,25 @@ class ApiBackend:
         )
 
     def _build_scored_payload(
-        self, title: str, probability: int, impact: int, meta: dict
-    ) -> dict:
+        self,
+        title: str,
+        probability: int,
+        impact: int,
+        meta: Mapping[str, object],
+    ) -> dict[str, object]:
         """Helper to build consistent JSON payload for Risks and Opportunities."""
-        body = {"title": title, "probability": int(probability), "impact": int(impact)}
+        body: dict[str, object] = {
+            "title": title,
+            "probability": int(probability),
+            "impact": int(impact),
+        }
         for k in SCORED_ENTITY_META_KEYS:
             v = meta.get(k)
             if v is not None and str(v).strip() != "":
                 body[k] = v
         return body
 
-    def _build_list_qs(self, **kwargs) -> str:
+    def _build_list_qs(self, **kwargs: object) -> str:
         """Build URL query string while omitting None values."""
         params = {
             k: str(int(v)) if isinstance(v, bool) else str(v)
@@ -609,7 +630,13 @@ class ApiBackend:
         return dict(_require_object(payload, "opportunity report"))
 
     def create_opportunity(
-        self, project_id: str, *, title: str, probability: int, impact: int, **meta
+        self,
+        project_id: str,
+        *,
+        title: str,
+        probability: int,
+        impact: int,
+        **meta: object,
     ) -> Opportunity:
         body = self._build_scored_payload(title, probability, impact, meta)
         payload = self._req(
@@ -626,7 +653,7 @@ class ApiBackend:
         probability: int,
         impact: int,
         base_version: int | None = None,
-        **meta,
+        **meta: object,
     ) -> Opportunity:
         """Update opportunity."""
         body = self._build_scored_payload(title, probability, impact, meta)
@@ -746,7 +773,13 @@ class ApiBackend:
         return dict(_require_object(payload, "risk report"))
 
     def create_risk(
-        self, project_id: str, *, title: str, probability: int, impact: int, **meta
+        self,
+        project_id: str,
+        *,
+        title: str,
+        probability: int,
+        impact: int,
+        **meta: object,
     ) -> Risk:
         body = self._build_scored_payload(title, probability, impact, meta)
         payload = self._req("POST", f"/projects/{project_id}/risks", json_body=body)
@@ -761,7 +794,7 @@ class ApiBackend:
         probability: int,
         impact: int,
         base_version: int | None = None,
-        **meta,
+        **meta: object,
     ) -> Risk:
         """Update risk."""
         body = self._build_scored_payload(title, probability, impact, meta)
@@ -786,7 +819,7 @@ class ApiBackend:
         cursors: dict[str, str] | None = None,
         snapshot_time: str | None = None,
         snapshot_sequence: int | None = None,
-    ):
+    ) -> dict[str, Any]:
         body: dict[str, object] = {"project_id": project_id, "since": since_iso}
         if since_sequence is not None:
             body["since_sequence"] = int(since_sequence)
@@ -798,24 +831,37 @@ class ApiBackend:
             body["limit_per_entity"] = int(limit_per_entity)
             if cursors:
                 body["cursors"] = cursors
-        return self._req("POST", f"/projects/{project_id}/sync/pull", json_body=body)
+        payload = self._req(
+            "POST", f"/projects/{project_id}/sync/pull", json_body=body
+        )
+        return _require_object(payload, "synchronization pull")
 
-    def sync_push(self, project_id: str, changes):
-        return self._req(
+    def sync_push(
+        self, project_id: str, changes: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        payload = self._req(
             "POST",
             f"/projects/{project_id}/sync/push",
             json_body={"project_id": project_id, "changes": changes},
         )
+        return _require_object(payload, "synchronization push")
 
-    def create_snapshot(self, project_id: str, *, kind: str | None = None):
+    def create_snapshot(
+        self, project_id: str, *, kind: str | None = None
+    ) -> dict[str, Any]:
         if kind:
             qs = urllib.parse.urlencode({"kind": kind})
-            return self._req("POST", f"/projects/{project_id}/snapshots?{qs}")
-        return self._req("POST", f"/projects/{project_id}/snapshots")
+            payload = self._req("POST", f"/projects/{project_id}/snapshots?{qs}")
+        else:
+            payload = self._req("POST", f"/projects/{project_id}/snapshots")
+        return _require_object(payload, "snapshot")
 
-    def latest_snapshot(self, project_id: str, *, kind: str = "risks"):
+    def latest_snapshot(
+        self, project_id: str, *, kind: str = "risks"
+    ) -> dict[str, Any]:
         qs = urllib.parse.urlencode({"kind": kind})
-        return self._req("GET", f"/projects/{project_id}/snapshots/latest?{qs}")
+        payload = self._req("GET", f"/projects/{project_id}/snapshots/latest?{qs}")
+        return _require_object(payload, "latest snapshot")
 
     def list_actions(self, project_id: str) -> list[Action]:
         payload = self._req("GET", f"/projects/{project_id}/actions")
@@ -892,14 +938,15 @@ class ApiBackend:
         limit: int = 10,
         from_ts: str | None = None,
         to_ts: str | None = None,
-    ):
+    ) -> list[dict[str, Any]]:
         params = {"kind": kind, "limit": str(int(limit))}
         if from_ts:
             params["from_ts"] = from_ts
         if to_ts:
             params["to_ts"] = to_ts
         qs = urllib.parse.urlencode(params)
-        return self._req("GET", f"/projects/{project_id}/top-history?{qs}")
+        payload = self._req("GET", f"/projects/{project_id}/top-history?{qs}")
+        return _require_object_list(payload, "top-history")
 
     def list_members(self, project_id: str) -> list[Member]:
         payload = self._req("GET", f"/projects/{project_id}/members")

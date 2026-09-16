@@ -1,13 +1,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable
+from typing import Any
+
 from PySide6.QtCore import (  # pylint: disable=no-name-in-module
     QDateTime,
     QRect,
     QSize,
     Qt,
 )
-from PySide6.QtGui import QColor, QPen  # pylint: disable=no-name-in-module
+from PySide6.QtGui import QColor, QPainter, QPen  # pylint: disable=no-name-in-module
 from PySide6.QtWidgets import (  # pylint: disable=no-name-in-module
     QAbstractItemView,
     QDialog,
@@ -42,7 +45,7 @@ class LoginDialog(QDialog):
         *,
         default_url: str = "http://localhost:8000",
         cached_email: str | None = None,
-        parent=None,
+        parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.ui = Ui_Dialog()
@@ -102,7 +105,7 @@ class ServerDownDialog(QDialog):
         *,
         has_credentials: bool = False,
         email: str = "",
-        parent=None,
+        parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Server unavailable")
@@ -150,7 +153,10 @@ class RegisterDialog(QDialog):
     """Registration dialog for creating a new account on the server."""
 
     def __init__(
-        self, *, default_url: str = "http://localhost:8000", parent=None
+        self,
+        *,
+        default_url: str = "http://localhost:8000",
+        parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.ui = Ui_RegisterDialog()
@@ -229,7 +235,7 @@ class RegisterDialog(QDialog):
 class NewProjectDialog(QDialog):
     """Dialog for creating a new project."""
 
-    def __init__(self, parent=None) -> None:
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Create new project")
         self.resize(400, 200)
@@ -281,13 +287,13 @@ class ExcelSelectionDelegate(QStyledItemDelegate):
     # Title is column 1 in the scored-entity tables (Code, Title, ...)
     GUTTER_COL = 1
 
-    def sizeHint(self, option, index):
+    def sizeHint(self, option: Any, index: Any) -> QSize:
         s = super().sizeHint(option, index)
         if index.column() == self.GUTTER_COL:
             return QSize(s.width() + self.GUTTER_W + 10, s.height())
         return s
 
-    def paint(self, painter, option, index):
+    def paint(self, painter: QPainter, option: Any, index: Any) -> None:
         """Paint item."""
         # Qt exposes these value-type properties through compiled descriptors.
         # pylint: disable=no-member
@@ -422,7 +428,11 @@ class RiskForm(QWidget):
 
     STATUS_CHOICES = ["concept", "active", "closed", "deleted", "happened"]
 
-    def __init__(self, parent=None, on_submit=None) -> None:
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        on_submit: Callable[[dict[str, Any]], None] | None = None,
+    ) -> None:
         super().__init__(parent)
         self.on_submit = on_submit
         self._allow_deleted_status: bool = True
@@ -444,22 +454,27 @@ class RiskForm(QWidget):
         self.triggers = self.ui.triggers
         self.mitigation_plan = self.ui.mitigation_plan
         # Disable rich text rendering to avoid formatting and dark-mode color issues.
-        for w in (self.description, self.threat, self.triggers, self.mitigation_plan):
-            w.setAcceptRichText(False)
+        for text_edit in (
+            self.description,
+            self.threat,
+            self.triggers,
+            self.mitigation_plan,
+        ):
+            text_edit.setAcceptRichText(False)
         self.document_url = self.ui.document_url
         self.identified_at = self.ui.identified_at
         self.response_at = self.ui.response_at
         self.occurred_at = self.ui.occurred_at
         self.status_changed_at = self.ui.status_changed_at
         self.btn = self.ui.btn
-        for w in (
+        for impact_spin in (
             self.impact_cost,
             self.impact_time,
             self.impact_scope,
             self.impact_quality,
         ):
             # pylint: disable-next=no-member
-            w.valueChanged.connect(self._recompute_overall_impact)
+            impact_spin.valueChanged.connect(self._recompute_overall_impact)
         # pylint: disable-next=no-member
         self.btn.clicked.connect(self._submit)
 
@@ -509,26 +524,31 @@ class RiskForm(QWidget):
         # pylint: disable-next=no-member
         self.status.currentTextChanged.connect(self._on_status_changed)
 
-    def track_dirty_state(self, callback) -> None:
+    def track_dirty_state(self, callback: Callable[[], None]) -> None:
         """Connect inputs to the callback that tracks unsaved changes."""
         # PySide6 signals are runtime descriptors that Pylint cannot infer.
         # pylint: disable=no-member
-        for w in (self.code, self.title, self.category, self.document_url):
-            w.textChanged.connect(lambda *_: callback())
-        for w in (self.description, self.threat, self.triggers, self.mitigation_plan):
-            w.textChanged.connect(callback)
-        for w in (
+        for line_edit in (self.code, self.title, self.category, self.document_url):
+            line_edit.textChanged.connect(lambda *_: callback())
+        for text_edit in (
+            self.description,
+            self.threat,
+            self.triggers,
+            self.mitigation_plan,
+        ):
+            text_edit.textChanged.connect(callback)
+        for spin_box in (
             self.p,
             self.impact_cost,
             self.impact_time,
             self.impact_scope,
             self.impact_quality,
         ):
-            w.valueChanged.connect(lambda *_: callback())
+            spin_box.valueChanged.connect(lambda *_: callback())
         self.status.currentTextChanged.connect(lambda *_: callback())
         self.owner_user_id.currentTextChanged.connect(lambda *_: callback())
-        for w in (self.identified_at, self.response_at, self.occurred_at):
-            w.dateTimeChanged.connect(lambda *_: callback())
+        for date_edit in (self.identified_at, self.response_at, self.occurred_at):
+            date_edit.dateTimeChanged.connect(lambda *_: callback())
         # pylint: enable=no-member
 
     def set_allow_deleted_status(self, allowed: bool) -> None:
@@ -556,7 +576,7 @@ class RiskForm(QWidget):
                 self.status.setEditText(current)
         self.status.blockSignals(False)
 
-    def _set_date(self, widget, dt_str: str | None) -> None:
+    def _set_date(self, widget: Any, dt_str: str | None) -> None:
         """Helper to safely write to a QDateTimeEdit."""
         if hasattr(widget, "setDateTime"):
             widget.setSpecialValueText("Not set")  # Shows this when empty!
@@ -581,7 +601,7 @@ class RiskForm(QWidget):
         # Save
         self.btn.setEnabled(bool(editable))
         # Line edits
-        for w in (
+        for line_or_date_edit in (
             self.code,
             self.title,
             self.category,
@@ -591,25 +611,30 @@ class RiskForm(QWidget):
             self.occurred_at,
             # self.status_changed_at,
         ):
-            w.setReadOnly(not editable)
+            line_or_date_edit.setReadOnly(not editable)
         # Rich text
-        for w in (self.description, self.threat, self.triggers, self.mitigation_plan):
-            w.setReadOnly(not editable)
+        for text_edit in (
+            self.description,
+            self.threat,
+            self.triggers,
+            self.mitigation_plan,
+        ):
+            text_edit.setReadOnly(not editable)
         # Combos
         self.status.setEnabled(bool(editable))
         self.owner_user_id.setEnabled(bool(editable))
         # Spinboxes (impact is derived/read-only already)
         self.p.setEnabled(bool(editable))
-        for w in (
+        for impact_spin in (
             self.impact_cost,
             self.impact_time,
             self.impact_scope,
             self.impact_quality,
         ):
-            w.setEnabled(bool(editable))
+            impact_spin.setEnabled(bool(editable))
         self.i.setEnabled(False)
 
-    def set_members(self, members) -> None:
+    def set_members(self, members: Iterable[Any] | None) -> None:
         """Populate owner dropdown from project members."""
         current = self._owner_value()
         self.owner_user_id.blockSignals(True)
@@ -674,7 +699,7 @@ class RiskForm(QWidget):
         """Stamp the current time when the status dropdown changes."""
         self.status_changed_at.setDateTime(QDateTime.currentDateTime())
 
-    def _read_date(self, widget) -> str | None:
+    def _read_date(self, widget: Any) -> str | None:
         """Read a date field without sending its ``Not set`` placeholder."""
         if hasattr(widget, "dateTime"):
             if widget.dateTime() == widget.minimumDateTime():
@@ -682,7 +707,7 @@ class RiskForm(QWidget):
             return widget.dateTime().toString(Qt.DateFormat.ISODate)
         return widget.text().strip() or None
 
-    def get_payload(self) -> dict:
+    def get_payload(self) -> dict[str, Any]:
         # no validation here (caller decides)
         self._recompute_overall_impact()
         return {
@@ -734,7 +759,7 @@ class RiskForm(QWidget):
     ) -> None:
         # Block signals during programmatic set
         """Set values."""
-        widgets = [
+        widgets: list[QWidget] = [
             self.code,
             self.title,
             self.category,
@@ -745,8 +770,8 @@ class RiskForm(QWidget):
             self.response_at,
             self.occurred_at,
         ]
-        for w in widgets:
-            w.blockSignals(True)
+        for widget in widgets:
+            widget.blockSignals(True)
         self.owner_user_id.blockSignals(True)
         self.p.blockSignals(True)
         self.i.blockSignals(True)
@@ -785,8 +810,8 @@ class RiskForm(QWidget):
         self._set_date(self.status_changed_at, status_changed_at)
         self._set_date(self.response_at, response_at)
         self._set_date(self.occurred_at, occurred_at)
-        for w in widgets:
-            w.blockSignals(False)
+        for widget in widgets:
+            widget.blockSignals(False)
         self.owner_user_id.blockSignals(False)
         self.p.blockSignals(False)
         self.i.blockSignals(False)
@@ -805,10 +830,14 @@ class RiskForm(QWidget):
 
 class CrispHeader(QHeaderView):
 
-    def __init__(self, orientation, parent=None) -> None:
+    def __init__(
+        self,
+        orientation: Qt.Orientation,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(orientation, parent)
 
-    def paintSection(self, painter, rect, logicalIndex) -> None:
+    def paintSection(self, painter: QPainter, rect: QRect, logicalIndex: int) -> None:
         """Paint Section."""
         super().paintSection(painter, rect, logicalIndex)
         grid_color = QColor(self.palette().text().color())

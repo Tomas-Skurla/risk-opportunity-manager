@@ -26,8 +26,7 @@ from sqlalchemy import (
     select,
     update,
 )
-
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 from sqlalchemy.types import Uuid as SAUuid
 
 from riskapp_server.core.config import (

@@ -13,7 +13,12 @@ from riskapp_client.ui_v2.ui.ui_assessments_tab import Ui_Form as Ui_Assessments
 class AssessmentsTab(QWidget):
     """Assessments view + 'my assessment' editor."""
 
-    def __init__(self, *, on_save_assessment: Callable[[], None], parent=None) -> None:
+    def __init__(
+        self,
+        *,
+        on_save_assessment: Callable[[], None],
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.ui = Ui_AssessmentsTab()
         self.ui.setupUi(self)

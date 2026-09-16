@@ -8,9 +8,10 @@ import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import Any, NotRequired, TypedDict, cast
 
 from fastapi import HTTPException
+from pydantic import BaseModel
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.inspection import inspect as sa_inspect
@@ -44,7 +45,17 @@ from riskapp_server.schemas.models import (
     SyncItemRecord,
 )
 
-ENTITY_REGISTRY = {
+
+class EntityConfig(TypedDict):
+    model: type[Any]
+    schema: type[BaseModel]
+    manager_delete: bool
+    defaults: dict[str, Any]
+    parent_model: NotRequired[type[Any]]
+    parent_field: NotRequired[str]
+
+
+ENTITY_REGISTRY: dict[str, EntityConfig] = {
     "risk": {
         "model": Item,
         "schema": SyncItemRecord,
@@ -98,7 +109,9 @@ ENTITY_REGISTRY = {
     },
 }
 
-ENTITY_MODELS = {k: v["model"] for k, v in ENTITY_REGISTRY.items()}
+ENTITY_MODELS = {
+    key: config["model"] for key, config in ENTITY_REGISTRY.items()
+}
 OPS = {"upsert", "delete"}
 
 
@@ -1202,8 +1215,8 @@ def _validate_relationships(
 ) -> None:
     """Validate parent/child relationships."""
     config = ENTITY_REGISTRY[entity]
-    if "parent_model" in config:
-        parent_field = config["parent_field"]
+    parent_field = config.get("parent_field")
+    if parent_field is not None:
         target_parent = (
             val.get(parent_field)
             if obj is None
@@ -1247,7 +1260,9 @@ def _ensure_item_in_project(
         raise HTTPException(status_code=400, detail="Target not found in project")
 
 
-def _fetch_obj(db: Session, entity: str, entity_id: uuid.UUID, project_id: uuid.UUID):
+def _fetch_obj(
+    db: Session, entity: str, entity_id: uuid.UUID, project_id: uuid.UUID
+) -> Any | None:
     model_cls = ENTITY_MODELS[entity]
     config = ENTITY_REGISTRY[entity]
 
@@ -1514,7 +1529,7 @@ def _create_new(
     entity: str,
     entity_id: uuid.UUID,
     record: dict[str, Any],
-):
+) -> Any:
     now = utcnow()
     val = _parse_record(entity, record)
     model_cls = ENTITY_MODELS[entity]

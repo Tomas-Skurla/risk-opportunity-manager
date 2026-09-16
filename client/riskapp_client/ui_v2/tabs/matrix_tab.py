@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractScrollArea,
@@ -22,7 +24,12 @@ from riskapp_client.ui_v2.ui.ui_matrix_tab import Ui_Form as Ui_MatrixTab
 class MatrixTab(QWidget):
     """Probability x Impact matrix view."""
 
-    def __init__(self, *, on_kind_changed=None, parent=None) -> None:
+    def __init__(
+        self,
+        *,
+        on_kind_changed: Callable[[str], None] | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.ui = Ui_MatrixTab()
         self.ui.setupUi(self)

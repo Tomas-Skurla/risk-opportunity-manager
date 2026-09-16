@@ -39,7 +39,7 @@ def matrix(
     risks = blank() if k in {"risk", "both"} else None
     opps = blank() if k in {"opportunity", "both"} else None
 
-    def fill(item_type: str, out):
+    def fill(item_type: str, out: list[list[int]] | None) -> None:
         if out is None:
             return
         for p, i, c in db.execute(
