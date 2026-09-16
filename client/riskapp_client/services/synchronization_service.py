@@ -399,7 +399,7 @@ class SyncService:
 
     def _push_once(
         self, project_id: str, changes: list[dict[str, Any]]
-    ) -> dict[str, Any]:
+    ) -> object:
         if not self._remote:
             raise RuntimeError(
                 "No server configured (start the app online at least once)."

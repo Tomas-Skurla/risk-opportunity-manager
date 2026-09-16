@@ -981,8 +981,8 @@ def _record_push_conflict(
 
 
 def _process_new_push_change(ctx: _PushContext, change: SyncChange) -> None:
-    entity = (change.entity or "").strip().lower()
-    op = (change.op or "").strip().lower()
+    entity = change.entity.strip().lower()
+    op = change.op.strip().lower()
     record = change.record or {}
     if entity not in ENTITY_MODELS:
         _reject_push_change(
@@ -1134,8 +1134,8 @@ def _receipt_err(
     retryable: bool = False,
     store_receipt: bool = True,
 ) -> dict[str, Any]:
-    entity = (ch.entity or "").strip().lower()
-    op = (ch.op or "").strip().lower()
+    entity = ch.entity.strip().lower()
+    op = ch.op.strip().lower()
     entity_id = _maybe_entity_id(ch.record or {})
     resp: dict[str, Any] = {
         "reason": reason,

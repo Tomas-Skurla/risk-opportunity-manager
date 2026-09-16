@@ -86,11 +86,7 @@ def test_registration_flow_handles_cancel_success_and_server_validation(
         Mock(
             side_effect=ApiError(
                 422,
-                # Exercise a server validation mapping despite the str annotation.
-                cast(
-                    str,
-                    {"password": ["too short", "needs a symbol"], "email": "invalid"},
-                ),
+                {"password": ["too short", "needs a symbol"], "email": "invalid"},
             )
         ),
     )

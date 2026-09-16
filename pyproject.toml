@@ -46,8 +46,10 @@ files = [
 ]
 check_untyped_defs = true
 disallow_untyped_defs = true
+extra_checks = true
 no_implicit_optional = true
 warn_redundant_casts = true
+warn_unreachable = true
 warn_unused_configs = true
 warn_unused_ignores = true
 show_error_codes = true

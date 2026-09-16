@@ -139,7 +139,7 @@ def _jwt_sub(token: str) -> str | None:
 
 
 class ApiError(RuntimeError):
-    def __init__(self, status: int, detail: str) -> None:
+    def __init__(self, status: int, detail: str | dict[str, Any]) -> None:
         super().__init__(f"HTTP {status}: {detail}")
         self.status = status
         self.detail = detail
