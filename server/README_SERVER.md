@@ -96,7 +96,7 @@ INITIAL_SUPERUSER_EMAIL=admin@example.com
 INITIAL_SUPERUSER_PASSWORD=SuperHeslo123!
 ```
 
-On startup, the server creates that user if missing or promotes the existing user to global superadmin.
+On startup, the server creates that user only when the email is absent. If the account already exists, bootstrap leaves its password, active state, and superuser flag unchanged.
 
 ### Regular registration
 
@@ -134,7 +134,7 @@ Common settings:
 | Variable | Default | Notes |
 |---|---|---|
 | `DATABASE_URL` | `sqlite+pysqlite:///./riskapp.db` | Server database URL |
-| `ENV` | `development` | Set to `production` in deployments |
+| `ENV` | `development` | One of `development`, `test`, or `production`; invalid values stop startup |
 | `SECRET_KEY` | `change-me` | Required outside local dev unless insecure default is explicitly allowed |
 | `TOKEN_HASH_KEY` | unset | HMAC key for stored refresh/password-reset tokens; required and at least 32 characters in production |
 | `ALLOW_INSECURE_DEFAULT_SECRET` | unset | Use `1` only for local development |
@@ -144,8 +144,8 @@ Common settings:
 | `ENFORCE_HTTPS` | production-enabled | HTTPS enforcement |
 | `TRUST_X_FORWARDED_PROTO` | `0` | Enable only behind a configured trusted proxy |
 | `ALLOWED_HOSTS` | dev `*`, production required | Comma-separated accepted Host values |
-| `INITIAL_SUPERUSER_EMAIL` | unset | Optional bootstrap superadmin email |
-| `INITIAL_SUPERUSER_PASSWORD` | unset | Optional bootstrap superadmin password |
+| `INITIAL_SUPERUSER_EMAIL` | unset | Optional create-only bootstrap superadmin email; existing accounts are never modified |
+| `INITIAL_SUPERUSER_PASSWORD` | unset | Password used only when creating the bootstrap account |
 | `CORS_ORIGINS` | unset | Comma-separated allowed origins |
 | `MAX_REQUEST_BODY_BYTES` | `2097152` | Maximum declared or streamed request body |
 | `RISKAPP_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL` |

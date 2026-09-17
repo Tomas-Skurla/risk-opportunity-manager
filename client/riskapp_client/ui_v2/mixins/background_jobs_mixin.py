@@ -7,10 +7,14 @@ from typing import TYPE_CHECKING, Any, cast
 
 from PySide6.QtCore import QObject
 from PySide6.QtWidgets import QLabel, QListWidget, QProgressBar, QPushButton
-from riskapp_client.ui_v2.workers import BackgroundJobRunner
+from riskapp_client.ui_v2.workers import (
+    AutomaticSyncScheduler,
+    BackgroundJobRunner,
+)
 
 if TYPE_CHECKING:
     from riskapp_client.ui_v2.tabs.top_history_tab import TopHistoryTab
+
 
 class BackgroundJobsMixin:
     """Own the worker runner and reflect its state in the status bar."""
@@ -23,11 +27,19 @@ class BackgroundJobsMixin:
     sync_btn: QPushButton
     sync_status: QLabel
     top_tab: TopHistoryTab
+    _automatic_sync_scheduler: AutomaticSyncScheduler
     _background_jobs: BackgroundJobRunner
     _apply_permissions: Callable[[], None]
+    _automatic_sync_requested: Callable[[], bool]
     _update_sync_status: Callable[[], None]
 
-    def _init_background_jobs(self) -> None:
+    def _init_background_jobs(
+        self,
+        *,
+        auto_sync_interval_seconds: int = 0,
+        auto_sync_max_backoff_seconds: int = 300,
+        auto_sync_initial_delay_seconds: int = 5,
+    ) -> None:
         candidate_factory = getattr(self.backend, "create_background_backend", None)
         factory: Callable[[], Any]
         if callable(candidate_factory):
@@ -54,6 +66,31 @@ class BackgroundJobsMixin:
         self._background_jobs.progress_changed.connect(
             self._on_background_progress_changed
         )
+        self._automatic_sync_scheduler = AutomaticSyncScheduler(
+            self._automatic_sync_requested,
+            interval_seconds=auto_sync_interval_seconds,
+            initial_delay_seconds=auto_sync_initial_delay_seconds,
+            max_backoff_seconds=auto_sync_max_backoff_seconds,
+            parent=cast(QObject, self),
+        )
+
+    def _start_automatic_sync_scheduler(self) -> None:
+        available = getattr(self.backend, "can_auto_sync", None)
+        if callable(available) and not bool(available()):
+            return
+        self._automatic_sync_scheduler.start()
+
+    def _schedule_automatic_sync(self) -> None:
+        self._automatic_sync_scheduler.request_soon()
+
+    def _record_automatic_sync_success(self, result: object) -> None:
+        self._automatic_sync_scheduler.job_succeeded(result)
+
+    def _record_automatic_sync_failure(self) -> None:
+        self._automatic_sync_scheduler.job_failed()
+
+    def _observe_manual_sync_result(self, result: object) -> None:
+        self._automatic_sync_scheduler.observe_result(result)
 
     def _start_background_job(
         self,
@@ -88,6 +125,7 @@ class BackgroundJobsMixin:
                 self.top_tab.refresh_top_btn.setEnabled(False)
             label = {
                 "sync": "Synchronizing",
+                "automatic_sync": "Synchronizing automatically",
                 "snapshot": "Creating snapshot",
                 "history": "Loading history",
             }.get(kind, "Working")
@@ -107,4 +145,10 @@ class BackgroundJobsMixin:
         self._background_jobs.cancel()
 
     def _shutdown_background_jobs(self) -> bool:
-        return self._background_jobs.shutdown()
+        self._automatic_sync_scheduler.stop()
+        stopped = self._background_jobs.shutdown()
+        if not stopped:
+            # closeEvent() keeps the window alive when a request outlasts the
+            # bounded wait, so restore periodic scheduling for that live window.
+            self._automatic_sync_scheduler.start()
+        return stopped

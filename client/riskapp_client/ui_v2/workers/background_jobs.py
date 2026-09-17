@@ -59,16 +59,23 @@ class _BackgroundJobWorker(QObject):
     def _is_cancelled(self) -> bool:
         return self._cancel_event.is_set()
 
-    def _run_sync(self, backend: Any) -> dict[str, Any]:
+    def _sync_project(self, backend: Any, project_id: str) -> dict[str, Any]:
         method = backend.sync_project
         kwargs: dict[str, object] = {}
         if _accepts_keyword(method, "should_cancel"):
             kwargs["should_cancel"] = self._is_cancelled
         if _accepts_keyword(method, "progress"):
             kwargs["progress"] = self.progress.emit
-        result = method(str(self._payload["project_id"]), **kwargs)
+        result = method(project_id, **kwargs)
         if not isinstance(result, dict):
             raise RuntimeError("Synchronization returned an invalid result")
+        return result
+
+    def _run_sync(self, backend: Any) -> dict[str, Any]:
+        result = self._sync_project(
+            backend,
+            str(self._payload["project_id"]),
+        )
 
         # A local project promotion changes the sidebar identity. Fetch the
         # authoritative visible project list here, not from the GUI thread.
@@ -83,6 +90,92 @@ class _BackgroundJobWorker(QObject):
                     "Could not refresh projects after synchronization",
                     exc_info=True,
                 )
+        return result
+
+    def _run_automatic_sync(self, backend: Any) -> dict[str, Any]:
+        """Synchronize every visible, syncable project in one worker session."""
+        self.progress.emit("Checking projects for automatic sync")
+        list_projects = getattr(
+            backend,
+            "list_sync_projects",
+            backend.list_projects,
+        )
+        projects = list(list_projects() or [])
+        syncable = [
+            project
+            for project in projects
+            if getattr(project, "id", None)
+            and not (
+                str(getattr(project, "id", "")).startswith("local-")
+                and not getattr(project, "created_by", "")
+            )
+        ]
+        summaries: list[dict[str, Any]] = []
+        migrations: dict[str, str] = {}
+
+        for index, project in enumerate(syncable, start=1):
+            if self._is_cancelled():
+                return {
+                    "state": "cancelled",
+                    "cancelled": True,
+                    "projects": summaries,
+                }
+            project_id = str(project.id)
+            project_name = str(getattr(project, "name", "") or project_id)
+            self.progress.emit(
+                f"Automatically synchronizing {index}/{len(syncable)}: "
+                f"{project_name}"
+            )
+            summary = self._sync_project(backend, project_id)
+            summary.setdefault("project_id", project_id)
+            summaries.append(summary)
+            migrated_to = summary.get("project_id_migrated_to")
+            if migrated_to:
+                migrations[project_id] = str(migrated_to)
+            sync_error = summary.get("sync_error")
+            if (
+                str(summary.get("state") or "")
+                in {"authentication_required", "retry_wait"}
+                and isinstance(sync_error, dict)
+                and sync_error.get("request_failed")
+            ):
+                # Transport and authentication failures normally affect every
+                # project. Stop this pass rather than hammering the same broken
+                # connection once per project; the scheduler will retry later.
+                break
+
+        if migrations and not self._is_cancelled():
+            self.progress.emit("Refreshing project list")
+            projects = list(list_projects() or [])
+
+        states = {str(item.get("state") or "complete") for item in summaries}
+        if "authentication_required" in states:
+            state = "authentication_required"
+        elif "retry_wait" in states:
+            state = "retry_wait"
+        elif states - {"complete"}:
+            state = "attention_required"
+        else:
+            state = "complete"
+
+        retry_values = sorted(
+            str(value)
+            for value in (item.get("next_retry_at") for item in summaries)
+            if value
+        )
+        result: dict[str, Any] = {
+            "state": state,
+            "projects": summaries,
+            "project_id_migrations": migrations,
+            "next_retry_at": retry_values[0] if retry_values else None,
+            "_visible_projects": projects,
+        }
+        if self._payload.get("export_remote") and state != "authentication_required":
+            export_remote = getattr(backend, "export_authenticated_remote", None)
+            if callable(export_remote):
+                authenticated_remote = export_remote()
+                if authenticated_remote is not None:
+                    result["_authenticated_remote"] = authenticated_remote
         return result
 
     def _run_history(self, backend: Any) -> dict[str, Any]:
@@ -129,6 +222,8 @@ class _BackgroundJobWorker(QObject):
     def _execute(self, backend: Any) -> object:
         if self._kind == "sync":
             return self._run_sync(backend)
+        if self._kind == "automatic_sync":
+            return self._run_automatic_sync(backend)
         if self._kind == "history":
             return self._run_history(backend)
         if self._kind == "snapshot":
@@ -145,18 +240,17 @@ class _BackgroundJobWorker(QObject):
                 return
             backend = self._backend_factory()
             result = self._execute(backend)
-            if (
-                self._kind == "sync"
-                and isinstance(result, dict)
-                and result.get("state") == "cancelled"
-            ):
+            if isinstance(result, dict) and result.get("state") == "cancelled":
                 self.cancelled.emit(self._kind)
             else:
                 self.succeeded.emit(self._kind, result)
         # Nothing may escape the worker-thread boundary into Qt's event loop.
         # pylint: disable-next=broad-exception-caught
         except Exception as exc:  # noqa: BLE001 - thread boundary
-            logger.exception("Background %s job failed", self._kind)
+            if self._kind == "automatic_sync":
+                logger.info("Automatic synchronization attempt failed: %s", exc)
+            else:
+                logger.exception("Background %s job failed", self._kind)
             self.failed.emit(self._kind, str(exc))
         finally:
             if backend is not None and self._owns_backend:

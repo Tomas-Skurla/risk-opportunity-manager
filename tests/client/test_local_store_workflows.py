@@ -195,7 +195,8 @@ def test_scored_entity_lifecycle_and_pull_conflict_preservation(
 
     pulled = {item.id: item for item in store.list_risks(project.id)}
     assert pulled["risk-1"].title == "Local edit"
-    assert store.get_risk_project_and_version("risk-1") == (project.id, 7)
+    assert store.get_risk_project_and_version("risk-1") == (project.id, 2)
+    assert outbox.get_pending_changes(project.id)[0]["base_version"] == 2
     assert pulled["risk-server"].category == "Operations"
     assert "risk-deleted" not in pulled
     assert store.list_opportunities(project.id)[0].id == "opportunity-server"
@@ -284,7 +285,8 @@ def test_action_and_assessment_pulls_cover_both_parent_types(store: LocalStore) 
     )
     actions = {action.id: action for action in store.list_actions(project.id)}
     assert actions["action-local"].title == "Local action edited"
-    assert actions["action-local"].version == 8
+    assert actions["action-local"].version == 2
+    assert outbox.get_pending_changes(project.id)[0]["base_version"] == 2
     assert actions["action-server"].opportunity_id == "opportunity-1"
 
     with pytest.raises(KeyError, match="assessment not found"):
@@ -356,8 +358,14 @@ def test_action_and_assessment_pulls_cover_both_parent_types(store: LocalStore) 
     )
     assert store.get_assessment_project_and_version("assessment-pending") == (
         project.id,
-        9,
+        2,
     )
+    assessment_change = next(
+        change
+        for change in outbox.get_pending_changes(project.id)
+        if change["entity"] == "assessment"
+    )
+    assert assessment_change["base_version"] == 2
     opportunity_ids = {
         assessment.id
         for assessment in store.list_assessments(
@@ -421,7 +429,8 @@ def test_helpdesk_update_delete_and_pull_conflict_paths(store: LocalStore) -> No
 
     tickets = {item.id: item for item in store.list_helpdesk_tickets(project.id)}
     assert tickets[ticket.id].title == "Edited ticket"
-    assert tickets[ticket.id].version == 6
+    assert tickets[ticket.id].version == 0
+    assert outbox.get_pending_changes(project.id)[0]["base_version"] is None
     assert tickets["ticket-server"].category == "other"
     assert "ticket-deleted" not in tickets
 

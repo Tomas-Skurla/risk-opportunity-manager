@@ -5,7 +5,7 @@ PySide6 desktop client for RiskApp.
 ## Overview
 
 - Local SQLite cache with an outbox.
-- Manual sync with the server.
+- Automatic background sync with manual **Sync Now** fallback.
 - Commit-safe incremental pulls using a persisted server sequence, with automatic fallback for older servers.
 - Sidebar views for Risks, Opportunities, Matrix, Top history, Actions, Assessments, Members, and Help Desk.
 - Online login, account registration, offline-as-user mode, and fully local anonymous mode.
@@ -90,16 +90,20 @@ curl -X POST http://127.0.0.1:8000/register \
 | `RISKAPP_LOCAL_DB` | `~/.riskapp/client.sqlite3` | Local SQLite cache |
 | `RISKAPP_ALLOW_HTTP` | unset | Set to `1` for local HTTP development |
 | `RISKAPP_LOG_LEVEL` | `INFO` | Python log level |
+| `RISKAPP_AUTO_SYNC_INTERVAL_SECONDS` | `60` | Periodic sync interval; set to `0` to disable automatic sync |
+| `RISKAPP_AUTO_SYNC_MAX_BACKOFF_SECONDS` | `300` | Maximum reconnect/retry delay after transient failures |
 
 ## Offline modes
 
 | Mode | Account? | Server required? | Sync later? | Sidebar label |
 |---|---:|---:|---:|---|
 | Online | yes | yes at login | yes | owner email if known |
-| Offline as known user | known identity | no | yes, after online login + **Sync Now** | `(offline, will sync)` |
+| Offline as known user | known identity | no | yes, automatically after connectivity returns | `(offline, will sync)` |
 | Fully local anonymous | no | no | no | `(local only)` |
 
 Fully local anonymous data never syncs to the server.
+
+Automatic sync starts shortly after launch, runs on a worker-owned SQLite connection, and periodically pulls every visible project. Local queued work requests an earlier run. Transient connectivity failures use bounded exponential backoff and persisted outbox retry timestamps. **Sync Now** remains available for an immediate, user-visible run.
 
 ## Qt/PySide diagnostics
 

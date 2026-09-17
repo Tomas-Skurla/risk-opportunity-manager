@@ -247,9 +247,11 @@ In server-backed projects, Help Desk tickets participate in sync. In **Work Full
 7. Verify the sidebar shows projects with `(offline, will sync)` where applicable.
 8. Create project `Offline Test` and add risks.
 9. Start the server again.
-10. Close the client, start it, and log in online.
-11. Select `Offline Test` and click **Sync Now**.
-12. Verify the project is promoted and the offline suffix disappears.
+10. Leave the client open and wait for the background reconnect (normally within 60 seconds, plus any displayed retry delay).
+11. Verify `Offline Test` is promoted and the offline suffix disappears without restarting the client.
+12. Verify **Sync Now** still performs an immediate manual synchronization.
+
+To verify backoff, stop the server again after a successful login, save another change, and watch the status line. The GUI must remain responsive; retries must not run continuously, and restarting the server must eventually recover without restarting the client.
 
 ---
 

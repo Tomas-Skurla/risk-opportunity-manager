@@ -2,12 +2,40 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 
 # These tests intentionally inspect private environment-parsing helpers.
 # pylint: disable=protected-access
 # Keep imports local to use the configuration currently loaded by the tests.
 # pylint: disable=import-outside-toplevel
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_configuration_import_rejects_unknown_environment_mode() -> None:
+    environment = os.environ.copy()
+    environment["ENV"] = "prod"
+    python_paths = [str(ROOT / "server"), str(ROOT / "client")]
+    if inherited_path := environment.get("PYTHONPATH"):
+        python_paths.append(inherited_path)
+    environment["PYTHONPATH"] = os.pathsep.join(python_paths)
+
+    result = subprocess.run(  # noqa: S603 - fixed interpreter and import statement
+        [sys.executable, "-c", "import riskapp_server.core.config"],
+        cwd=ROOT,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "ENV must be one of: development, production, test" in result.stderr
 
 
 def test_environment_helpers_reject_malformed_and_out_of_range_values(

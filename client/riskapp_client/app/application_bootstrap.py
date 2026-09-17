@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtWidgets import QDialog, QMessageBox
@@ -66,7 +67,13 @@ def _handle_registration(
 
 
 def _show_server_down(
-    error: str, *, email: str, store: LocalStore
+    error: str,
+    *,
+    email: str,
+    store: LocalStore,
+    remote_factory: Callable[[], ApiBackend] | None = None,
+    auto_sync_interval_seconds: int = 0,
+    auto_sync_max_backoff_seconds: int = 300,
 ) -> MainWindow | None:
     """Show the server-down dialog."""
     has_creds = bool(email)
@@ -77,11 +84,20 @@ def _show_server_down(
     if dlg.choice == ServerDownDialog.OFFLINE_WITH_ACCOUNT and email:
         # Cache the email for later sync.
         store.set_meta("last_email", email)
-        backend = OfflineFirstBackend(store, remote=None, anonymous_offline=False)
+        backend = OfflineFirstBackend(
+            store,
+            remote=None,
+            anonymous_offline=False,
+            remote_factory=remote_factory,
+        )
     else:
         # Stay local only.
         backend = OfflineFirstBackend(store, remote=None, anonymous_offline=True)
-    return MainWindow(backend)
+    return MainWindow(
+        backend,
+        auto_sync_interval_seconds=auto_sync_interval_seconds,
+        auto_sync_max_backoff_seconds=auto_sync_max_backoff_seconds,
+    )
 
 
 def build_main_window(config: AppConfig) -> MainWindow:
@@ -120,27 +136,56 @@ def build_main_window(config: AppConfig) -> MainWindow:
         elif dlg.wants_local:
             # Stay local only.
             backend = OfflineFirstBackend(store, remote=None, anonymous_offline=True)
-            return MainWindow(backend)
+            return MainWindow(
+                backend,
+                auto_sync_interval_seconds=config.auto_sync_interval_seconds,
+                auto_sync_max_backoff_seconds=config.auto_sync_max_backoff_seconds,
+            )
         elif result != QDialog.DialogCode.Accepted:
             sys.exit(0)
         else:
             base_url, email, password = dlg.values()
 
-    # Try to connect.
-    try:
-        remote = ApiBackend(
+    def remote_factory() -> ApiBackend:
+        return ApiBackend(
             base_url=base_url,
             email=email,
             password=password,
-            url_policy=UrlPolicy(allow_http_anywhere=config.allow_http_anywhere),
+            url_policy=UrlPolicy(
+                allow_http_anywhere=config.allow_http_anywhere
+            ),
         )
+
+    # Try to connect.
+    try:
+        remote = remote_factory()
         store.set_meta("last_email", email)
         backend = OfflineFirstBackend(store, remote=remote)
-        return MainWindow(backend)
+        return MainWindow(
+            backend,
+            auto_sync_interval_seconds=config.auto_sync_interval_seconds,
+            auto_sync_max_backoff_seconds=config.auto_sync_max_backoff_seconds,
+        )
     except (RuntimeError, OSError) as exc:
         logger.warning("Login/connection failed: %s", exc)
+        # Retain credentials in memory only for transport failures. Invalid
+        # credentials and authorization failures require explicit user action
+        # instead of an automatic login loop.
+        api_status = (
+            int(getattr(exc, "status", 0) or 0)
+            if isinstance(exc, ApiError)
+            else 0
+        )
+        reconnect = remote_factory if api_status == 0 else None
         # Offer offline options.
-        window = _show_server_down(str(exc), email=email, store=store)
+        window = _show_server_down(
+            str(exc),
+            email=email,
+            store=store,
+            remote_factory=reconnect,
+            auto_sync_interval_seconds=config.auto_sync_interval_seconds,
+            auto_sync_max_backoff_seconds=config.auto_sync_max_backoff_seconds,
+        )
         if window is None:
             sys.exit(0)
         return window

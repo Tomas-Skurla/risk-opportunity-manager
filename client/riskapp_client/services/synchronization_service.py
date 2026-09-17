@@ -18,12 +18,17 @@ class _SyncCancelled(RuntimeError):
 
 class SyncService:
     def __init__(
-        self, store: LocalStore, outbox: OutboxStore, remote: Any | None
+        self,
+        store: LocalStore,
+        outbox: OutboxStore,
+        remote: Any | None,
+        *,
+        release_authentication_blocks: bool = True,
     ) -> None:
         self._store = store
         self._outbox = outbox
         self._remote = remote
-        if remote is not None:
+        if remote is not None and release_authentication_blocks:
             # A newly constructed online backend represents a fresh authenticated
             # session, so changes blocked by the previous session may try again.
             self._outbox.release_authentication_blocks()
@@ -412,6 +417,10 @@ class SyncService:
         sent_ids = [
             str(c.get("change_id") or "") for c in changes if c.get("change_id")
         ]
+        # Commit the send boundary before network I/O. A create deleted or
+        # edited while the request is in flight must assume version one may now
+        # exist on the server, even if the response never reaches this process.
+        self._outbox.mark_outbox_ids_attempted(sent_ids)
         try:
             resp = self._push_once(project_id, changes)
         # Remote adapters expose different transport exception classes; the
@@ -443,6 +452,8 @@ class SyncService:
             if isinstance(raw_results, list)
             else []
         )
+        canonical_accepts: list[dict[str, Any]]
+        canonical_ids: set[str]
         if canonical_results:
             conflicts = [
                 item for item in canonical_results if item["status"] == "conflict"
@@ -456,6 +467,23 @@ class SyncService:
                 str(item["change_id"])
                 for item in canonical_results
                 if item["status"] == "accepted"
+            }
+            accepted_results = [
+                item
+                for item in canonical_results
+                if item["status"] == "accepted"
+            ]
+            canonical_accepts = [
+                item
+                for item in accepted_results
+                if isinstance(item.get("server_record"), dict)
+                or (
+                    isinstance(item.get("server_version"), int)
+                    and not isinstance(item.get("server_version"), bool)
+                )
+            ]
+            canonical_ids = {
+                str(item["change_id"]) for item in canonical_accepts
             }
         else:
             # Compatibility with servers predating per-change receipt results.
@@ -471,9 +499,16 @@ class SyncService:
             conflict_ids = set(self._extract_change_ids(conflicts))
             error_ids = set(self._extract_change_ids(errors))
             processed = (set(sent_ids) - conflict_ids - error_ids) | set(dup_ids)
+            canonical_accepts = []
+            canonical_ids = set()
 
-        if processed:
-            self._outbox.delete_outbox_ids(list(processed))
+        if canonical_accepts:
+            self._outbox.acknowledge_accepted_results(
+                project_id, canonical_accepts
+            )
+        legacy_processed = processed - canonical_ids
+        if legacy_processed:
+            self._outbox.delete_outbox_ids(list(legacy_processed))
 
         for c in conflicts:
             cid = str(c.get("change_id") or "")
@@ -627,42 +662,46 @@ class SyncService:
 
         server_time = str(pull.get("server_time") or utc_iso())
         server_sequence = self._validated_server_sequence(pull)
-        # Apply parent items before child records. This lets assessment pulls
-        # that only contain item_id be classified as risk vs opportunity.
-        for key in ("risks", "opportunities", "actions", "assessments"):
-            try:
-                self._check_cancel(should_cancel)
-            except _SyncCancelled:
-                return cancelled()
-            items = pull.get(key) or []
-            self._notify_progress(
-                progress,
-                f"Applying {len(items)} {key}",
-            )
-            getattr(self._store, f"apply_pull_{key}")(effective_project_id, items)
-            summary[f"pulled_{key}"] = len(items)
-
         try:
-            self._check_cancel(should_cancel)
+            # The pending check, every pulled row, and the watermark share one
+            # BEGIN IMMEDIATE transaction. A UI edit either commits before this
+            # block and is preserved, or waits and bases itself on the new row.
+            with self._store.write_transaction():
+                # Apply parents before children so an assessment containing only
+                # item_id can still be classified as risk vs opportunity.
+                for key in ("risks", "opportunities", "actions", "assessments"):
+                    self._check_cancel(should_cancel)
+                    items = pull.get(key) or []
+                    self._notify_progress(
+                        progress,
+                        f"Applying {len(items)} {key}",
+                    )
+                    getattr(self._store, f"apply_pull_{key}")(
+                        effective_project_id, items
+                    )
+                    summary[f"pulled_{key}"] = len(items)
+
+                self._check_cancel(should_cancel)
+                helpdesk_items = pull.get("helpdesk_tickets") or []
+                if helpdesk_items:
+                    self._notify_progress(
+                        progress,
+                        f"Applying {len(helpdesk_items)} help-desk ticket(s)",
+                    )
+                    self._store.apply_pull_helpdesk_tickets(
+                        effective_project_id, helpdesk_items
+                    )
+                summary["pulled_helpdesk_tickets"] = len(helpdesk_items)
+
+                self._check_cancel(should_cancel)
+                self._notify_progress(progress, "Finalizing synchronization")
+                self._store.set_sync_watermark(
+                    effective_project_id,
+                    server_time,
+                    server_sequence,
+                )
         except _SyncCancelled:
             return cancelled()
-        helpdesk_items = pull.get("helpdesk_tickets") or []
-        if helpdesk_items:
-            self._notify_progress(
-                progress,
-                f"Applying {len(helpdesk_items)} help-desk ticket(s)",
-            )
-            self._store.apply_pull_helpdesk_tickets(
-                effective_project_id, helpdesk_items
-            )
-        summary["pulled_helpdesk_tickets"] = len(helpdesk_items)
-
-        self._notify_progress(progress, "Finalizing synchronization")
-        self._store.set_sync_watermark(
-            effective_project_id,
-            server_time,
-            server_sequence,
-        )
         return self._finish_summary(summary, effective_project_id)
 
     def _promote_local_project(self, local_project_id: str) -> str | None:

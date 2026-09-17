@@ -5,7 +5,7 @@ RiskApp is an offline-first risk and opportunity manager: a FastAPI/SQLAlchemy A
 ## What this repository demonstrates
 
 - layered desktop architecture with domain services behind UI-independent adapters;
-- offline operation with persistent queued writes and bidirectional synchronization using server receipt deduplication plus a transactional monotonic change sequence;
+- offline operation with reliable automatic background synchronization, persistent queued writes, server receipt deduplication, and a transactional monotonic change sequence;
 - a Qt Designer-backed Conflict Center that preserves unresolved writes and lets users explicitly keep the local copy, use the saved server copy, or decide later;
 - authorization enforced consistently across REST and sync paths;
 - Argon2id password hashing with automatic migration of legacy PBKDF2 hashes after a successful login;
@@ -28,7 +28,7 @@ python -m pip install -r requirements-test.txt
 bash scripts/check_project.sh
 ```
 
-The check script validates a fresh Alembic migration, runs tests with a 90% combined coverage gate plus independent 92% line and 80% branch ratchets, an incremental mypy allowlist, Ruff, byte-compilation, and `pip check`. CI runs the same command on every push and pull request. Black remains available through `bash scripts/format.sh`; formatting-only normalization is intentionally separate.
+The check script validates a fresh Alembic migration, runs tests with a 90% combined coverage gate plus independent 92% line and 80% branch ratchets, package-wide mypy checks, Ruff, byte-compilation, and `pip check`. CI runs the same command on every push and pull request. Black remains available through `bash scripts/format.sh`; formatting-only normalization is intentionally separate.
 
 ## Run the application
 

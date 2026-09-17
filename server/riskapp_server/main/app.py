@@ -91,7 +91,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
                     .scalars()
                     .first()
                 )
-                if not u:
+                if u is None:
                     u = db_session.User(
                         email=email,
                         password_hash=hash_pw(INITIAL_SUPERUSER_PASSWORD),
@@ -99,11 +99,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
                         is_superuser=True,
                     )
                     db.add(u)
-                else:
-                    u.is_superuser = True
-                    if not u.is_active:
-                        u.is_active = True
-                db.commit()
+                    db.commit()
 
         yield
     except Exception:

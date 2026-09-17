@@ -53,9 +53,12 @@ class OfflineFirstBackend(Backend):
         remote: Any | None = None,
         *,
         anonymous_offline: bool = False,
+        remote_factory: Callable[[], Any] | None = None,
+        release_authentication_blocks: bool = True,
     ) -> None:
         self.store = store
         self.remote = remote
+        self._remote_factory = remote_factory
         self.anonymous_offline = anonymous_offline
         self.outbox = OutboxStore(store)
         self._risks = self._make_scored_service(
@@ -88,19 +91,51 @@ class OfflineFirstBackend(Backend):
         self._assessments = AssessmentService(store, self.outbox)
         self._helpdesk = HelpDeskService(store, self.outbox)
         self._members = MembersService(remote)
-        self._sync = SyncService(store, self.outbox, remote)
+        self._sync = SyncService(
+            store,
+            self.outbox,
+            remote,
+            release_authentication_blocks=release_authentication_blocks,
+        )
 
     def create_background_backend(self) -> OfflineFirstBackend:
         """Build a worker-owned facade with its own SQLite connection."""
         remote = self.remote
+        release_authentication_blocks = False
         fork_remote = _optional_callable(remote, "fork_authenticated")
         if fork_remote is not None:
             remote = fork_remote()
+        elif remote is None and self._remote_factory is not None:
+            # Connection recovery belongs in the worker thread. The factory is
+            # retained only while an offline authenticated session is waiting
+            # for its first successful reconnect.
+            remote = self._remote_factory()
+            release_authentication_blocks = True
         return OfflineFirstBackend(
             LocalStore(self.store.db_path),
             remote=remote,
             anonymous_offline=self.anonymous_offline,
+            remote_factory=self._remote_factory,
+            release_authentication_blocks=release_authentication_blocks,
         )
+
+    def can_auto_sync(self) -> bool:
+        """Return whether a worker can use or recover an authenticated session."""
+        return self.remote is not None or self._remote_factory is not None
+
+    def export_authenticated_remote(self) -> Any | None:
+        """Return a thread-local authenticated client for the GUI facade."""
+        fork_remote = _optional_callable(self.remote, "fork_authenticated")
+        return fork_remote() if fork_remote is not None else self.remote
+
+    def adopt_authenticated_remote(self, remote: Any) -> None:
+        """Promote a successfully recovered worker session to the GUI facade."""
+        if remote is None:
+            raise ValueError("authenticated remote is required")
+        self.remote = remote
+        self._remote_factory = None
+        self._members = MembersService(remote)
+        self._sync = SyncService(self.store, self.outbox, remote)
 
     def _remote_for_project(self, project_id: str | None = None) -> Any | None:
         remote = self.remote
@@ -112,6 +147,23 @@ class OfflineFirstBackend(Backend):
 
     def _use_remote(self, project_id: str | None = None) -> bool:
         return self._remote_for_project(project_id) is not None
+
+    def list_sync_projects(self) -> list[Project]:
+        """Refresh the authoritative project list without offline fallback."""
+        if self.remote is None:
+            raise RuntimeError("No authenticated server session is available.")
+        remote_projects = list(self.remote.list_projects() or [])
+        self.store.sync_projects(remote_projects)
+        local_projects = [
+            project
+            for project in self.store.list_projects()
+            if str(project.id).startswith("local-") and project.created_by
+        ]
+        by_id = {
+            str(project.id): project
+            for project in [*remote_projects, *local_projects]
+        }
+        return list(by_id.values())
 
     def _discard_scored_changes(
         self,
@@ -161,6 +213,13 @@ class OfflineFirstBackend(Backend):
                 soft_delete_local_fn=soft_delete_local_fn,
                 write_transaction_fn=self.store.write_transaction,
                 next_code_fn=next_code_fn,
+                remote_create_may_exist_fn=(
+                    lambda project_id, entity_id: self.outbox.remote_create_may_exist(
+                        project_id,
+                        entity=kind,
+                        entity_id=entity_id,
+                    )
+                ),
             )
         )
 

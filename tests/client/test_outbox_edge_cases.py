@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 import pytest
 from riskapp_client.adapters.local_storage.sqlite_data_store import LocalStore
 from riskapp_client.adapters.local_storage.sync_outbox_queue import OutboxStore
+from riskapp_client.services.offline_first_facade import OfflineFirstBackend
 
 # Recovery boundaries deliberately call the outbox's internal JSON fallback.
 # pylint: disable=protected-access
@@ -118,6 +119,115 @@ def test_all_delete_queue_entry_points_preserve_local_versions(tmp_path) -> None
         assert by_entity["opportunity"]["op"] == "delete"
         assert by_entity["opportunity"]["base_version"] == 5
         assert by_entity["helpdesk_ticket"]["base_version"] == 7
+
+
+def test_attempted_create_is_deleted_remotely_instead_of_discarded(tmp_path) -> None:
+    with LocalStore(str(tmp_path / "attempted-create.db")) as store:
+        project = store.create_local_project(name="Offline", project_id="project-1")
+        backend = OfflineFirstBackend(store)
+        risk = backend.create_risk(
+            project.id,
+            title="Possibly remote",
+            probability=2,
+            impact=3,
+        )
+        create = backend.outbox.get_pending_changes(project.id)[0]
+        backend.outbox.mark_outbox_ids_attempted([create["change_id"]])
+
+        backend.delete_risk(project.id, risk.id)
+
+        pending = backend.outbox.get_pending_changes(project.id)
+        assert len(pending) == 1
+        assert pending[0]["op"] == "delete"
+        assert pending[0]["base_version"] == 1
+        row = store.get_risk_row(risk.id)
+        assert row is not None and row["is_deleted"] == 1
+
+
+def test_accepted_in_flight_write_advances_its_local_replacement(tmp_path) -> None:
+    with LocalStore(str(tmp_path / "in-flight-edit.db")) as store:
+        project = store.create_local_project(name="Offline", project_id="project-1")
+        store.upsert_local_risk(
+            risk_id="risk-1",
+            project_id=project.id,
+            title="Sent title",
+            probability=2,
+            impact=3,
+            code="R-001",
+            version=0,
+        )
+        outbox = OutboxStore(store)
+        outbox.queue_risk_upsert(
+            project.id,
+            {
+                "id": "risk-1",
+                "title": "Sent title",
+                "probability": 2,
+                "impact": 3,
+                "code": "R-001",
+            },
+        )
+        sent = outbox.get_pending_changes(project.id)[0]
+        outbox.mark_outbox_ids_attempted([sent["change_id"]])
+
+        store.upsert_local_risk(
+            risk_id="risk-1",
+            project_id=project.id,
+            title="Newer local title",
+            probability=5,
+            impact=4,
+            code="R-001",
+            version=0,
+        )
+        outbox.queue_risk_upsert(
+            project.id,
+            {
+                "id": "risk-1",
+                "title": "Newer local title",
+                "probability": 5,
+                "impact": 4,
+                "code": "R-001",
+            },
+        )
+        replacement = outbox.get_pending_changes(project.id)[0]
+        assert replacement["change_id"] != sent["change_id"]
+        assert replacement["base_version"] == 1
+
+        acknowledged = outbox.acknowledge_accepted_results(
+            project.id,
+            [
+                {
+                    "change_id": sent["change_id"],
+                    "status": "accepted",
+                    "entity": "risk",
+                    "entity_id": "risk-1",
+                    "server_version": 1,
+                    "server_record": {
+                        "id": "risk-1",
+                        "project_id": project.id,
+                        "title": "Sent title",
+                        "probability": 2,
+                        "impact": 3,
+                        "code": "R-002",
+                        "version": 1,
+                    },
+                }
+            ],
+        )
+
+        assert acknowledged == 1
+        pending = outbox.get_pending_changes(project.id)
+        assert len(pending) == 1
+        assert pending[0]["change_id"] == replacement["change_id"]
+        assert pending[0]["base_version"] == 1
+        assert pending[0]["record"]["title"] == "Newer local title"
+        assert pending[0]["record"]["code"] == "R-002"
+        row = store.get_risk_row("risk-1")
+        assert row is not None
+        assert row["title"] == "Newer local title"
+        assert row["version"] == 1
+        assert row["code"] == "R-002"
+        assert row["dirty"] == 1
 
 
 def test_transient_retry_backoff_is_persistent_and_filters_until_due(tmp_path) -> None:
@@ -255,4 +365,8 @@ def test_pull_does_not_overwrite_an_unresolved_local_change(
         assert row is not None
         assert row["title"] == "Unsynced local title"
         assert row["probability"] == 5
-        assert row["version"] == 7
+        assert row["version"] == 2
+        if outbox_state == "blocked":
+            conflict = outbox.get_blocked_changes(project.id)[0]
+            assert conflict["server_version"] == 7
+            assert conflict["server_record"]["title"] == "Server title"

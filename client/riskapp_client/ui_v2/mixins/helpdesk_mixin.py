@@ -25,6 +25,7 @@ class HelpDeskMixin:
     _current_ticket_id: str | None
     _mk_item: Callable[..., QTableWidgetItem]
     _select_row_by_entity_id: Callable[..., None]
+    _update_sync_status: Callable[[], None]
 
     # ---- public entry points (called from layout wiring) -------------------
 
@@ -142,6 +143,7 @@ class HelpDeskMixin:
             return
 
         self._refresh_helpdesk()
+        self._update_sync_status()
 
     def _delete_helpdesk_ticket(self) -> None:
         """Delete the currently selected ticket via the backend."""
@@ -168,6 +170,7 @@ class HelpDeskMixin:
         self._current_ticket_id = None
         self._start_new_helpdesk_ticket()
         self._refresh_helpdesk()
+        self._update_sync_status()
 
     # ---- private helpers ---------------------------------------------------
 

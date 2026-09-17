@@ -250,7 +250,7 @@ The login dialog has four options:
 
 If the server is unreachable after clicking **OK**, a **Server Unavailable** dialog appears with:
 
-- **Work Offline as <user@example.com> (will sync later)** — offline mode associated with that identity. Data can sync after the server is available and you click **Sync Now**.
+- **Work Offline as <user@example.com> (will sync later)** — offline mode associated with that identity. The client retries in the background after the server becomes available; **Sync Now** remains available for an immediate attempt.
 - **Work Fully Local (no account, no sync)** — anonymous local mode; data never syncs.
 - **Quit** — exit.
 
@@ -319,7 +319,7 @@ This permanently deletes the project and its server-side data.
 - Intended for a known identity when the server is unavailable.
 - Data is stored locally with that identity.
 - Projects show `(offline, will sync)`.
-- After the server is available, log in online and click **Sync Now**.
+- The client reconnects and syncs automatically after the server becomes available. **Sync Now** forces an immediate attempt.
 - If a project name already exists on the server, a numeric suffix is added, for example `Test Project (2)`.
 
 ### Online with offline fallback
@@ -327,7 +327,7 @@ This permanently deletes the project and its server-side data.
 - Normal online login.
 - Changes are written locally and queued in the outbox.
 - If the server goes down mid-session, local work can continue.
-- Use **Sync Now** after reconnecting.
+- Background sync recovers automatically with bounded backoff; **Sync Now** remains available.
 
 ---
 
@@ -341,7 +341,7 @@ This permanently deletes the project and its server-side data.
 | **member** | per project | Create/edit risks, opportunities, actions, assessments, and Help Desk tickets |
 | **viewer** | per project | Read-only access |
 
-Superadmin is set at server startup through `INITIAL_SUPERUSER_EMAIL` and `INITIAL_SUPERUSER_PASSWORD`. Project roles are assigned in the **Members** tab.
+A new superadmin can be created at server startup through `INITIAL_SUPERUSER_EMAIL` and `INITIAL_SUPERUSER_PASSWORD`. Bootstrap is create-only: if that email already exists, startup never changes its password, active state, or superuser flag. Project roles are assigned in the **Members** tab.
 
 ---
 
@@ -401,12 +401,12 @@ server/riskapp.db
 | Variable | Default / example | Notes |
 | --- | --- | --- |
 | `DATABASE_URL` | `sqlite+pysqlite:///./riskapp.db` | Server database URL |
-| `ENV` | `development` | Use `production` in deployments |
+| `ENV` | `development` | One of `development`, `test`, or `production`; invalid values stop startup |
 | `SECRET_KEY` | `change-me` | Set a real secret outside local development |
 | `TOKEN_HASH_KEY` | unset | Separate HMAC key for refresh/password-reset token hashes; required in production |
 | `ALLOW_INSECURE_DEFAULT_SECRET` | unset | Use `1` only for local development |
-| `INITIAL_SUPERUSER_EMAIL` | unset | Optional startup superadmin email |
-| `INITIAL_SUPERUSER_PASSWORD` | unset | Optional startup superadmin password |
+| `INITIAL_SUPERUSER_EMAIL` | unset | Optional create-only startup superadmin email; existing accounts are never modified |
+| `INITIAL_SUPERUSER_PASSWORD` | unset | Password used only when creating the bootstrap account |
 | `ACCESS_TOKEN_MINUTES` | `15` | Access-token lifetime |
 | `REFRESH_TOKEN_DAYS` | `30` | Refresh-token lifetime |
 | `AUTO_CREATE_SCHEMA` | dev `1`, production `0` | Use explicit migrations in production |
@@ -432,3 +432,5 @@ No password-table migration is required when upgrading. New and changed password
 | `RISKAPP_LOCAL_DB` | `~/.riskapp/client.sqlite3` | Local SQLite cache |
 | `RISKAPP_EMAIL` | unset | Optional login prefill/automation |
 | `RISKAPP_PASSWORD` | unset | Optional login prefill/automation |
+| `RISKAPP_AUTO_SYNC_INTERVAL_SECONDS` | `60` | Periodic background-sync interval; `0` disables it |
+| `RISKAPP_AUTO_SYNC_MAX_BACKOFF_SECONDS` | `300` | Maximum retry delay after transient sync/reconnect failures |

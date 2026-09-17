@@ -31,6 +31,7 @@ class ScoredEntityMixin:
     _can_mark_deleted: Callable[[], bool]
     _select_row_by_entity_id: Callable[..., None]
     _update_scored_filter_report: Callable[..., None]
+    _update_sync_status: Callable[[], None]
 
     def _export_entity_csv(
         self,
@@ -201,6 +202,7 @@ class ScoredEntityMixin:
             return False
         if refresh_fn:
             refresh_fn(select_id=select_id or current_id)
+        self._update_sync_status()
         return True
 
     def _delete_entity(
@@ -229,6 +231,7 @@ class ScoredEntityMixin:
             self._call_backend("Backend error", delete_backend_fn, pid, current_id)
             start_new_fn()
             refresh_fn()
+            self._update_sync_status()
 
     def _save_entity(
         self,
@@ -342,4 +345,5 @@ class ScoredEntityMixin:
             refresh_fn(select_id=current_id)
         for ref in extra_refreshes:
             ref()
+        self._update_sync_status()
         return current_id

@@ -144,6 +144,42 @@ def test_later_leaves_conflict_and_local_copy_untouched(tmp_path) -> None:
         store.close()
 
 
+def test_pull_refreshes_conflict_server_copy_without_rebasing_local_row(
+    tmp_path,
+) -> None:
+    store, outbox, _service, change_id = _risk_conflict(
+        tmp_path, local_version=3, server_version=5
+    )
+    try:
+        store.apply_pull_risks(
+            "project-1",
+            [
+                {
+                    "id": "risk-1",
+                    "project_id": "project-1",
+                    "type": "risk",
+                    "title": "Newest server title",
+                    "probability": 1,
+                    "impact": 2,
+                    "status": "active",
+                    "version": 6,
+                    "is_deleted": False,
+                    "updated_at": "2026-09-04T14:00:00",
+                }
+            ],
+        )
+
+        local = _risk_row(store)
+        conflict = outbox.get_blocked_change(change_id)
+        assert conflict is not None
+        assert local["title"] == "Local title"
+        assert local["version"] == 3
+        assert conflict["server_version"] == 6
+        assert conflict["server_record"]["title"] == "Newest server title"
+    finally:
+        store.close()
+
+
 def test_field_merge_requeues_only_chosen_local_values_at_server_version(
     tmp_path,
 ) -> None:

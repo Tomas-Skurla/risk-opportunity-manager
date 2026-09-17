@@ -8,8 +8,10 @@ from riskapp_client.adapters.local_storage.sync_outbox_queue import OutboxStore
 from riskapp_client.services.helpdesk_service import HelpDeskService
 
 
-def test_outbox_squashes_multiple_changes_for_same_entity_id(tmp_path) -> None:
-    """Squash successive risk upserts into one pending change."""
+def test_outbox_squashes_changes_without_rebasing_an_unacknowledged_write(
+    tmp_path,
+) -> None:
+    """A later local edit must retain the first write's server base version."""
 
     db_file = tmp_path / "client_outbox.db"
     store = LocalStore(str(db_file))
@@ -33,7 +35,9 @@ def test_outbox_squashes_multiple_changes_for_same_entity_id(tmp_path) -> None:
             "p1", {"id": "r1", "title": "R1", "probability": 3, "impact": 4}
         )
         assert outbox.pending_count("p1") == 1
-        # Mark risk as already synced (version 2), then queue again.
+        # Simulate a newer server version becoming visible locally before the
+        # queued write has been acknowledged. The queued write must not silently
+        # adopt that version or it could overwrite the intervening server edit.
         store.conn.execute("UPDATE risks SET version=2 WHERE id='r1';")
         store.conn.commit()
         outbox.queue_risk_upsert(
@@ -45,7 +49,7 @@ def test_outbox_squashes_multiple_changes_for_same_entity_id(tmp_path) -> None:
         assert len(changes) == 1
         assert changes[0]["entity"] == "risk"
         assert changes[0]["op"] == "upsert"
-        assert changes[0]["base_version"] == 2
+        assert changes[0]["base_version"] is None
         assert changes[0]["record"]["title"] == "R2"
     finally:
         store.close()

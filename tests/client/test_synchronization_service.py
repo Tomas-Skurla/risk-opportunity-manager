@@ -23,6 +23,20 @@ def _service(*, remote=None):
     return SyncService(store, outbox, remote), store, outbox
 
 
+def test_worker_forks_do_not_release_authentication_blocks_again() -> None:
+    store = Mock()
+    outbox = Mock()
+
+    SyncService(
+        store,
+        outbox,
+        Mock(),
+        release_authentication_blocks=False,
+    )
+
+    outbox.release_authentication_blocks.assert_not_called()
+
+
 def test_sync_service_delegates_counts_and_requires_a_remote() -> None:
     service, _store, outbox = _service()
     outbox.pending_count.return_value = 3

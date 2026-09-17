@@ -362,6 +362,20 @@ def _window(qtbot):
     return window, backend
 
 
+def test_window_stops_automatic_scheduler_before_shutdown(qtbot) -> None:
+    window = MainWindow(
+        GuiBackend(),
+        auto_sync_interval_seconds=60,
+        auto_sync_initial_delay_seconds=60,
+    )
+    qtbot.addWidget(window)
+    window.top_tab.auto_snap_timer.stop()
+
+    assert window._automatic_sync_scheduler.is_running
+    window.close()
+    assert not window._automatic_sync_scheduler.is_running
+
+
 def test_real_window_risk_and_opportunity_crud(monkeypatch, qtbot) -> None:
     window, backend = _window(qtbot)
     monkeypatch.setattr(

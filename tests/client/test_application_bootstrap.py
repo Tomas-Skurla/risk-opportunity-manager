@@ -119,6 +119,7 @@ def test_server_down_flow_selects_account_or_anonymous_offline_mode(
     monkeypatch, result, choice, email, anonymous, expected
 ) -> None:
     store = FakeStore()
+    reconnect = Mock()
 
     class Dialog:
         FULLY_LOCAL = ServerDownDialog.FULLY_LOCAL
@@ -132,18 +133,35 @@ def test_server_down_flow_selects_account_or_anonymous_offline_mode(
 
     backends: list[SimpleNamespace] = []
 
-    def make_backend(_store, *, remote, anonymous_offline):
-        backend = SimpleNamespace(remote=remote, anonymous_offline=anonymous_offline)
+    def make_backend(
+        _store,
+        *,
+        remote,
+        anonymous_offline,
+        remote_factory=None,
+    ):
+        backend = SimpleNamespace(
+            remote=remote,
+            anonymous_offline=anonymous_offline,
+            remote_factory=remote_factory,
+        )
         backends.append(backend)
         return backend
 
     monkeypatch.setattr(bootstrap, "ServerDownDialog", Dialog)
     monkeypatch.setattr(bootstrap, "OfflineFirstBackend", make_backend)
-    monkeypatch.setattr(bootstrap, "MainWindow", lambda _backend: "window")
+    monkeypatch.setattr(
+        bootstrap,
+        "MainWindow",
+        lambda _backend, **_kwargs: "window",
+    )
 
     assert (
         bootstrap._show_server_down(
-            "offline", email=email, store=cast(LocalStore, store)
+            "offline",
+            email=email,
+            store=cast(LocalStore, store),
+            remote_factory=reconnect,
         )
         == expected
     )
@@ -156,6 +174,9 @@ def test_server_down_flow_selects_account_or_anonymous_offline_mode(
         and result == QDialog.DialogCode.Accepted
     ):
         assert store.meta["last_email"] == email
+        assert backends[0].remote_factory is reconnect
+    elif expected is not None:
+        assert backends[0].remote_factory is None
 
 
 def _config(tmp_path, *, email="user@example.test", password="secret"):
@@ -178,7 +199,11 @@ def test_build_main_window_composes_online_backend_and_caches_email(
     api_backend = Mock(return_value=remote)
     monkeypatch.setattr(bootstrap, "ApiBackend", api_backend)
     monkeypatch.setattr(bootstrap, "OfflineFirstBackend", Mock(return_value=offline))
-    monkeypatch.setattr(bootstrap, "MainWindow", lambda backend: ("window", backend))
+    monkeypatch.setattr(
+        bootstrap,
+        "MainWindow",
+        lambda backend, **_kwargs: ("window", backend),
+    )
 
     result = bootstrap.build_main_window(_config(tmp_path))
 
@@ -196,11 +221,12 @@ def test_build_main_window_supports_local_login_and_connection_fallback(
     monkeypatch.setattr(
         bootstrap,
         "OfflineFirstBackend",
-        lambda _store, *, remote, anonymous_offline=True: SimpleNamespace(
-            remote=remote, anonymous_offline=anonymous_offline
+        lambda _store, *, remote, anonymous_offline=True, **_kwargs: SimpleNamespace(
+            remote=remote,
+            anonymous_offline=anonymous_offline,
         ),
     )
-    monkeypatch.setattr(bootstrap, "MainWindow", lambda backend: backend)
+    monkeypatch.setattr(bootstrap, "MainWindow", lambda backend, **_kwargs: backend)
 
     class LocalDialog:
         wants_register = False
@@ -233,11 +259,32 @@ def test_build_main_window_supports_local_login_and_connection_fallback(
     monkeypatch.setattr(
         bootstrap, "ApiBackend", Mock(side_effect=RuntimeError("server unavailable"))
     )
-    monkeypatch.setattr(bootstrap, "_show_server_down", Mock(return_value="fallback"))
+    server_down = Mock(return_value="fallback")
+    monkeypatch.setattr(bootstrap, "_show_server_down", server_down)
     assert (
         bootstrap.build_main_window(_config(tmp_path, email="", password=""))
         == "fallback"
     )
+    reconnect = server_down.call_args.kwargs["remote_factory"]
+    assert callable(reconnect)
+
+
+def test_authentication_failure_does_not_start_automatic_login_loop(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    store = FakeStore()
+    server_down = Mock(return_value="offline-window")
+    monkeypatch.setattr(bootstrap, "LocalStore", lambda _path: store)
+    monkeypatch.setattr(
+        bootstrap,
+        "ApiBackend",
+        Mock(side_effect=ApiError(401, "invalid credentials")),
+    )
+    monkeypatch.setattr(bootstrap, "_show_server_down", server_down)
+
+    assert bootstrap.build_main_window(_config(tmp_path)) == "offline-window"
+    assert server_down.call_args.kwargs["remote_factory"] is None
 
 
 def test_build_main_window_exits_when_registration_or_fallback_is_cancelled(

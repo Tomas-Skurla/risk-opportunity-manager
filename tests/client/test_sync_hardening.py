@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from unittest.mock import Mock
 
 import pytest
@@ -24,6 +25,8 @@ def _empty_pull() -> dict[str, object]:
 
 def test_conflicts_are_blocked_without_automatic_retry() -> None:
     store, outbox, remote = Mock(), Mock(), Mock()
+    store.write_transaction.side_effect = nullcontext
+    store.get_last_server_sequence.return_value = 0
     service = SyncService(store, outbox, remote)
     remote.sync_push.return_value = {
         "conflicts": [{"change_id": "old", "server_version": 4}],

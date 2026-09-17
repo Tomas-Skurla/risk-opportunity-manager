@@ -79,13 +79,20 @@ async def test_lifespan_awaits_initialization_and_creates_superuser(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("initially_active", [False, True])
-async def test_lifespan_promotes_existing_superuser(
-    monkeypatch, initially_active: bool
+@pytest.mark.parametrize("initially_superuser", [False, True])
+async def test_lifespan_leaves_existing_bootstrap_account_unchanged(
+    monkeypatch,
+    initially_active: bool,
+    initially_superuser: bool,
 ) -> None:
     import riskapp_server.db.session as session
     import riskapp_server.main.app as main_app
 
-    existing = SimpleNamespace(is_superuser=False, is_active=initially_active)
+    existing = SimpleNamespace(
+        is_superuser=initially_superuser,
+        is_active=initially_active,
+        password_hash="existing-password-hash",
+    )
     fake_db = _FakeSession(existing)
     monkeypatch.setattr(main_app, "init_db", lambda: None)
     monkeypatch.setattr(main_app, "INITIAL_SUPERUSER_EMAIL", "root@example.test")
@@ -96,9 +103,11 @@ async def test_lifespan_promotes_existing_superuser(
     async with main_app.lifespan(FastAPI()):
         pass
 
-    assert existing.is_superuser is True
-    assert existing.is_active is True
-    assert fake_db.commits == 1
+    assert existing.is_superuser is initially_superuser
+    assert existing.is_active is initially_active
+    assert existing.password_hash == "existing-password-hash"
+    assert not fake_db.added
+    assert fake_db.commits == 0
 
 
 @pytest.mark.asyncio

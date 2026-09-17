@@ -103,7 +103,11 @@ RISKAPP_LOG_FORMAT: str = _env_choice(
     "RISKAPP_LOG_FORMAT", "plain", {"plain", "json"}
 )
 
-ENV: str = os.getenv("ENV", "development").strip().lower()
+ENV: str = _env_choice(
+    "ENV",
+    "development",
+    {"development", "production", "test"},
+)
 
 SECRET_KEY: str = os.getenv("SECRET_KEY", "change-me").strip()
 # Refresh/password-reset tokens are HMACed with this independent key. An empty

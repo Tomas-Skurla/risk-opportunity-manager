@@ -47,14 +47,22 @@ class MainWindow(  # pyright: ignore[reportIncompatibleVariableOverride]
         backend: Backend,
         *,
         state: MainWindowState | None = None,
+        auto_sync_interval_seconds: int = 0,
+        auto_sync_max_backoff_seconds: int = 300,
+        auto_sync_initial_delay_seconds: int = 5,
     ) -> None:
         super().__init__()
         self.backend = backend
         self.state = state if state is not None else MainWindowState()
         self._init_state()
         self._build_ui()
-        self._init_background_jobs()
+        self._init_background_jobs(
+            auto_sync_interval_seconds=auto_sync_interval_seconds,
+            auto_sync_max_backoff_seconds=auto_sync_max_backoff_seconds,
+            auto_sync_initial_delay_seconds=auto_sync_initial_delay_seconds,
+        )
         self._load_projects()
+        self._start_automatic_sync_scheduler()
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt API
         """Never destroy the window while its worker thread is still active."""

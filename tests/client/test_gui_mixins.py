@@ -33,10 +33,17 @@ class ProjectSyncHost(ProjectsSyncMixin):
         self.sync_btn = QPushButton()
         self.sync_status = QLabel()
         self.project_list = QListWidget()
+        self._editor_dirty = False
+        self._opp_editor_dirty = False
+        self._offline_mode = False
+        self._role_assumed = False
         self._cached_members: list[Member] = []
         self._load_projects_calls: list[str | None] = []
         self._refresh_calls: list[str | None] = []
         self._refresh_remote_flags: list[bool] = []
+        self._automatic_results: list[object] = []
+        self._automatic_failures = 0
+        self._automatic_requests = 0
         self.background_job: dict[str, object] | None = None
 
     def _call_backend(self, _title, fn, *args):
@@ -76,6 +83,18 @@ class ProjectSyncHost(ProjectsSyncMixin):
             "on_cancelled": on_cancelled,
         }
         return True
+
+    def _schedule_automatic_sync(self) -> None:
+        self._automatic_requests += 1
+
+    def _record_automatic_sync_success(self, result: object) -> None:
+        self._automatic_results.append(result)
+
+    def _record_automatic_sync_failure(self) -> None:
+        self._automatic_failures += 1
+
+    def _observe_manual_sync_result(self, result: object) -> None:
+        self._automatic_results.append(result)
 
 
 class ProjectListHost(ProjectsSyncMixin):
@@ -172,6 +191,9 @@ def test_project_sync_status_and_blocked_details(qtbot) -> None:
         def can_sync(self):
             return True
 
+        def can_auto_sync(self):
+            return True
+
     host = ProjectSyncHost(Backend())
     host.conflicts_btn = QPushButton()
     qtbot.addWidget(host.sync_btn)
@@ -182,6 +204,7 @@ def test_project_sync_status_and_blocked_details(qtbot) -> None:
 
     assert host.sync_btn.isEnabled()
     assert host.conflicts_btn.isEnabled()
+    assert host._automatic_requests == 1
     assert host.conflicts_btn.text() == "Conflicts (2)"
     assert host.sync_status.text() == (
         "ONLINE · queued: 4 · retrying: 3 · conflicts: 2 · errors: 1 "
@@ -447,6 +470,101 @@ def test_sync_now_handles_missing_project_unsupported_and_failed_backend(
         "OFFLINE · queued: 1 · retrying: 0 · conflicts: 0 · errors: 0 "
         "· last sync: never"
     )
+
+
+def test_automatic_sync_is_silent_debounced_and_respects_dirty_editors(
+    qtbot,
+) -> None:
+    class Backend:
+        @staticmethod
+        def can_auto_sync():
+            return True
+
+        @staticmethod
+        def can_sync():
+            return True
+
+    host = ProjectSyncHost(Backend())
+    qtbot.addWidget(host.sync_btn)
+    qtbot.addWidget(host.sync_status)
+
+    assert host._automatic_sync_requested()
+    assert host.background_job is not None
+    assert host.background_job["kind"] == "automatic_sync"
+    assert host.background_job["payload"] == {"export_remote": False}
+
+    callback = host.background_job["on_success"]
+    assert callable(callback)
+    callback(
+        {
+            "state": "complete",
+            "projects": [{"project_id": "project-1", "state": "complete"}],
+        }
+    )
+    recorded = host._automatic_results[-1]
+    assert isinstance(recorded, dict)
+    assert recorded["state"] == "complete"
+    assert host._refresh_remote_flags[-1] is False
+
+    host._editor_dirty = True
+    host.background_job = None
+    assert not host._automatic_sync_requested()
+    assert host.background_job is None
+
+    host._automatic_sync_failed("offline")
+    assert host._automatic_failures == 1
+
+
+def test_automatic_sync_adopts_recovered_session_and_project_migration(qtbot) -> None:
+    recovered_remote = object()
+
+    class Backend:
+        def __init__(self) -> None:
+            self.adopted: object | None = None
+
+        @staticmethod
+        def can_auto_sync():
+            return True
+
+        @staticmethod
+        def can_sync():
+            return False
+
+        def adopt_authenticated_remote(self, remote) -> None:
+            self.adopted = remote
+
+    backend = Backend()
+    host = ProjectSyncHost(backend)
+    host._offline_mode = True
+    host._role_assumed = True
+    host.project_list.addItem("Migrated")
+    item = host.project_list.item(0)
+    item.setData(Qt.ItemDataRole.UserRole, "project-2")
+    host.project_list.setCurrentRow(0)
+    qtbot.addWidget(host.project_list)
+
+    assert host._automatic_sync_requested()
+    assert host.background_job is not None
+    assert host.background_job["payload"] == {"export_remote": True}
+    callback = host.background_job["on_success"]
+    assert callable(callback)
+    callback(
+        {
+            "state": "complete",
+            "project_id_migrations": {"project-1": "project-2"},
+            "_visible_projects": [Project("project-2", "Migrated")],
+            "_authenticated_remote": recovered_remote,
+        }
+    )
+
+    assert backend.adopted is recovered_remote
+    assert host.current_project_id == "project-2"
+    assert host._load_projects_calls == ["project-2"]
+    assert host._offline_mode is False
+    assert host._role_assumed is False
+
+    host._automatic_sync_succeeded("invalid")
+    assert host._automatic_failures == 1
 
 
 def test_project_list_labels_local_state_owner_and_selection(qtbot) -> None:

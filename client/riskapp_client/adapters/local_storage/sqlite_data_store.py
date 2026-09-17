@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import re
 import sqlite3
@@ -397,6 +398,44 @@ class LocalStore:
         ).fetchall()
         return {str(r["entity_id"]) for r in rows}
 
+    def _remember_conflict_server_record(
+        self,
+        project_id: str,
+        entity: str,
+        entity_id: str,
+        server_record: dict[str, Any],
+    ) -> None:
+        """Keep the newest pulled server copy separate from the dirty local row."""
+        row = self.conn.execute(
+            """
+            SELECT change_id, result_json
+            FROM outbox
+            WHERE project_id=? AND entity=? AND entity_id=?
+              AND status='blocked' AND failure_kind='conflict'
+            LIMIT 1
+            """,
+            (project_id, entity, entity_id),
+        ).fetchone()
+        if row is None:
+            return
+        try:
+            parsed = json.loads(str(row["result_json"] or "{}"))
+        except (TypeError, ValueError):
+            parsed = {}
+        outcome = parsed if isinstance(parsed, dict) else {}
+        outcome["server_version"] = int(server_record.get("version") or 0)
+        outcome["server_record"] = dict(server_record)
+        outcome["server_updated_at"] = str(
+            server_record.get("updated_at") or ""
+        )
+        self.conn.execute(
+            "UPDATE outbox SET result_json=? WHERE change_id=?;",
+            (
+                json.dumps(outcome, default=str, separators=(",", ":")),
+                row["change_id"],
+            ),
+        )
+
     def _get_action_row(self, action_id: str) -> sqlite3.Row | None:
         return self.conn.execute(
             "SELECT * FROM actions WHERE id=?;", (action_id,)
@@ -468,9 +507,11 @@ class LocalStore:
         for raw in server_items:
             obj = mapper_fn(raw)
             if obj.id in pending_ids:
-                cur.execute(
-                    f"UPDATE {table_name} SET version=?, updated_at=? WHERE id=?;",  # noqa: S608
-                    (int(obj.version), str(obj.updated_at or ""), str(obj.id)),
+                self._remember_conflict_server_record(
+                    project_id,
+                    entity_name,
+                    str(obj.id),
+                    raw,
                 )
                 continue
             record = record_builder_fn(obj, raw)
@@ -698,9 +739,14 @@ class LocalStore:
             ver = int(ent.get("version") or 0)
             upd = str(ent.get("updated_at") or "")
             if eid in pending_ids:
-                cur.execute(
-                    f"UPDATE {table} SET version=?, updated_at=? WHERE id=?;",  # noqa: S608
-                    (ver, upd, eid),
+                # Keep the last acknowledged version while a local write is
+                # pending. The server's newer version belongs in conflict
+                # metadata until the user explicitly resolves the conflict.
+                self._remember_conflict_server_record(
+                    project_id,
+                    outbox_entity,
+                    eid,
+                    ent,
                 )
                 continue
             meta = {k: ent.get(k) for k in SCORED_ENTITY_META_KEYS}
@@ -781,6 +827,181 @@ class LocalStore:
 
     def mark_assessment_clean(self, assessment_id: str) -> None:
         self._mark_entity_clean("assessments", assessment_id)
+
+    def apply_push_acknowledgement(
+        self,
+        project_id: str,
+        *,
+        entity: str,
+        entity_id: str,
+        server_version: int | None,
+        server_record: dict[str, Any] | None,
+    ) -> None:
+        """Apply the canonical row returned for one accepted outbox change."""
+        if server_record is not None:
+            record = dict(server_record)
+            record_id = str(record.get("id") or "")
+            if record_id and record_id != entity_id:
+                raise RuntimeError("Push acknowledgement returned another entity")
+            record_project = str(record.get("project_id") or "")
+            if record_project and record_project != project_id:
+                raise RuntimeError("Push acknowledgement returned another project")
+            record["id"] = entity_id
+            record["project_id"] = project_id
+            if server_version is not None:
+                record_version = int(record.get("version") or 0)
+                if record_version != server_version:
+                    raise RuntimeError("Push acknowledgement version mismatch")
+
+            appliers = {
+                "risk": self.apply_pull_risks,
+                "opportunity": self.apply_pull_opportunities,
+                "action": self.apply_pull_actions,
+                "assessment": self.apply_pull_assessments,
+                "helpdesk_ticket": self.apply_pull_helpdesk_tickets,
+            }
+            apply_record = appliers.get(entity)
+            if apply_record is None:
+                raise ValueError(f"Unsupported sync entity: {entity!r}")
+            apply_record(project_id, [record])
+            return
+
+        if server_version is None:
+            # Compatibility with servers that predate canonical push results.
+            return
+        table_by_entity = {
+            "risk": "risks",
+            "opportunity": "opportunities",
+            "action": "actions",
+            "assessment": "assessments",
+            "helpdesk_ticket": "helpdesk_tickets",
+        }
+        table = table_by_entity.get(entity)
+        if table is None:
+            raise ValueError(f"Unsupported sync entity: {entity!r}")
+        _check_table(table)
+        self.conn.execute(
+            f"UPDATE {table} SET version=?, dirty=0 "  # noqa: S608
+            "WHERE id=? AND project_id=?;",
+            (server_version, entity_id, project_id),
+        )
+        self._commit_if_needed()
+
+    def release_scored_codes_for_acknowledgements(
+        self,
+        project_id: str,
+        results: list[dict[str, Any]],
+    ) -> None:
+        """Release local codes before applying a canonical acknowledgement batch.
+
+        Server-assigned codes can form a local swap (for example R-001/R-002
+        becoming R-002/R-003). Clearing all affected owners first prevents the
+        per-project unique index from rejecting an otherwise valid batch.
+        """
+        grouped: dict[str, tuple[set[str], set[str]]] = {
+            "risk": (set(), set()),
+            "opportunity": (set(), set()),
+        }
+        for result in results:
+            entity = str(result.get("entity") or "")
+            if entity not in grouped or result.get("status") != "accepted":
+                continue
+            record = result.get("server_record")
+            if not isinstance(record, dict):
+                continue
+            entity_id = str(result.get("entity_id") or record.get("id") or "")
+            record_id = str(record.get("id") or entity_id)
+            record_project = str(record.get("project_id") or project_id)
+            if entity_id and record_id != entity_id:
+                raise RuntimeError("Push acknowledgement returned another entity")
+            if record_project != project_id:
+                raise RuntimeError("Push acknowledgement returned another project")
+            if entity_id:
+                grouped[entity][0].add(entity_id)
+            code = str(record.get("code") or "").strip()
+            if code:
+                grouped[entity][1].add(code)
+
+        table_by_entity = {"risk": "risks", "opportunity": "opportunities"}
+        for entity, (entity_ids, codes) in grouped.items():
+            if not entity_ids and not codes:
+                continue
+            clauses: list[str] = []
+            params: list[object] = [project_id]
+            if entity_ids:
+                placeholders = ",".join(["?"] * len(entity_ids))
+                clauses.append(f"id IN ({placeholders})")
+                params.extend(sorted(entity_ids))
+            if codes:
+                placeholders = ",".join(["?"] * len(codes))
+                clauses.append(f"code IN ({placeholders})")
+                params.extend(sorted(codes))
+            table = table_by_entity[entity]
+            self.conn.execute(
+                f"UPDATE {table} SET code=NULL WHERE project_id=? "  # noqa: S608
+                f"AND ({' OR '.join(clauses)});",  # noqa: S608
+                params,
+            )
+        self._commit_if_needed()
+
+    def advance_push_acknowledgement(
+        self,
+        project_id: str,
+        *,
+        entity: str,
+        entity_id: str,
+        server_version: int | None,
+        server_record: dict[str, Any] | None,
+    ) -> None:
+        """Advance server-owned metadata without overwriting a newer local edit."""
+        table_by_entity = {
+            "risk": "risks",
+            "opportunity": "opportunities",
+            "action": "actions",
+            "assessment": "assessments",
+            "helpdesk_ticket": "helpdesk_tickets",
+        }
+        table = table_by_entity.get(entity)
+        if table is None:
+            raise ValueError(f"Unsupported sync entity: {entity!r}")
+        record = dict(server_record or {})
+        record_id = str(record.get("id") or entity_id)
+        record_project = str(record.get("project_id") or project_id)
+        if record_id != entity_id:
+            raise RuntimeError("Push acknowledgement returned another entity")
+        if record_project != project_id:
+            raise RuntimeError("Push acknowledgement returned another project")
+        raw_record_version = record.get("version")
+        record_version = (
+            int(raw_record_version)
+            if isinstance(raw_record_version, int)
+            and not isinstance(raw_record_version, bool)
+            else None
+        )
+        if (
+            server_version is not None
+            and record_version is not None
+            and server_version != record_version
+        ):
+            raise RuntimeError("Push acknowledgement version mismatch")
+        version = server_version if server_version is not None else record_version
+        assignments: list[str] = []
+        params: list[object] = []
+        if version is not None:
+            assignments.append("version=MAX(version, ?)")
+            params.append(version)
+        if entity in {"risk", "opportunity"} and "code" in record:
+            assignments.append("code=?")
+            params.append(record.get("code"))
+        if not assignments:
+            return
+        params.extend((entity_id, project_id))
+        self.conn.execute(
+            f"UPDATE {table} SET {', '.join(assignments)} "  # noqa: S608
+            "WHERE id=? AND project_id=?;",
+            params,
+        )
+        self._commit_if_needed()
 
     def list_opportunities(self, project_id: str) -> list[Opportunity]:
         return self._list_scored_entities(
@@ -1213,13 +1434,11 @@ class LocalStore:
             if not ticket_id:
                 continue
             if ticket_id in pending_ids:
-                self.conn.execute(
-                    "UPDATE helpdesk_tickets SET version = ?, updated_at = ? WHERE id = ?;",
-                    (
-                        int(item.get("version") or 0),
-                        str(item.get("updated_at") or ""),
-                        ticket_id,
-                    ),
+                self._remember_conflict_server_record(
+                    project_id,
+                    "helpdesk_ticket",
+                    ticket_id,
+                    item,
                 )
                 continue
             self.conn.execute(

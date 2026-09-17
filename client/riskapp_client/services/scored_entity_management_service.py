@@ -41,6 +41,7 @@ class ScoredEntityWiring(Generic[ModelT]):
     write_transaction_fn: Callable[[], AbstractContextManager[Any]]
 
     next_code_fn: Callable[[str], str] | None = None
+    remote_create_may_exist_fn: Callable[[str, str], bool] | None = None
 
 
 class ScoredEntityService(Generic[ModelT]):
@@ -172,7 +173,11 @@ class ScoredEntityService(Generic[ModelT]):
             # Entity was never synced to the server. Remote net effect should be
             # no-op, so remove any queued local upsert/delete instead of sending a
             # delete for an unknown remote entity.
-            if int(version) < 1:
+            remote_create_may_exist = bool(
+                self._w.remote_create_may_exist_fn
+                and self._w.remote_create_may_exist_fn(project_id, entity_id)
+            )
+            if int(version) < 1 and not remote_create_may_exist:
                 self._w.discard_pending_changes_fn(project_id, entity_id)
                 return
 

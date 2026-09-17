@@ -14,6 +14,7 @@ from fastapi import HTTPException
 from pydantic import BaseModel
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.engine import CursorResult
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.inspection import inspect as sa_inspect
 from sqlalchemy.orm import Session
 
@@ -854,13 +855,31 @@ def _reject_push_change(
     _record_push_result(ctx, change, result, persisted=store_receipt)
 
 
-def _is_privileged_soft_delete(
-    entity: str, op: str, record: dict[str, Any]
+def _is_privileged_soft_delete_transition(
+    ctx: _PushContext,
+    entity: str,
+    op: str,
+    record: dict[str, Any],
 ) -> bool:
-    if entity not in {"risk", "opportunity"} or op != "upsert":
+    if not ENTITY_REGISTRY[entity]["manager_delete"] or op != "upsert":
         return False
-    status = str(record.get("status") or "").lower().strip()
-    return status == RiskStatus.deleted.value or bool(record.get("is_deleted"))
+    if entity in {"risk", "opportunity"}:
+        status = str(record.get("status") or "").lower().strip()
+        if status == RiskStatus.deleted.value:
+            return True
+    if bool(record.get("is_deleted")):
+        return True
+    if "is_deleted" not in record:
+        return False
+
+    # A false value is harmless on an active row but is an undelete on a
+    # tombstone. Check the persisted transition instead of treating every
+    # ordinary upsert (whose payload may include false) as manager-only.
+    entity_id = _maybe_entity_id(record)
+    if entity_id is None:
+        return False
+    existing = _fetch_obj(ctx.db, entity, entity_id, ctx.project_id)
+    return bool(existing is not None and getattr(existing, "is_deleted", False))
 
 
 def _authorize_push_change(
@@ -871,7 +890,7 @@ def _authorize_push_change(
     record: dict[str, Any],
 ) -> bool:
     try:
-        if _is_privileged_soft_delete(entity, op, record):
+        if _is_privileged_soft_delete_transition(ctx, entity, op, record):
             ensure_role_at_least(ctx.role, "manager")
         ensure_role_at_least(ctx.role, _min_role_for_change(entity, op))
         return True
@@ -914,7 +933,26 @@ def _apply_push_change(
                 change.change_id,
             )
         )
-        response = {"entity_id": str(entity_id)}
+        # Flush the mutation before reading it back so the receipt carries the
+        # canonical version and any server-assigned fields (notably item code).
+        ctx.db.flush()
+        server_version, server_record = _current_server_state(
+            ctx.db,
+            entity,
+            entity_id,
+            ctx.project_id,
+            ctx.user_id,
+        )
+        response = {
+            "entity_id": str(entity_id),
+            "server_version": server_version,
+            "server_record": server_record,
+            "server_updated_at": (
+                str(server_record.get("updated_at"))
+                if server_record and server_record.get("updated_at") is not None
+                else None
+            ),
+        }
         _store_receipt(
             ctx.db,
             change.change_id,
@@ -1009,6 +1047,18 @@ def _process_new_push_change(ctx: _PushContext, change: SyncChange) -> None:
             failure_kind=failure_kind,
             retryable=retryable,
             store_receipt=not retryable,
+        )
+    except IntegrityError:
+        logging.getLogger("riskapp_server.sync").info(
+            "Rejected sync change %s because it violates a database constraint",
+            change.change_id,
+        )
+        _reject_push_change(
+            ctx,
+            change,
+            "constraint_violation",
+            "Change violates a database constraint",
+            failure_kind="validation",
         )
     # This boundary converts an unexpected per-change failure to a retryable result.
     # pylint: disable-next=broad-exception-caught
@@ -1522,6 +1572,44 @@ def _apply_delete(
     return entity_id
 
 
+def _canonical_item_code(
+    db: Session,
+    project_id: uuid.UUID,
+    entity: str,
+    requested: Any,
+) -> str | None:
+    """Keep an available offline code or allocate the next server-safe code."""
+    code = str(requested or "").strip()
+    if not code:
+        return None
+    collision = db.execute(
+        select(Item.id).where(
+            Item.project_id == project_id,
+            Item.code == code,
+        )
+    ).scalar_one_or_none()
+    if collision is None:
+        return code
+
+    prefix = "R" if entity == "risk" else "O"
+    existing_codes = db.execute(
+        select(Item.code).where(
+            Item.project_id == project_id,
+            Item.code.like(f"{prefix}-%"),
+        )
+    ).scalars()
+    used: set[int] = set()
+    for existing_code in existing_codes:
+        raw = str(existing_code or "")
+        head, separator, suffix = raw.partition("-")
+        if separator and head.upper() == prefix and suffix.isdigit():
+            used.add(int(suffix))
+    number = 1
+    while number in used:
+        number += 1
+    return f"{prefix}-{number:03d}"
+
+
 def _create_new(
     db: Session,
     user_id: uuid.UUID,
@@ -1535,6 +1623,17 @@ def _create_new(
     model_cls = ENTITY_MODELS[entity]
     config = ENTITY_REGISTRY[entity]
     defaults = dict(config.get("defaults") or {})
+
+    if entity in {"risk", "opportunity"} and "code" in val:
+        # Offline devices may independently choose R-001/O-001. The project
+        # sync-state lock serializes this allocation on PostgreSQL, while the
+        # SQLite push transaction already holds the writer reservation.
+        val["code"] = _canonical_item_code(
+            db,
+            project_id,
+            entity,
+            val.get("code"),
+        )
 
     common = {"id": entity_id, "version": 1, "updated_at": now, "created_at": now}
     if entity != "assessment":

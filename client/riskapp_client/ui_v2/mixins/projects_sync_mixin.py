@@ -50,6 +50,10 @@ class ProjectsSyncMixin:
     risks_table: QTableWidget
     sync_btn: QPushButton
     sync_status: QLabel
+    _editor_dirty: bool
+    _offline_mode: bool
+    _opp_editor_dirty: bool
+    _role_assumed: bool
     _risks_col_widths: dict[str, list[int]]
     _call_backend: Callable[..., Any]
     _commit_editor_changes: Callable[..., Any]
@@ -65,8 +69,20 @@ class ProjectsSyncMixin:
     _refresh_opportunities: Callable[..., Any]
     _refresh_risks: Callable[..., Any]
     _refresh_top_history: Callable[..., Any]
+    _record_automatic_sync_failure: Callable[[], None]
+    #_record_automatic_sync_success: Callable[[object], None]
+    _schedule_automatic_sync: Callable[[], None]
     _start_background_job: Callable[..., bool]
     _start_new_action: Callable[..., Any]
+    #_observe_manual_sync_result: Callable[[object], None]
+
+    # BackgroundJobsMixin supplies these hooks in MainWindow. Declaring them as
+    # methods keeps sibling mixin signatures compatible for static analyzers.
+    def _record_automatic_sync_success(self, _result: object) -> None:
+        raise NotImplementedError  # pragma: no cover - mixin contract
+
+    def _observe_manual_sync_result(self, _result: object) -> None:
+        raise NotImplementedError  # pragma: no cover - mixin contract
 
     def _format_blocked_sync_details(self, summary: dict[str, object]) -> str:
         """Format unresolved blocked sync items for display in the popup."""
@@ -356,6 +372,9 @@ class ProjectsSyncMixin:
         if hasattr(self, "conflicts_btn"):
             self.conflicts_btn.setText(f"Conflicts ({conflicts})")
             self.conflicts_btn.setEnabled(bool(pid) and conflicts > 0)
+        can_auto_sync = getattr(self.backend, "can_auto_sync", None)
+        if pending > 0 and callable(can_auto_sync) and bool(can_auto_sync()):
+            self._schedule_automatic_sync()
 
     def _open_conflict_center(self) -> None:
         parent = cast(QWidget, self)
@@ -434,6 +453,7 @@ class ProjectsSyncMixin:
             self._sync_failed("Synchronization returned an invalid result")
             return
         summary = dict(result)
+        self._observe_manual_sync_result(summary)
         # If the sync promoted a local-only project to a server project,
         # reload project list and keep the user on the migrated project.
         migrated_to = summary.get("project_id_migrated_to")
@@ -503,3 +523,85 @@ class ProjectsSyncMixin:
             "the server remain acknowledged; remaining work will be retried.",
         )
         self._update_sync_status()
+
+    def _automatic_sync_requested(self) -> bool:
+        """Start a silent all-project sync when the UI is safe to refresh."""
+        if self._editor_dirty or self._opp_editor_dirty:
+            return False
+        available = getattr(self.backend, "can_auto_sync", None)
+        if callable(available) and not bool(available()):
+            return False
+        can_sync = getattr(self.backend, "can_sync", None)
+        export_remote = callable(can_sync) and not bool(can_sync())
+        return self._start_background_job(
+            "automatic_sync",
+            {"export_remote": export_remote},
+            on_success=self._automatic_sync_succeeded,
+            on_failure=self._automatic_sync_failed,
+            on_cancelled=self._automatic_sync_cancelled,
+        )
+
+    def _automatic_sync_succeeded(self, result: object) -> None:
+        """Adopt reconnect state and refresh local views without modal dialogs."""
+        if not isinstance(result, dict):
+            self._automatic_sync_failed(
+                "Automatic synchronization returned an invalid result"
+            )
+            return
+        summary = dict(result)
+        authenticated_remote = summary.pop("_authenticated_remote", None)
+        if authenticated_remote is not None:
+            adopt_remote = getattr(
+                self.backend,
+                "adopt_authenticated_remote",
+                None,
+            )
+            if callable(adopt_remote):
+                adopt_remote(authenticated_remote)
+                self._offline_mode = False
+                self._role_assumed = False
+
+        migrations = summary.get("project_id_migrations")
+        selected_project_id = str(self.current_project_id or "")
+        if isinstance(migrations, dict) and selected_project_id in migrations:
+            selected_project_id = str(migrations[selected_project_id])
+
+        visible_projects = summary.pop("_visible_projects", None)
+        if (
+            authenticated_remote is not None or migrations
+        ) and isinstance(visible_projects, list):
+            self._load_projects(
+                select_project_id=selected_project_id or None,
+                projects=visible_projects,
+                notify_selection=False,
+            )
+            selected = self.project_list.currentItem()
+            self.current_project_id = (
+                str(selected.data(Qt.ItemDataRole.UserRole))
+                if selected is not None
+                else None
+            )
+
+        self._record_automatic_sync_success(summary)
+        if self.current_project_id:
+            self._refresh_all_views(
+                select_id=self.current_risk_id,
+                include_remote=False,
+            )
+        else:
+            self._update_sync_status()
+
+    def _automatic_sync_failed(self, message: str) -> None:
+        """Back off silently after an automatic worker or reconnect failure."""
+        logging.getLogger(__name__).info(
+            "Automatic synchronization failed; retry scheduled: %s",
+            message,
+        )
+        self._record_automatic_sync_failure()
+        self._update_sync_status()
+
+    def _automatic_sync_cancelled(self) -> None:
+        # Cancellation is normally caused by application shutdown. If the
+        # window remains open, resume the ordinary interval without treating
+        # the cancellation as a connectivity failure.
+        self._record_automatic_sync_success({"state": "complete"})

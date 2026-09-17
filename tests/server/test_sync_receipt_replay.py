@@ -58,28 +58,26 @@ def test_accepted_receipt_is_replayed_without_reapplying_change(
         replay = _push(client, project_id, headers, change)
 
         assert first.status_code == replay.status_code == 200
-        assert first.json()["results"] == [
-            {
-                "change_id": change["change_id"],
-                "status": "accepted",
-                "replayed": False,
-                "entity": "risk",
-                "op": "upsert",
-                "entity_id": risk_id,
-                "reason": None,
-                "detail": None,
-                "server_version": None,
-                "server_record": None,
-                "server_updated_at": None,
-                "failure_kind": None,
-                "retryable": False,
-            }
-        ]
+        first_result = first.json()["results"][0]
+        assert first_result["change_id"] == change["change_id"]
+        assert first_result["status"] == "accepted"
+        assert first_result["replayed"] is False
+        assert first_result["entity"] == "risk"
+        assert first_result["op"] == "upsert"
+        assert first_result["entity_id"] == risk_id
+        assert first_result["server_version"] == 1
+        assert first_result["server_record"]["id"] == risk_id
+        assert first_result["server_record"]["title"] == "Created once"
+        assert first_result["server_record"]["version"] == 1
         replay_body = replay.json()
         assert replay_body["accepted"] == 0
         assert replay_body["duplicates"] == 1
         assert replay_body["results"][0]["status"] == "accepted"
         assert replay_body["results"][0]["replayed"] is True
+        assert replay_body["results"][0]["server_version"] == 1
+        assert replay_body["results"][0]["server_record"] == (
+            first_result["server_record"]
+        )
         assert replay_body["conflicts"] == []
         assert replay_body["errors"] == []
 
