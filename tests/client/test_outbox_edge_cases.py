@@ -230,6 +230,86 @@ def test_accepted_in_flight_write_advances_its_local_replacement(tmp_path) -> No
         assert row["dirty"] == 1
 
 
+def test_replayed_ack_does_not_rebase_a_new_edit_to_an_unseen_version(
+    tmp_path,
+) -> None:
+    with LocalStore(str(tmp_path / "replay-race.db")) as store:
+        project = store.create_local_project(name="Offline", project_id="project-1")
+        store.upsert_local_risk(
+            risk_id="risk-1",
+            project_id=project.id,
+            title="Version one local edit",
+            probability=2,
+            impact=3,
+            code="R-001",
+            version=1,
+        )
+        outbox = OutboxStore(store)
+        outbox.queue_risk_upsert(
+            project.id,
+            {
+                "id": "risk-1",
+                "title": "Version one local edit",
+                "probability": 2,
+                "impact": 3,
+                "code": "R-001",
+            },
+        )
+        sent = outbox.get_pending_changes(project.id)[0]
+        outbox.mark_outbox_ids_attempted([sent["change_id"]])
+        store.upsert_local_risk(
+            risk_id="risk-1",
+            project_id=project.id,
+            title="Edit made during replay",
+            probability=4,
+            impact=4,
+            code="R-001",
+            version=1,
+        )
+        outbox.queue_risk_upsert(
+            project.id,
+            {
+                "id": "risk-1",
+                "title": "Edit made during replay",
+                "probability": 4,
+                "impact": 4,
+                "code": "R-001",
+            },
+        )
+
+        outbox.acknowledge_accepted_results(
+            project.id,
+            [
+                {
+                    "change_id": sent["change_id"],
+                    "status": "accepted",
+                    "replayed": True,
+                    "entity": "risk",
+                    "entity_id": "risk-1",
+                    "receipt_server_version": 2,
+                    "server_version": 3,
+                    "server_record": {
+                        "id": "risk-1",
+                        "project_id": project.id,
+                        "title": "Unseen third-party edit",
+                        "probability": 5,
+                        "impact": 5,
+                        "code": "R-001",
+                        "version": 3,
+                    },
+                }
+            ],
+        )
+
+        replacement = outbox.get_pending_changes(project.id)[0]
+        assert replacement["base_version"] == 2
+        assert replacement["record"]["title"] == "Edit made during replay"
+        row = store.get_risk_row("risk-1")
+        assert row is not None
+        assert row["version"] == 2
+        assert row["title"] == "Edit made during replay"
+
+
 def test_transient_retry_backoff_is_persistent_and_filters_until_due(tmp_path) -> None:
     with LocalStore(str(tmp_path / "outbox-retry.db")) as store:
         project = store.create_local_project(name="Offline", project_id="project-1")

@@ -56,6 +56,50 @@ def test_worker_dispatches_sync_progress_and_project_migration(qtbot) -> None:
     assert result["_visible_projects"] == [Project("project-1", "Published")]
 
 
+def test_worker_automatic_sync_isolates_project_failure(
+    qtbot, caplog
+) -> None:
+    calls: list[str] = []
+    outcomes: list[object] = []
+
+    class Backend:
+        @staticmethod
+        def list_projects():
+            return [
+                Project("project-1", "Broken"),
+                Project("project-2", "Healthy"),
+            ]
+
+        @staticmethod
+        def sync_project(project_id, **_kwargs):
+            calls.append(project_id)
+            if project_id == "project-1":
+                raise RuntimeError("project-local corruption")
+            return {"state": "complete"}
+
+    worker = jobs._BackgroundJobWorker(
+        Backend,
+        owns_backend=False,
+        kind="automatic_sync",
+        payload={},
+        cancel_event=threading.Event(),
+    )
+    worker.succeeded.connect(lambda _kind, result: outcomes.append(result))
+
+    worker.run()
+
+    assert calls == ["project-1", "project-2"]
+    result = outcomes[0]
+    assert isinstance(result, dict)
+    assert result["state"] == "retry_wait"
+    assert result["projects"][0]["sync_error"]["reason"] == (
+        "project_sync_failed"
+    )
+    assert result["projects"][1]["state"] == "complete"
+    assert "failed for project project-1" in caplog.text
+    assert "project-local corruption" in caplog.text
+
+
 # The qtbot fixture initializes Qt before this direct QObject signal test.
 # pylint: disable-next=unused-argument
 def test_worker_automatic_syncs_all_projects_and_exports_reconnect(qtbot) -> None:

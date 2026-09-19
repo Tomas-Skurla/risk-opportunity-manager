@@ -136,17 +136,29 @@ def test_superuser_bypass_pruning_and_project_cascade_delete(
         )
         assert risk.status_code == 201
 
-        default_prune = client.post(
+        project_admin_prune = client.post(
             f"/projects/{project_id}/maintenance/prune?days=0",
             headers=regular_headers,
         )
+        assert project_admin_prune.status_code == 403
+
+        default_prune = client.post(
+            f"/projects/{project_id}/maintenance/prune?days=0",
+            headers=super_headers,
+        )
+
         assert default_prune.status_code == 200
         assert default_prune.json()["ok"] is True
         bounded_prune = client.post(
             f"/projects/{project_id}/maintenance/prune?days=99999",
-            headers=regular_headers,
+            headers=super_headers,
         )
         assert bounded_prune.status_code == 200
+        missing_prune = client.post(
+            f"/projects/{uuid.uuid4()}/maintenance/prune",
+            headers=super_headers,
+        )
+        assert missing_prune.status_code == 404
 
         forbidden = client.delete(
             f"/projects/{project_id}", headers=regular_headers

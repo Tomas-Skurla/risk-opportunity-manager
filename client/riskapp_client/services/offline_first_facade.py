@@ -660,12 +660,21 @@ class OfflineFirstBackend(Backend):
         return self._sync.conflict_details(project_id)
 
     def resolve_conflict(
-        self, change_id: str, resolution: str,
+        self,
+        change_id: str,
+        resolution: str,
         choices: dict[str, str] | None = None,
+        *,
+        expected_server_version: int | None = None,
     ) -> dict[str, Any]:
-        if choices is None:
+        if choices is None and expected_server_version is None:
             return self._sync.resolve_conflict(change_id, resolution)
-        return self._sync.resolve_conflict(change_id, resolution, choices)
+        return self._sync.resolve_conflict(
+            change_id,
+            resolution,
+            choices,
+            expected_server_version=expected_server_version,
+        )
 
     # ---- Help Desk ---------------------------------------------------------
 

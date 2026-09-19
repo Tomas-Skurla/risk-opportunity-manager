@@ -126,13 +126,14 @@ The server exposes Help Desk CRUD routes per project:
 - `DELETE /projects/{project_id}/helpdesk/tickets/{ticket_id}`
 
 Help Desk tickets are included in sync push/pull for server-backed projects.
+Every REST update of a risk, opportunity, action, assessment, or Help Desk ticket must include the current `base_version`. A missing version is rejected with HTTP 422; a stale version returns HTTP 409 and the server's current version.
 
 ## Configuration
 
 Common settings:
 
 | Variable | Default | Notes |
-|---|---|---|
+| --- | --- | --- |
 | `DATABASE_URL` | `sqlite+pysqlite:///./riskapp.db` | Server database URL |
 | `ENV` | `development` | One of `development`, `test`, or `production`; invalid values stop startup |
 | `SECRET_KEY` | `change-me` | Required outside local dev unless insecure default is explicitly allowed |
@@ -140,6 +141,10 @@ Common settings:
 | `ALLOW_INSECURE_DEFAULT_SECRET` | unset | Use `1` only for local development |
 | `ACCESS_TOKEN_MINUTES` | `15` | Access-token lifetime; legacy alias: `TOKEN_MINUTES` |
 | `REFRESH_TOKEN_DAYS` | `30` | Refresh-token lifetime |
+| `REFRESH_TOKEN_REUSE_GRACE_SECONDS` | `30` | One-time lost-response recovery window; `0` disables recovery |
+| `LOGIN_RATE_LIMIT_PER_MINUTE` | `10` | Per-IP-and-email login attempts in the configured window |
+| `LOGIN_IP_RATE_LIMIT_PER_MINUTE` | `50` | Aggregate login attempts allowed from one client IP |
+| `LOGIN_RATE_LIMIT_WINDOW_SECONDS` | `60` | Sliding window shared by both login limits |
 | `AUTO_CREATE_SCHEMA` | dev `1`, production `0` | Use explicit migrations in production |
 | `ENFORCE_HTTPS` | production-enabled | HTTPS enforcement |
 | `TRUST_X_FORWARDED_PROTO` | `0` | Enable only behind a configured trusted proxy |

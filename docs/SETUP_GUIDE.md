@@ -409,6 +409,7 @@ server/riskapp.db
 | `INITIAL_SUPERUSER_PASSWORD` | unset | Password used only when creating the bootstrap account |
 | `ACCESS_TOKEN_MINUTES` | `15` | Access-token lifetime |
 | `REFRESH_TOKEN_DAYS` | `30` | Refresh-token lifetime |
+| `REFRESH_TOKEN_REUSE_GRACE_SECONDS` | `30` | One-time recovery window for a rotated token whose response was lost; `0` disables recovery |
 | `AUTO_CREATE_SCHEMA` | dev `1`, production `0` | Use explicit migrations in production |
 | `ALLOWED_HOSTS` | dev `*`, production required | Comma-separated accepted Host values |
 | `CORS_ORIGINS` | unset | Comma-separated allowed origins |

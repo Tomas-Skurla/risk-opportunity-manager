@@ -1,10 +1,10 @@
 # Retention automation
 
-The API exposes an admin-only maintenance endpoint for each project:
+The API exposes a superuser-only maintenance endpoint for each project:
 
 - `POST /projects/{project_id}/maintenance/prune?days=180`
 
-In practice, the caller must have at least **project admin** access for that project.
+Project administrators cannot call this endpoint because deleting their own audit trail would defeat the purpose of retaining it. Use a dedicated superuser account.
 
 To automate pruning without an in-app scheduler, prefer running the supplied helper script from cron, systemd, or CI. This is safer than storing a bearer token because access tokens are short-lived by default.
 

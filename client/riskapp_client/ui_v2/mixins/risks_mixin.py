@@ -47,6 +47,7 @@ class RisksMixin(ScoredEntityMixin):
     risks_tab: RisksTab
     risks_table: QTableWidget
     _editor_dirty: bool
+    _risk_editor_base_version: int | None
     _risk_cache: dict[str, Risk]
     _fit_table_to_contents: Callable[..., None]
     _mk_item: Callable[..., QTableWidgetItem]
@@ -113,6 +114,10 @@ class RisksMixin(ScoredEntityMixin):
         )
         if new_id:
             self.current_risk_id = new_id
+            selected = self._risk_cache.get(new_id)
+            self._risk_editor_base_version = (
+                int(selected.version) if selected is not None else None
+            )
             self._editor_dirty = False
             self._sync_assessment_state("risk", new_id, self.risks_tab)
 
@@ -136,6 +141,7 @@ class RisksMixin(ScoredEntityMixin):
             self.backend.update_risk,
             ref_cb if refresh else None,
             select_id,
+            base_version=self._risk_editor_base_version,
         ):
             self._editor_dirty = False
 
@@ -150,6 +156,7 @@ class RisksMixin(ScoredEntityMixin):
         self._sync_assessment_state("risk", None, self.risks_tab)
 
     def _save_risk(self, payload: dict) -> None:
+        was_new = self.current_risk_id is None
         extra = [
             self._refresh_action_risk_combo,
             self._refresh_actions,
@@ -165,9 +172,15 @@ class RisksMixin(ScoredEntityMixin):
             self.editor_label,
             "Editor",
             extra,
+            base_version=self._risk_editor_base_version,
         )
         if saved_id:
             self.current_risk_id = saved_id
+            if was_new:
+                selected = self._risk_cache.get(saved_id)
+                self._risk_editor_base_version = (
+                    int(selected.version) if selected is not None else 0
+                )
             self._editor_dirty = False
             self._sync_assessment_state("risk", saved_id, self.risks_tab)
 

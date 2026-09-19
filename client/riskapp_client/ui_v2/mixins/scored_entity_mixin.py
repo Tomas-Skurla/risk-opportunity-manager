@@ -171,6 +171,8 @@ class ScoredEntityMixin:
         update_backend_fn: Callable[..., Any],
         refresh_fn: Callable[..., Any] | None,
         select_id: str | None,
+        *,
+        base_version: int | None = None,
     ) -> bool:
         if not editor_dirty or not current_id:
             return False
@@ -195,7 +197,12 @@ class ScoredEntityMixin:
                 return False
         if (
             self._call_backend(
-                "Backend error", update_backend_fn, pid, current_id, **payload
+                "Backend error",
+                update_backend_fn,
+                pid,
+                current_id,
+                base_version=base_version,
+                **payload,
             )
             is None
         ):
@@ -244,6 +251,8 @@ class ScoredEntityMixin:
         label_widget: QLabel,
         label_prefix: str,
         extra_refreshes: list[Callable[[], None]],
+        *,
+        base_version: int | None = None,
     ) -> str | None:
         pid = self.current_project_id
         if not pid:
@@ -298,6 +307,7 @@ class ScoredEntityMixin:
                     title=title,
                     probability=p,
                     impact=i,
+                    base_version=base_version,
                     **data,
                 )
                 is None

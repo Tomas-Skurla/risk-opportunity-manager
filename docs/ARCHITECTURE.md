@@ -38,7 +38,7 @@ The main window owns an explicit `MainWindowState` object for selection and acce
 - The Conflict Center never resolves a conflict implicitly: **Keep mine** creates a new change ID against the newest known version, **Use server** atomically applies the saved server copy and removes the blocked write, and **Later** leaves it untouched. Applying a saved copy resets the pull watermark so a newer server change cannot be skipped.
 - Synchronization failures are classified: transient network/408/429/5xx failures remain queued with bounded backoff, while authentication, permission, validation, and conflict outcomes are blocked for the appropriate user action.
 - Automatic synchronization is a GUI-thread scheduler around the existing single-flight worker. It performs no I/O itself: each run constructs a worker-owned backend and SQLite connection, synchronizes visible projects serially, honors persisted retry timestamps plus bounded reconnect backoff, and stops its timer before application shutdown waits for the worker.
-- Existing-row sync updates and deletes require `base_version` and claim it with a conditional version increment. SQLite begins each push with `BEGIN IMMEDIATE`; databases with row-level locking rely on the conditional update. A stale concurrent writer therefore becomes an explicit conflict.
+- Existing-row sync updates/deletes and direct REST updates require `base_version` and claim it with a conditional version increment. SQLite begins each sync push with `BEGIN IMMEDIATE`; both REST and sync paths rely on the conditional update so a stale concurrent writer becomes an explicit conflict.
 - Parent items are applied before child actions and assessments during pull.
 - Every syncable write advances a per-project database counter in the same transaction and stamps the row with that sequence. The counter row serializes concurrent writers until commit; rollback also rolls back the reservation.
 - New clients pull the interval `(since_sequence, server_sequence]`, with one fixed `server_sequence` across pagination. This makes the feed independent of wall-clock ordering. Timestamp watermarks remain only as a compatibility path for older clients.
@@ -48,7 +48,7 @@ The main window owns an explicit `MainWindowState` object for selection and acce
 
 - Access tokens are short-lived JWTs with issuer, audience, expiry, and unique id.
 - New passwords use Argon2id (`m=19456`, `t=2`, `p=1`). Legacy PBKDF2 hashes remain verifiable and are replaced only after a successful login.
-- Refresh and password-reset tokens are random, stored only as HMAC hashes keyed independently from JWT signing, and rotated or consumed once.
+- Refresh and password-reset tokens are random and stored only as HMAC hashes keyed independently from JWT signing. Refresh rotation atomically forms a single replacement chain. A just-rotated token gets one short recovery opportunity while its replacement remains unused; older or already-advanced reuse revokes only that connected token family.
 - Project RBAC is enforced in both REST routers and  the sync engine.
 - Production startup rejects default secrets, wildcard hosts, returned reset tokens, and wildcard credentialed CORS.
 - Request bodies and response bodies are bounded; exported CSV neutralizes formula prefixes.

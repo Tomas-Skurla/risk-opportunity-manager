@@ -91,7 +91,17 @@ class CoreMixin:
 
     @current_risk_id.setter
     def current_risk_id(self, value: str | None) -> None:
+        if value != self.state.risk_id:
+            self.state.risk_editor_base_version = None
         self.state.risk_id = value
+
+    @property
+    def _risk_editor_base_version(self) -> int | None:
+        return self.state.risk_editor_base_version
+
+    @_risk_editor_base_version.setter
+    def _risk_editor_base_version(self, value: int | None) -> None:
+        self.state.risk_editor_base_version = value
 
     @property
     def current_opportunity_id(self) -> str | None:
@@ -99,7 +109,17 @@ class CoreMixin:
 
     @current_opportunity_id.setter
     def current_opportunity_id(self, value: str | None) -> None:
+        if value != self.state.opportunity_id:
+            self.state.opportunity_editor_base_version = None
         self.state.opportunity_id = value
+
+    @property
+    def _opportunity_editor_base_version(self) -> int | None:
+        return self.state.opportunity_editor_base_version
+
+    @_opportunity_editor_base_version.setter
+    def _opportunity_editor_base_version(self, value: int | None) -> None:
+        self.state.opportunity_editor_base_version = value
 
     @property
     def current_action_id(self) -> str | None:

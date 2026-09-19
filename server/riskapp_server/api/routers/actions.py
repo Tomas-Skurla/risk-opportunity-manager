@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import uuid
-from typing import Any
+from typing import Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from riskapp_server.auth.service import get_current_user
-from riskapp_server.core.items_crud import delete_item
+from riskapp_server.core.items_crud import claim_base_version, delete_item
 from riskapp_server.core.permissions import ensure_member, require_min_role
 from riskapp_server.db.session import (
     Action,
@@ -153,21 +153,12 @@ def update_action(
 ) -> dict[str, Any]:
     require_min_role(db, project_id, user.id, min_role=Role.member)
 
-    action = (
-        db.execute(
-            select(Action).where(
-                Action.project_id == project_id,
-                Action.id == action_id,
-                Action.is_deleted.is_(False),
-            )
-        )
-        .scalars()
-        .first()
+    where = (
+        Action.project_id == project_id,
+        Action.id == action_id,
+        Action.is_deleted.is_(False),
     )
-    if not action:
-        raise HTTPException(status_code=404, detail="Action not found")
-
-    data = payload.model_dump(exclude_unset=True)
+    data = payload.model_dump(exclude_unset=True, exclude={"base_version"})
 
     if "kind" in data and data.get("kind") is None:
         raise HTTPException(status_code=422, detail="kind cannot be null")
@@ -181,6 +172,17 @@ def update_action(
         if not title:
             raise HTTPException(status_code=422, detail="title cannot be blank")
         data["title"] = title
+
+    action = cast(
+        Action,
+        claim_base_version(
+            db,
+            Action,
+            where,
+            payload.base_version,
+            not_found_detail="Action not found",
+        ),
+    )
 
     if "risk_id" in data or "opportunity_id" in data:
         item_id, _t = _resolve_target(
@@ -197,7 +199,6 @@ def update_action(
         setattr(action, field, getattr(val, "value", val))
 
     action.updated_at = utcnow()
-    action.version = int(action.version) + 1
     db.commit()
 
     target_type = (

@@ -126,7 +126,27 @@ class _BackgroundJobWorker(QObject):
                 f"Automatically synchronizing {index}/{len(syncable)}: "
                 f"{project_name}"
             )
-            summary = self._sync_project(backend, project_id)
+            try:
+                summary = self._sync_project(backend, project_id)
+            # Projects are independent synchronization units. A corrupt local
+            # row or project-specific server failure must not starve every
+            # project later in this automatic pass.
+            # pylint: disable-next=broad-exception-caught
+            except Exception:  # noqa: BLE001 - isolate this project and continue
+                logger.exception(
+                    "Automatic synchronization failed for project %s (%s)",
+                    project_id,
+                    project_name,
+                )
+                summary = {
+                    "state": "retry_wait",
+                    "sync_error": {
+                        "reason": "project_sync_failed",
+                        "failure_kind": "transient",
+                        "retryable": True,
+                        "request_failed": False,
+                    },
+                }
             summary.setdefault("project_id", project_id)
             summaries.append(summary)
             migrated_to = summary.get("project_id_migrated_to")

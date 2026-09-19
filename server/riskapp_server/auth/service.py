@@ -7,12 +7,14 @@ import hmac
 import logging
 import secrets
 import uuid
-from datetime import UTC, timedelta
+from datetime import UTC, datetime, timedelta
+from typing import Any, Never, cast
 
 from fastapi import Depends, HTTPException
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
-from sqlalchemy import select
+from sqlalchemy import select, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
 from riskapp_server.auth import passwords as password_hashing
@@ -21,6 +23,7 @@ from riskapp_server.core.config import (
     ALGORITHM,
     ALLOW_INSECURE_DEFAULT_SECRET,
     REFRESH_TOKEN_DAYS,
+    REFRESH_TOKEN_REUSE_GRACE_SECONDS,
     SECRET_KEY,
     TOKEN_HASH_KEY,
     validate_runtime_config,
@@ -72,18 +75,23 @@ def hash_bearer_secret(raw: str) -> str:
     ).hexdigest()
 
 
-def issue_refresh_token(db: Session, user_id: uuid.UUID, *, commit: bool = True) -> str:
+def _new_refresh_token(
+    user_id: uuid.UUID, now: datetime
+) -> tuple[str, RefreshToken]:
+    """Build a refresh-token row whose id is available before it is flushed."""
     raw = secrets.token_urlsafe(48)
-    token_hash = hash_bearer_secret(raw)
-    expires_at = utcnow() + timedelta(days=int(REFRESH_TOKEN_DAYS))
-    rt = RefreshToken(
+    return raw, RefreshToken(
+        id=uuid.uuid4(),
         user_id=user_id,
-        token_hash=token_hash,
-        issued_at=utcnow(),
-        expires_at=expires_at,
+        token_hash=hash_bearer_secret(raw),
+        issued_at=now,
+        expires_at=now + timedelta(days=int(REFRESH_TOKEN_DAYS)),
         revoked_at=None,
         replaced_by_id=None,
     )
+
+def issue_refresh_token(db: Session, user_id: uuid.UUID, *, commit: bool = True) -> str:
+    raw, rt = _new_refresh_token(user_id, utcnow())
     db.add(rt)
     if commit:
         db.commit()
@@ -92,37 +100,220 @@ def issue_refresh_token(db: Session, user_id: uuid.UUID, *, commit: bool = True)
     return raw
 
 
-def rotate_refresh_token(db: Session, raw_refresh_token: str) -> tuple[str, uuid.UUID]:
-    now = utcnow()
-    token_hash = hash_bearer_secret(raw_refresh_token)
-    rt: RefreshToken | None = db.execute(
-        select(RefreshToken)
-        .where(RefreshToken.token_hash == token_hash)
-        .with_for_update()
-    ).scalar_one_or_none()
-    if not rt or rt.revoked_at is not None or rt.expires_at <= now:
-        raise HTTPException(status_code=401, detail="Invalid refresh token")
+def _begin_refresh_transaction(db: Session) -> None:
+    """Reserve SQLite's writer before inspecting a token replacement chain."""
+    bind = db.get_bind()
+    if getattr(getattr(bind, "dialect", None), "name", None) != "sqlite":
+        return
+    if db.in_transaction():
+        # Rotation owns its transaction and has always committed on success.
+        db.rollback()
+    db.connection().exec_driver_sql("BEGIN IMMEDIATE")
 
-    user = db.get(User, rt.user_id)
-    if not user or not user.is_active:
-        raise HTTPException(status_code=401, detail="Invalid refresh token")
 
-    rt.revoked_at = now
-    new_raw = secrets.token_urlsafe(48)
-    new_hash = hash_bearer_secret(new_raw)
-    new_rt = RefreshToken(
-        user_id=rt.user_id,
-        token_hash=new_hash,
-        issued_at=now,
-        expires_at=now + timedelta(days=int(REFRESH_TOKEN_DAYS)),
-        revoked_at=None,
-        replaced_by_id=None,
+def _claim_refresh_token(
+    db: Session,
+    token_id: uuid.UUID,
+    replacement_id: uuid.UUID,
+    now: datetime,
+) -> bool:
+    """Revoke and link one still-active token with one conditional update."""
+    result = cast(
+        CursorResult[Any],
+        db.execute(
+            update(RefreshToken)
+            .where(
+                RefreshToken.id == token_id,
+                RefreshToken.revoked_at.is_(None),
+                RefreshToken.replaced_by_id.is_(None),
+                RefreshToken.expires_at > now,
+            )
+            .values(revoked_at=now, replaced_by_id=replacement_id)
+            .execution_options(synchronize_session=False)
+        ),
+
     )
-    db.add(new_rt)
-    db.flush()
-    rt.replaced_by_id = new_rt.id
+    return result.rowcount == 1
+
+
+def _locked_user_refresh_tokens(
+    db: Session, user_id: uuid.UUID
+) -> list[RefreshToken]:
+    """Load one user's token graph in deterministic lock order."""
+    tokens = list(
+        db.execute(
+            select(RefreshToken)
+            .where(RefreshToken.user_id == user_id)
+            .order_by(RefreshToken.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).scalars()
+    )
+    by_id = {token.id: token for token in tokens}
+
+    # Under PostgreSQL READ COMMITTED, a child inserted by a rotation while the
+    # first locking SELECT waited may not be part of that statement's snapshot.
+    # Its parent's replacement id is visible after the wait, so follow and lock
+    # any such links until the current tail is reached. A locked tail cannot be
+    # advanced concurrently. SQLite already holds a writer reservation here.
+    missing_ids = {
+        token.replaced_by_id
+        for token in tokens
+        if token.replaced_by_id is not None and token.replaced_by_id not in by_id
+    }
+    while missing_ids:
+        linked_tokens = list(
+            db.execute(
+                select(RefreshToken)
+                .where(
+                    RefreshToken.user_id == user_id,
+                    RefreshToken.id.in_(missing_ids),
+                )
+                .order_by(RefreshToken.id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            ).scalars()
+        )
+        if not linked_tokens:
+            break
+        for linked_token in linked_tokens:
+            by_id[linked_token.id] = linked_token
+        missing_ids = {
+            token.replaced_by_id
+            for token in linked_tokens
+            if token.replaced_by_id is not None
+            and token.replaced_by_id not in by_id
+        }
+    return list(by_id.values())
+
+
+def _refresh_family_ids(
+    tokens: list[RefreshToken], token_id: uuid.UUID
+) -> set[uuid.UUID]:
+    """Return the connected replacement family containing ``token_id``."""
+    by_id = {token.id: token for token in tokens}
+    if token_id not in by_id:
+        return set()
+    neighbors: dict[uuid.UUID, set[uuid.UUID]] = {
+        candidate_id: set() for candidate_id in by_id
+    }
+    for token in tokens:
+        replacement_id = token.replaced_by_id
+        if replacement_id is None or replacement_id not in by_id:
+            continue
+        neighbors[token.id].add(replacement_id)
+        neighbors[replacement_id].add(token.id)
+
+    family: set[uuid.UUID] = set()
+    remaining = [token_id]
+    while remaining:
+        candidate_id = remaining.pop()
+        if candidate_id in family:
+            continue
+        family.add(candidate_id)
+        remaining.extend(neighbors[candidate_id] - family)
+    return family
+
+
+def _invalid_refresh_token(db: Session) -> Never:
+    db.rollback()
+    raise HTTPException(status_code=401, detail="Invalid refresh token")
+
+
+def _recover_or_revoke_refresh_family(
+    db: Session,
+    token_id: uuid.UUID,
+    user_id: uuid.UUID,
+    now: datetime,
+) -> tuple[str, uuid.UUID] | None:
+    """Recover one lost rotation response or revoke a reused token family."""
+    tokens = _locked_user_refresh_tokens(db, user_id)
+    by_id = {token.id: token for token in tokens}
+    token = by_id.get(token_id)
+    if token is None or token.revoked_at is None:
+        db.rollback()
+        return None
+
+    replacement_id = token.replaced_by_id
+    replacement = (
+        by_id.get(replacement_id) if replacement_id is not None else None
+    )
+    grace_age = (now - token.revoked_at).total_seconds()
+    grace_eligible = (
+        REFRESH_TOKEN_REUSE_GRACE_SECONDS > 0
+        and 0 <= grace_age <= REFRESH_TOKEN_REUSE_GRACE_SECONDS
+        and replacement is not None
+        and replacement.revoked_at is None
+        and replacement.replaced_by_id is None
+        and replacement.expires_at > now
+    )
+    if grace_eligible and replacement is not None:
+        new_raw, new_token = _new_refresh_token(user_id, now)
+        if not _claim_refresh_token(db, replacement.id, new_token.id, now):
+            db.rollback()
+            return None
+        db.add(new_token)
+        db.commit()
+        return new_raw, user_id
+
+    family_ids = _refresh_family_ids(tokens, token_id)
+    result = cast(
+        CursorResult[Any],
+        db.execute(
+            update(RefreshToken)
+            .where(
+                RefreshToken.id.in_(family_ids),
+                RefreshToken.revoked_at.is_(None),
+            )
+            .values(revoked_at=now)
+            .execution_options(synchronize_session=False)
+        ),
+    )
+    revoked_count = max(int(result.rowcount or 0), 0)
     db.commit()
-    return new_raw, rt.user_id
+
+    logger.warning(
+        "Refresh-token reuse detected; revoked %d active token(s) in one family",
+        revoked_count,
+        extra={"user_id": str(user_id)},
+    )
+    raise HTTPException(status_code=401, detail="Invalid refresh token")
+
+
+def rotate_refresh_token(db: Session, raw_refresh_token: str) -> tuple[str, uuid.UUID]:
+    token_hash = hash_bearer_secret(raw_refresh_token)
+    for _attempt in range(3):
+        _begin_refresh_transaction(db)
+        now = utcnow()
+        rt: RefreshToken | None = db.execute(
+            select(RefreshToken).where(RefreshToken.token_hash == token_hash)
+        ).scalar_one_or_none()
+        if rt is None:
+            _invalid_refresh_token(db)
+
+        user = db.get(User, rt.user_id)
+        if user is None or not user.is_active:
+            _invalid_refresh_token(db)
+
+        if rt.revoked_at is not None:
+            recovered = _recover_or_revoke_refresh_family(
+                db, rt.id, rt.user_id, now
+            )
+            if recovered is not None:
+                return recovered
+            continue
+        if rt.expires_at <= now:
+            _invalid_refresh_token(db)
+
+        new_raw, new_token = _new_refresh_token(rt.user_id, now)
+        if not _claim_refresh_token(db, rt.id, new_token.id, now):
+            db.rollback()
+            continue
+        db.add(new_token)
+        db.commit()
+        return new_raw, rt.user_id
+
+    _invalid_refresh_token(db)
 
 
 def revoke_user_refresh_tokens(db: Session, user_id: uuid.UUID) -> int:

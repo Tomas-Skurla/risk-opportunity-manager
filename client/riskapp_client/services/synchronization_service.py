@@ -203,8 +203,12 @@ class SyncService:
         apply_record(project_id, [record])
 
     def resolve_conflict(
-        self, change_id: str, resolution: str,
+        self,
+        change_id: str,
+        resolution: str,
         choices: dict[str, str] | None = None,
+        *,
+        expected_server_version: int | None = None,
     ) -> dict[str, Any]:
         """Resolve one persisted conflict without silently discarding either side."""
         choice = str(resolution or "").strip().lower()
@@ -225,6 +229,18 @@ class SyncService:
         with self._store.write_transaction():
             conflict = self._require_conflict(change_id)
             project_id = str(conflict["project_id"])
+            if expected_server_version is not None:
+                current_server_version = conflict.get("server_version")
+                if (
+                    isinstance(expected_server_version, bool)
+                    or not isinstance(current_server_version, int)
+                    or isinstance(current_server_version, bool)
+                    or current_server_version != expected_server_version
+                ):
+                    raise RuntimeError(
+                        "The server copy changed while the Conflict Center was "
+                        "open. Reopen it and review the latest values."
+                    )
 
             if choice == "keep_mine":
                 raw_server_version = conflict.get("server_version")

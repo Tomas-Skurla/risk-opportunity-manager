@@ -154,9 +154,11 @@ def test_core_mixin_compatibility_properties_share_explicit_state() -> None:
     assert host.current_role == "member"
 
     host.current_risk_id = "risk-1"
+    host._risk_editor_base_version = 4
     host.current_assessment_item_id = "risk-1"
     host._offline_mode = True
     assert host.state.risk_id == "risk-1"
+    assert host.state.risk_editor_base_version == 4
     assert host.state.assessment_item_id == "risk-1"
     assert host.state.offline_mode is True
 

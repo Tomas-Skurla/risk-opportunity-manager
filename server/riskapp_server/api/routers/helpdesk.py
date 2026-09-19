@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import uuid
+from typing import cast
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from riskapp_server.auth.service import get_current_user
+from riskapp_server.core.items_crud import claim_base_version
 from riskapp_server.core.permissions import ensure_member, require_min_role
 from riskapp_server.db.session import (
     HelpDeskCategory,
@@ -107,39 +109,31 @@ def update_helpdesk_ticket(
     user: User = Depends(get_current_user),
 ) -> HelpDeskTicketOut:
     require_min_role(db, project_id, user.id, min_role=Role.member)
-    ticket = (
-        db.execute(
-            select(HelpDeskTicket).where(
-                HelpDeskTicket.project_id == project_id,
-                HelpDeskTicket.id == ticket_id,
-                HelpDeskTicket.is_deleted.is_(False),
-            )
-        )
-        .scalars()
-        .first()
+    where = (
+        HelpDeskTicket.project_id == project_id,
+        HelpDeskTicket.id == ticket_id,
+        HelpDeskTicket.is_deleted.is_(False),
     )
-    if not ticket:
-        raise HTTPException(status_code=404, detail="Help Desk ticket not found")
+    data = payload.model_dump(exclude_unset=True, exclude={"base_version"})
 
-    if payload.base_version is not None and int(ticket.version) != int(
-        payload.base_version
-    ):
-        raise HTTPException(
-            status_code=409,
-            detail={"reason": "version_mismatch", "server_version": ticket.version},
-        )
-
-    data = payload.model_dump(exclude_unset=True)
     if "title" in data and data["title"] is None:
         raise HTTPException(status_code=422, detail="title cannot be null")
 
+    ticket = cast(
+        HelpDeskTicket,
+        claim_base_version(
+            db,
+            HelpDeskTicket,
+            where,
+            payload.base_version,
+            not_found_detail="Help Desk ticket not found",
+        ),
+    )
+
     for field, value in data.items():
-        if field == "base_version":
-            continue
         setattr(ticket, field, getattr(value, "value", value))
 
     ticket.updated_at = utcnow()
-    ticket.version = int(ticket.version) + 1
     db.commit()
     db.refresh(ticket)
     return _out(ticket)

@@ -180,6 +180,62 @@ def test_pull_refreshes_conflict_server_copy_without_rebasing_local_row(
         store.close()
 
 
+@pytest.mark.parametrize(
+    ("resolution", "choices"),
+    [
+        ("keep_mine", None),
+        ("use_server", None),
+        (
+            "merge",
+            {"title": "mine", "probability": "server", "impact": "server"},
+        ),
+    ],
+)
+def test_resolution_refuses_a_server_copy_newer_than_the_dialog(
+    tmp_path,
+    resolution: str,
+    choices: dict[str, str] | None,
+) -> None:
+    store, outbox, service, change_id = _risk_conflict(
+        tmp_path,
+        local_version=3,
+        server_version=5,
+    )
+    try:
+        before = dict(_risk_row(store))
+        store.apply_pull_risks(
+            "project-1",
+            [
+                {
+                    "id": "risk-1",
+                    "project_id": "project-1",
+                    "type": "risk",
+                    "title": "Changed while dialog was open",
+                    "probability": 1,
+                    "impact": 2,
+                    "status": "active",
+                    "version": 6,
+                    "is_deleted": False,
+                    "updated_at": "2026-09-04T14:00:00",
+                }
+            ],
+        )
+
+        with pytest.raises(RuntimeError, match="Conflict Center was open"):
+            service.resolve_conflict(
+                change_id,
+                resolution,
+                choices,
+                expected_server_version=5,
+            )
+
+        conflict = outbox.get_blocked_change(change_id)
+        assert conflict is not None and conflict["server_version"] == 6
+        assert dict(_risk_row(store)) == before
+    finally:
+        store.close()
+
+
 def test_field_merge_requeues_only_chosen_local_values_at_server_version(
     tmp_path,
 ) -> None:

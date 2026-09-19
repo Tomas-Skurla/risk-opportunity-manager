@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, cast
 
 from fastapi import HTTPException
-from sqlalchemy import case, func, select
+from sqlalchemy import case, func, select, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import Select
@@ -15,6 +16,51 @@ from riskapp_server.core.filters import apply_item_filters
 from riskapp_server.core.scoring import recalculate_item_scores
 from riskapp_server.db.session import RiskStatus, utcnow
 from riskapp_server.schemas.models import ScoreReportOut
+
+
+def claim_base_version(
+    db: Session,
+    model: type[Any],
+    where: Sequence[Any],
+    base_version: int,
+    *,
+    not_found_detail: str | None = None,
+) -> Any:
+    """Atomically advance and return a row at exactly ``base_version``."""
+    result = cast(
+        CursorResult[Any],
+        db.execute(
+            update(model)
+            .where(*where, model.version == base_version)
+            .values(version=model.version + 1)
+            .execution_options(synchronize_session=False)
+        ),
+    )
+    if result.rowcount != 1:
+        server_version = db.execute(
+            select(model.version)
+            .where(*where)
+            .execution_options(populate_existing=True)
+        ).scalar_one_or_none()
+        if server_version is None and not_found_detail is not None:
+            raise HTTPException(status_code=404, detail=not_found_detail)
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "reason": "version_mismatch",
+                "server_version": server_version,
+            },
+        )
+
+    return (
+        db.execute(
+            select(model)
+            .where(*where)
+            .execution_options(populate_existing=True)
+        )
+        .scalars()
+        .one()
+    )
 
 
 def create_item(
@@ -107,18 +153,7 @@ def update_item(
     where = [model.project_id == project_id, model.id == item_id]
     if item_type and hasattr(model, "type"):
         where.append(model.type == item_type)
-    item = db.execute(select(model).where(*where)).scalars().first()
-    if not item:
-        raise HTTPException(status_code=404, detail="Item not found")
-
-    if payload.base_version is not None and item.version != payload.base_version:
-        raise HTTPException(
-            status_code=409,
-            detail={"reason": "version_mismatch", "server_version": item.version},
-        )
-
     delete_requested = False
-
     update_data = payload.model_dump(exclude_unset=True, exclude={"base_version"})
 
     if "code" in update_data:
@@ -138,6 +173,7 @@ def update_item(
         "identified_at",
     }
 
+    normalized_data: dict[str, Any] = {}
     for field, val in update_data.items():
         v = getattr(val, "value", val)
         if field in non_nullable and v is None:
@@ -148,20 +184,33 @@ def update_item(
             status_val = str(v).lower().strip()
             if status_val == RiskStatus.deleted.value:
                 delete_requested = True
-            else:
-                item.change_status(status_val, now)
+            normalized_data[field] = status_val
         else:
-            setattr(item, field, v)
+            normalized_data[field] = v
+
+    item = claim_base_version(
+        db,
+        model,
+        where,
+        payload.base_version,
+        not_found_detail="Item not found",
+    )
+
+    for field, value in normalized_data.items():
+        if field == "status":
+            item.change_status(value, now)
+        else:
+            setattr(item, field, value)
 
     if delete_requested:
-        item.soft_delete(now)
+        item.is_deleted = True
+        item.updated_at = now
         db.commit()
         db.refresh(item)
         return item
 
     recalculate_item_scores(item)
     item.updated_at = now
-    item.version = int(item.version) + 1
 
     try:
         db.commit()

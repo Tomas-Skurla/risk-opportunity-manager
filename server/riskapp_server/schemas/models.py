@@ -165,7 +165,7 @@ class OpportunityCreate(_ItemCreateFields):
 
 class ItemUpdate(ItemShared):
 
-    base_version: int | None = None
+    base_version: int = Field(ge=1)
     title: str | None = Field(default=None, max_length=300)
     probability: Probability | None = None
     impact: Impact | None = None
@@ -227,7 +227,9 @@ class ScoreReportOut(BaseModel):
 
 class AssessmentIn(BaseModel):
 
-    base_version: int | None = None
+    # Zero creates the caller's assessment; subsequent upserts must send the
+    # version returned by the previous response.
+    base_version: int = Field(ge=0)
     probability: Probability
     impact: Impact
     notes: str | None = None
@@ -310,6 +312,7 @@ class ActionCreate(BaseModel):
 
 class ActionUpdate(BaseModel):
 
+    base_version: int = Field(ge=1)
     risk_id: uuid.UUID | None = None
     opportunity_id: uuid.UUID | None = None
     kind: ActionKind | None = None
@@ -352,7 +355,7 @@ class HelpDeskTicketCreate(BaseModel):
 
 class HelpDeskTicketUpdate(BaseModel):
 
-    base_version: int | None = None
+    base_version: int = Field(ge=1)
     title: str | None = Field(default=None, max_length=300)
     description: BoundedText | None = None
     category: HelpDeskCategory | None = None
@@ -478,6 +481,7 @@ class SyncChangeResult(BaseModel):
     reason: str | None = None
     detail: str | None = None
     server_version: int | None = None
+    receipt_server_version: int | None = None
     server_record: dict[str, object] | None = None
     server_updated_at: str | None = None
     failure_kind: Literal[

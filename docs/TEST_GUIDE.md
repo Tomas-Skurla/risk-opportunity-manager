@@ -322,7 +322,7 @@ echo "Risk: $RID, version 1"
 curl -s -X PATCH "$BASE/projects/$PID/risks/$RID" \
   -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
-  -d '{"title":"Changed by B","probability":5}' > /dev/null
+  -d '{"title":"Changed by B","probability":5,"base_version":1}' > /dev/null
 echo "Client B -> version 2"
 
 CID=$(python3 -c "import uuid; print(uuid.uuid4())")
@@ -465,4 +465,4 @@ bash scripts/lint.sh
 python -m pip check
 ```
 
-Coverage includes registration, login, password policy, rate limiting, RBAC, refresh tokens, sync push/pull, conflict detection, assessments, search escaping, password reset, SQLite migrations, outbox queue, and Help Desk sync/version behavior.
+Coverage includes registration, login, password policy, rate limiting, RBAC, refresh-token grace recovery, family reuse detection, concurrent rotation, sync push/pull, conflict detection, assessments, search escaping, password reset, SQLite migrations, outbox queue, and Help Desk sync/version behavior.

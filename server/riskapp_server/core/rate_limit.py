@@ -9,8 +9,6 @@ from math import ceil
 
 
 class InMemorySlidingWindowLimiter:
-    _OVERFLOW_KEY = "__rate_limit_overflow__"
-
     def __init__(self, *, limit: int, window_s: int, max_keys: int = 10_000) -> None:
         self.limit = int(limit)
         self.window_s = int(window_s)
@@ -34,6 +32,27 @@ class InMemorySlidingWindowLimiter:
         for key in stale:
             self._hits.pop(key, None)
 
+    def _make_room_for(self, key: str, cutoff: float) -> None:
+        """Reserve one independent bucket without exceeding ``max_keys``.
+
+        Attacker-controlled identities must not collapse into one shared bucket:
+        a full table would then rate-limit every previously unseen user together.
+        Expired buckets are removed first; if every bucket is still active, the
+        least recently used identity is evicted. Callers that need protection
+        from identity churn should pair this limiter with a lower-cardinality
+        key such as the client IP address.
+        """
+        if key in self._hits:
+            return
+        self._prune_stale_keys(cutoff)
+        if len(self._hits) >= self.max_keys:
+            oldest_key = min(
+                self._hits,
+                key=lambda candidate: self._hits[candidate][-1],
+            )
+            self._hits.pop(oldest_key, None)
+        self._hits[key] = deque()
+
     def check(self, key: str) -> tuple[bool, int]:
         """Check if the key is allowed.
 
@@ -47,19 +66,8 @@ class InMemorySlidingWindowLimiter:
             if self._checks % 256 == 0:
                 self._prune_stale_keys(cutoff)
 
-            # Bound attacker-controlled cardinality. Once the cap is reached,
-            # previously unseen keys share a conservative overflow bucket.
-            if (
-                key not in self._hits
-                and key != self._OVERFLOW_KEY
-                and len(self._hits) >= self.max_keys - 1
-            ):
-                key = self._OVERFLOW_KEY
-
-            q = self._hits.get(key)
-            if q is None:
-                q = deque()
-                self._hits[key] = q
+            self._make_room_for(key, cutoff)
+            q = self._hits[key]
 
             while q and q[0] < cutoff:
                 q.popleft()

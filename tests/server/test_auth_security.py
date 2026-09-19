@@ -136,3 +136,38 @@ def test_login_rate_limit_kicks_in(tmp_path, isolated_app_factory) -> None:
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
         assert r.status_code == 429
+
+
+def test_login_ip_limit_bounds_email_identity_churn(
+    tmp_path, isolated_app_factory
+) -> None:
+    """Changing the email cannot bypass the client-IP login ceiling."""
+    app = isolated_app_factory(f"sqlite+pysqlite:///{tmp_path / 'auth_ip_rate.db'}")
+    # Import after app construction so this is the reloaded router instance.
+    # pylint: disable-next=import-outside-toplevel
+    from riskapp_server.api.routers import auth_routes
+
+    auth_routes._login_ip_limiter.limit = 2  # pylint: disable=protected-access
+    auth_routes._login_ip_limiter.reset()  # pylint: disable=protected-access
+    with TestClient(app) as client:
+        for index in range(2):
+            response = client.post(
+                "/login",
+                data={
+                    "username": f"unknown-{index}@example.com",
+                    "password": "WrongPassword1!",
+                },
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+            assert response.status_code == 401
+
+        blocked = client.post(
+            "/login",
+            data={
+                "username": "another-new-user@example.com",
+                "password": "WrongPassword1!",
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        assert blocked.status_code == 429
+        assert int(blocked.headers["Retry-After"]) >= 1

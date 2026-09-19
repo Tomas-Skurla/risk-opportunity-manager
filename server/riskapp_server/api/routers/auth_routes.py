@@ -18,6 +18,7 @@ from riskapp_server.auth.service import (
 )
 from riskapp_server.core.config import (
     ACCESS_TOKEN_MINUTES,
+    LOGIN_IP_RATE_LIMIT_PER_MINUTE,
     LOGIN_RATE_LIMIT_PER_MINUTE,
     LOGIN_RATE_LIMIT_WINDOW_SECONDS,
     RATE_LIMIT_MAX_KEYS,
@@ -32,6 +33,11 @@ router = APIRouter(tags=["auth"])
 
 _login_limiter = InMemorySlidingWindowLimiter(
     limit=LOGIN_RATE_LIMIT_PER_MINUTE,
+    window_s=LOGIN_RATE_LIMIT_WINDOW_SECONDS,
+    max_keys=RATE_LIMIT_MAX_KEYS,
+)
+_login_ip_limiter = InMemorySlidingWindowLimiter(
+    limit=LOGIN_IP_RATE_LIMIT_PER_MINUTE,
     window_s=LOGIN_RATE_LIMIT_WINDOW_SECONDS,
     max_keys=RATE_LIMIT_MAX_KEYS,
 )
@@ -105,6 +111,14 @@ def login(
 ) -> dict[str, Any]:
     client_ip = (request.client.host if request.client else "") or "unknown"
     email = form.username.lower()
+
+    allowed, retry_after = _login_ip_limiter.check(client_ip)
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many login attempts. Try again later.",
+            headers={"Retry-After": str(retry_after)},
+        )
 
     allowed, retry_after = _login_limiter.check(f"{client_ip}:{email}")
     if not allowed:

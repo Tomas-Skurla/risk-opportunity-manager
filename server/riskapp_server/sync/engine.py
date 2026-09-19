@@ -665,6 +665,51 @@ def _receipt_result(receipt: SyncReceipt) -> dict[str, Any]:
     )
 
 
+def _refresh_accepted_replay(
+    ctx: _PushContext,
+    replay: dict[str, Any],
+) -> dict[str, Any]:
+    """Return current server state for an accepted idempotency replay.
+
+    A client can move its pull watermark past a row while the row has a local
+    retry pending. Replaying the original receipt must therefore reconcile the
+    current row, not restore the older snapshot stored with that receipt.
+    """
+    if replay.get("status") != "accepted":
+        return replay
+    entity = str(replay.get("entity") or "")
+    raw_entity_id = replay.get("entity_id")
+    if entity not in ENTITY_MODELS or not raw_entity_id:
+        return replay
+    try:
+        entity_id = uuid.UUID(str(raw_entity_id))
+    except (TypeError, ValueError):
+        return replay
+    server_version, server_record = _current_server_state(
+        ctx.db,
+        entity,
+        entity_id,
+        ctx.project_id,
+        ctx.user_id,
+    )
+    if server_record is None:
+        return replay
+    refreshed = dict(replay)
+    receipt_server_version = refreshed.get("server_version")
+    if isinstance(receipt_server_version, int) and not isinstance(
+        receipt_server_version, bool
+    ):
+        refreshed["receipt_server_version"] = receipt_server_version
+    refreshed["server_version"] = server_version
+    refreshed["server_record"] = server_record
+    refreshed["server_updated_at"] = (
+        str(server_record.get("updated_at"))
+        if server_record.get("updated_at") is not None
+        else None
+    )
+    return refreshed
+
+
 def _payload_hash(change: SyncChange) -> str:
     """Hash the parsed, key-order-independent request, excluding its receipt ID."""
     payload = change.model_dump(mode="json", exclude={"change_id"})
@@ -826,6 +871,7 @@ def _record_duplicate(ctx: _PushContext, change: SyncChange) -> None:
         if receipt is not None
         else {**ctx.batch_results[change.change_id], "replayed": True}
     )
+    replay = _refresh_accepted_replay(ctx, replay)
     ctx.results.append(replay)
     _append_legacy_outcome(replay, ctx.conflicts, ctx.errors)
 

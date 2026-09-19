@@ -47,6 +47,7 @@ class OpportunitiesMixin(ScoredEntityMixin):
     opps_table: QTableWidget
     _opp_cache: dict[str, Opportunity]
     _opp_editor_dirty: bool
+    _opportunity_editor_base_version: int | None
     _opp_title_by_id: dict[str, str]
     _mk_item: Callable[..., QTableWidgetItem]
     _refresh_action_opp_combo: Callable[[], None]
@@ -67,6 +68,7 @@ class OpportunitiesMixin(ScoredEntityMixin):
             self.backend.update_opportunity,
             self._refresh_opportunities if refresh else None,
             select_id,
+            base_version=self._opportunity_editor_base_version,
         ):
             self._opp_editor_dirty = False
 
@@ -129,6 +131,10 @@ class OpportunitiesMixin(ScoredEntityMixin):
         )
         if new_id:
             self.current_opportunity_id = new_id
+            selected = self._opp_cache.get(new_id)
+            self._opportunity_editor_base_version = (
+                int(selected.version) if selected is not None else None
+            )
             self._opp_editor_dirty = False
             self._sync_assessment_state("opportunity", new_id, self.opps_tab)
 
@@ -142,6 +148,7 @@ class OpportunitiesMixin(ScoredEntityMixin):
         self._sync_assessment_state("opportunity", None, self.opps_tab)
 
     def _save_opportunity(self, payload: dict) -> None:
+        was_new = self.current_opportunity_id is None
         extra = [self._refresh_action_opp_combo, self._refresh_actions]
         saved_id = self._save_entity(
             payload,
@@ -153,9 +160,15 @@ class OpportunitiesMixin(ScoredEntityMixin):
             self.opp_editor_label,
             "Editor",
             extra,
+            base_version=self._opportunity_editor_base_version,
         )
         if saved_id:
             self.current_opportunity_id = saved_id
+            if was_new:
+                selected = self._opp_cache.get(saved_id)
+                self._opportunity_editor_base_version = (
+                    int(selected.version) if selected is not None else 0
+                )
             self._opp_editor_dirty = False
             self._sync_assessment_state("opportunity", saved_id, self.opps_tab)
 

@@ -48,6 +48,7 @@ class GuiBackend:
         self.remote = SimpleNamespace(email="manager@example.test")
         self.superuser = False
         self.calls: list[tuple] = []
+        self.editor_base_versions: list[tuple[str, str, int | None]] = []
         self.risks = [
             Risk(
                 "risk-1",
@@ -158,6 +159,8 @@ class GuiBackend:
         return risk
 
     def update_risk(self, project_id, risk_id, **values):
+        base_version = values.pop("base_version", None)
+        self.editor_base_versions.append(("risk", risk_id, base_version))
         risk = Risk(risk_id, project_id, **values)
         self.risks = [risk if item.id == risk_id else item for item in self.risks]
         self.calls.append(("update_risk", risk_id))
@@ -190,6 +193,10 @@ class GuiBackend:
         return opportunity
 
     def update_opportunity(self, project_id, opportunity_id, **values):
+        base_version = values.pop("base_version", None)
+        self.editor_base_versions.append(
+            ("opportunity", opportunity_id, base_version)
+        )
         opportunity = Opportunity(opportunity_id, project_id, **values)
         self.opportunities = [
             opportunity if item.id == opportunity_id else item
@@ -436,6 +443,49 @@ def test_real_window_risk_and_opportunity_crud(monkeypatch, qtbot) -> None:
     window.current_project_id = None
     window._save_risk({"title": "No project"})
     assert warnings[-1] == "Select a project first."
+
+
+def test_open_editors_keep_the_version_the_user_actually_saw(qtbot) -> None:
+    window, backend = _window(qtbot)
+    backend.risks[0].version = 4
+    backend.opportunities[0].version = 3
+    window._refresh_risks(use_remote_report=False)
+    window._refresh_opportunities(use_remote_report=False)
+
+    window._on_risk_clicked(0, 1)
+    assert window.current_risk_id == "risk-1"
+    assert window._risk_editor_base_version == 4
+    assert window.risk_form.title.text() == "Outage"
+
+    # Simulate a silent automatic-sync refresh. The list/cache sees version 5,
+    # while the already-open editor intentionally retains the version-4 form.
+    backend.risks[0].title = "Bob's synchronized title"
+    backend.risks[0].version = 5
+    window._refresh_risks(select_id="risk-1", use_remote_report=False)
+    assert window._risk_cache["risk-1"].version == 5
+    assert window.risk_form.title.text() == "Outage"
+
+    window.risk_form.title.setText("Alice's editor value")
+    window._editor_dirty = True
+    window._commit_editor_changes(refresh=True)
+    assert backend.editor_base_versions[-1] == ("risk", "risk-1", 4)
+
+    window._on_opportunity_clicked(0, 1)
+    assert window._opportunity_editor_base_version == 3
+    backend.opportunities[0].title = "Newer synchronized opportunity"
+    backend.opportunities[0].version = 4
+    window._refresh_opportunities(
+        select_id="opp-1",
+        use_remote_report=False,
+    )
+    window.opp_form.title.setText("Local opportunity editor")
+    window._opp_editor_dirty = True
+    window._commit_opp_editor_changes(refresh=True)
+    assert backend.editor_base_versions[-1] == (
+        "opportunity",
+        "opp-1",
+        3,
+    )
 
 
 def test_scored_entity_helpers_permissions_and_export(monkeypatch, qtbot) -> None:

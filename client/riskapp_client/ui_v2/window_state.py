@@ -11,7 +11,9 @@ class MainWindowState:
 
     project_id: str | None = None
     risk_id: str | None = None
+    risk_editor_base_version: int | None = None
     opportunity_id: str | None = None
+    opportunity_editor_base_version: int | None = None
     action_id: str | None = None
     assessment_item_type: str = "risk"
     assessment_item_id: str | None = None

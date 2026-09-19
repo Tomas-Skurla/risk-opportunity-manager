@@ -652,14 +652,13 @@ class ApiBackend:
         title: str,
         probability: int,
         impact: int,
-        base_version: int | None = None,
+        base_version: int,
         **meta: object,
     ) -> Opportunity:
         """Update opportunity."""
         body = self._build_scored_payload(title, probability, impact, meta)
 
-        if base_version is not None:
-            body["base_version"] = int(base_version)
+        body["base_version"] = int(base_version)
 
         payload = self._req(
             "PATCH",
@@ -694,6 +693,8 @@ class ApiBackend:
         probability: int,
         impact: int,
         notes: str | None = None,
+        *,
+        base_version: int,
     ) -> Assessment:
         prefix = "risks" if item_type == "risk" else "opportunities"
         payload = self._req(
@@ -703,6 +704,7 @@ class ApiBackend:
                 "probability": int(probability),
                 "impact": int(impact),
                 "notes": (notes or ""),
+                "base_version": int(base_version),
             },
         )
         return self._to_assessment(_require_object(payload, "assessment"))
@@ -793,13 +795,12 @@ class ApiBackend:
         title: str,
         probability: int,
         impact: int,
-        base_version: int | None = None,
+        base_version: int,
         **meta: object,
     ) -> Risk:
         """Update risk."""
         body = self._build_scored_payload(title, probability, impact, meta)
-        if base_version is not None:
-            body["base_version"] = int(base_version)
+        body["base_version"] = int(base_version)
 
         payload = self._req(
             "PATCH", f"/projects/{project_id}/risks/{risk_id}", json_body=body
@@ -902,6 +903,7 @@ class ApiBackend:
         project_id: str,
         action_id: str,
         *,
+        base_version: int,
         target_type: str,
         target_id: str,
         kind: str,
@@ -912,6 +914,7 @@ class ApiBackend:
     ) -> Action:
         """Update action."""
         body = {
+            "base_version": int(base_version),
             "kind": kind,
             "title": title,
             "description": description or None,
@@ -1018,13 +1021,14 @@ class ApiBackend:
         project_id: str,
         ticket_id: str,
         *,
+        base_version: int,
         title: str | None = None,
         description: str | None = None,
         category: str | None = None,
         priority: str | None = None,
         status: str | None = None,
     ) -> HelpDeskTicket:
-        body: dict = {}
+        body: dict = {"base_version": int(base_version)}
         if title is not None:
             body["title"] = title
         if description is not None:

@@ -2,14 +2,14 @@
 
 The server exposes a retention endpoint:
 
-- `POST /projects/{project_id}/maintenance/prune?days=N` (project admin or superuser)
+- `POST /projects/{project_id}/maintenance/prune?days=N` (superuser only)
 
 To keep DB growth under control, schedule it **externally** (cron, systemd, CI),
 so you do not duplicate work across multiple app workers.
 
 ## One-off run
 
-Set credentials for a dedicated admin-capable account:
+Set credentials for a dedicated superuser account:
 
 ```bash
 export RISKAPP_BASE_URL=http://127.0.0.1:8000

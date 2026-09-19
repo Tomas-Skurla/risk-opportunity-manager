@@ -64,7 +64,12 @@ def _setup_entities(client: TestClient) -> tuple[str, dict[str, str], dict[str, 
     )
     assessment = client.put(
         f"/projects/{project_id}/risks/{risk.json()['id']}/assessment",
-        json={"probability": 2, "impact": 3, "notes": "Assessment"},
+        json={
+            "probability": 2,
+            "impact": 3,
+            "notes": "Assessment",
+            "base_version": 0,
+        },
         headers=headers,
     )
     ticket = client.post(
@@ -300,3 +305,108 @@ def test_two_concurrent_sync_updates_cannot_claim_the_same_sqlite_version(
         loser = next(body for body in bodies if body["accepted"] == 0)
         assert loser["conflicts"][0]["reason"] == "version_mismatch"
         assert loser["conflicts"][0]["server_version"] == 2
+
+
+def test_all_rest_updates_require_and_advance_base_version(
+    tmp_path, isolated_app_factory
+) -> None:
+    app = isolated_app_factory(f"sqlite+pysqlite:///{tmp_path / 'rest-types.db'}")
+    with TestClient(app) as client:
+        project_id, headers, entities = _setup_entities(client)
+        risk_id = entities["risk"]["id"]
+        cases = [
+            (
+                "PATCH",
+                f"/projects/{project_id}/risks/{risk_id}",
+                {"title": "Risk via REST"},
+            ),
+            (
+                "PATCH",
+                (
+                    f"/projects/{project_id}/opportunities/"
+                    f"{entities['opportunity']['id']}"
+                ),
+                {"title": "Opportunity via REST"},
+            ),
+            (
+                "PATCH",
+                f"/projects/{project_id}/actions/{entities['action']['id']}",
+                {"title": "Action via REST"},
+            ),
+            (
+                "PUT",
+                f"/projects/{project_id}/risks/{risk_id}/assessment",
+                {"probability": 4, "impact": 4, "notes": "REST"},
+            ),
+            (
+                "PATCH",
+                (
+                    f"/projects/{project_id}/helpdesk/tickets/"
+                    f"{entities['helpdesk_ticket']['id']}"
+                ),
+                {"title": "Ticket via REST"},
+            ),
+        ]
+
+        for method, path, body in cases:
+            missing = client.request(method, path, json=body, headers=headers)
+            assert missing.status_code == 422, missing.text
+
+            accepted = client.request(
+                method,
+                path,
+                json={**body, "base_version": 1},
+                headers=headers,
+            )
+            assert accepted.status_code == 200, accepted.text
+            assert accepted.json()["version"] == 2
+
+            stale = client.request(
+                method,
+                path,
+                json={**body, "base_version": 1},
+                headers=headers,
+            )
+            assert stale.status_code == 409, stale.text
+            assert stale.json()["detail"] == {
+                "reason": "version_mismatch",
+                "server_version": 2,
+            }
+
+
+def test_two_concurrent_rest_updates_cannot_claim_the_same_version(
+    tmp_path, isolated_app_factory, monkeypatch
+) -> None:
+    app = isolated_app_factory(f"sqlite+pysqlite:///{tmp_path / 'rest-race.db'}")
+    with TestClient(app) as client:
+        project_id, headers, entities = _setup_entities(client)
+
+        from riskapp_server.core import items_crud
+
+        original_claim = items_crud.claim_base_version
+        barrier = threading.Barrier(2)
+
+        def synchronized_claim(*args, **kwargs):
+            barrier.wait(timeout=10)
+            return original_claim(*args, **kwargs)
+
+        monkeypatch.setattr(items_crud, "claim_base_version", synchronized_claim)
+
+        def patch_risk(title: str):
+            return client.patch(
+                f"/projects/{project_id}/risks/{entities['risk']['id']}",
+                json={"title": title, "base_version": 1},
+                headers=headers,
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            responses = list(pool.map(patch_risk, ("Writer A", "Writer B")))
+
+        assert sorted(response.status_code for response in responses) == [200, 409]
+        winner = next(response for response in responses if response.status_code == 200)
+        loser = next(response for response in responses if response.status_code == 409)
+        assert winner.json()["version"] == 2
+        assert loser.json()["detail"] == {
+            "reason": "version_mismatch",
+            "server_version": 2,
+        }

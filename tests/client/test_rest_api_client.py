@@ -492,16 +492,18 @@ def test_opportunity_and_assessment_routes_map_models_and_targets() -> None:
         title="Upside",
         probability=3,
         impact=5,
-        base_version=None,
+        base_version=4,
     )
-    assert "base_version" not in backend._req.call_args.kwargs["json_body"]
+    assert backend._req.call_args.kwargs["json_body"]["base_version"] == 4
     backend.delete_opportunity("project-1", "opp-1")
 
     backend._req = Mock(return_value=[ASSESSMENT])
     assert backend.list_assessments("project-1", "risk", "risk-1")[0].score == 10
     assert "/risks/risk-1/assessments" in backend._req.call_args.args[1]
     backend._req = Mock(return_value=ASSESSMENT)
-    backend.upsert_my_assessment("project-1", "opportunity", "opp-1", 4, 2, None)
+    backend.upsert_my_assessment(
+        "project-1", "opportunity", "opp-1", 4, 2, None, base_version=0
+    )
     assert "/opportunities/opp-1/assessment" in backend._req.call_args.args[1]
     assert backend._req.call_args.kwargs["json_body"]["notes"] == ""
     assert backend.current_user_id() == "user-1"
@@ -592,6 +594,7 @@ def test_action_routes_cover_risk_and_opportunity_targets() -> None:
     backend.update_action(
         "project-1",
         "action-1",
+        base_version=1,
         target_type="risk",
         target_id="risk-2",
         kind="mitigation",
@@ -600,10 +603,11 @@ def test_action_routes_cover_risk_and_opportunity_targets() -> None:
         status="done",
         owner_user_id=None,
     )
-    assert backend._req.call_args.kwargs["json_body"]["opportunity_id"] is None
+    assert backend._req.call_args.kwargs["json_body"]["base_version"] == 1
     backend.update_action(
         "project-1",
         "action-1",
+        base_version=2,
         target_type="opportunity",
         target_id="opp-2",
         kind="exploit",
@@ -648,22 +652,26 @@ def test_member_and_helpdesk_routes_map_defaults_and_partial_updates() -> None:
     backend.update_helpdesk_ticket(
         "project-1",
         "ticket-1",
+        base_version=1,
         title="Updated",
         priority=None,
         status="resolved",
     )
     assert backend._req.call_args.kwargs["json_body"] == {
+        "base_version": 1,
         "title": "Updated",
         "status": "resolved",
     }
     backend.update_helpdesk_ticket(
         "project-1",
         "ticket-1",
+        base_version=2,
         description="D",
         category="bug",
         priority="high",
     )
     assert backend._req.call_args.kwargs["json_body"] == {
+        "base_version": 2,
         "description": "D",
         "category": "bug",
         "priority": "high",

@@ -97,7 +97,7 @@ def test_item_validation_reports_and_status_transitions(
         assert (
             client.patch(
                 f"/projects/{project_id}/risks/{missing_id}",
-                json={"title": "Missing"},
+                json={"title": "Missing", "base_version": 1},
                 headers=headers,
             ).status_code
             == 404
@@ -105,7 +105,7 @@ def test_item_validation_reports_and_status_transitions(
         assert (
             client.patch(
                 f"/projects/{project_id}/risks/{opportunity['id']}",
-                json={"title": "Wrong type"},
+                json={"title": "Wrong type", "base_version": 1},
                 headers=headers,
             ).status_code
             == 404
@@ -121,7 +121,7 @@ def test_item_validation_reports_and_status_transitions(
         for payload, detail in invalid_updates:
             response = client.patch(
                 f"/projects/{project_id}/risks/{generated['id']}",
-                json=payload,
+                json={**payload, "base_version": generated["version"]},
                 headers=headers,
             )
             assert response.status_code == 422, response.text
@@ -129,7 +129,7 @@ def test_item_validation_reports_and_status_transitions(
 
         duplicate = client.patch(
             f"/projects/{project_id}/risks/{generated['id']}",
-            json={"code": "R-INCIDENT"},
+            json={"code": "R-INCIDENT", "base_version": generated["version"]},
             headers=headers,
         )
         assert duplicate.status_code == 409
@@ -222,7 +222,7 @@ def test_action_update_validation_and_retargeting(
         assert (
             client.patch(
                 f"/projects/{project_id}/actions/{missing_action}",
-                json={"title": "Missing"},
+                json={"title": "Missing", "base_version": 1},
                 headers=headers,
             ).status_code
             == 404
@@ -237,7 +237,7 @@ def test_action_update_validation_and_retargeting(
         for payload, detail in invalid_updates:
             response = client.patch(
                 f"/projects/{project_id}/actions/{action['id']}",
-                json=payload,
+                json={**payload, "base_version": action["version"]},
                 headers=headers,
             )
             assert response.status_code == 422, response.text
@@ -251,6 +251,7 @@ def test_action_update_validation_and_retargeting(
                 "title": "  Mitigate outage  ",
                 "description": "Add redundancy",
                 "status": "done",
+                "base_version": action["version"],
             },
             headers=headers,
         )
@@ -262,7 +263,10 @@ def test_action_update_validation_and_retargeting(
 
         description_only = client.patch(
             f"/projects/{project_id}/actions/{action['id']}",
-            json={"description": "Updated details"},
+            json={
+                "description": "Updated details",
+                "base_version": retargeted.json()["version"],
+            },
             headers=headers,
         )
         assert description_only.status_code == 200

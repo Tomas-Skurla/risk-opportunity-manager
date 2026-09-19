@@ -8,6 +8,7 @@ from datetime import timedelta
 
 from fastapi.testclient import TestClient
 from riskapp_server.sync import engine
+from sqlalchemy import select
 
 
 def _setup(client: TestClient) -> tuple[str, dict[str, str]]:
@@ -88,6 +89,51 @@ def test_accepted_receipt_is_replayed_without_reapplying_change(
         ).json()
         row = next(item for item in pulled["risks"] if item["id"] == risk_id)
         assert row["version"] == 1
+
+
+def test_accepted_receipt_replay_returns_the_current_server_row(
+    tmp_path, isolated_app_factory
+) -> None:
+    app = isolated_app_factory(f"sqlite+pysqlite:///{tmp_path / 'current.db'}")
+    with TestClient(app) as client:
+        project_id, headers = _setup(client)
+        risk_id = str(uuid.uuid4())
+        original = {
+            "change_id": str(uuid.uuid4()),
+            "entity": "risk",
+            "op": "upsert",
+            "base_version": 0,
+            "record": {
+                "id": risk_id,
+                "title": "Original",
+                "probability": 2,
+                "impact": 3,
+            },
+        }
+        assert _push(client, project_id, headers, original).json()["accepted"] == 1
+        newer = {
+            "change_id": str(uuid.uuid4()),
+            "entity": "risk",
+            "op": "upsert",
+            "base_version": 1,
+            "record": {
+                "id": risk_id,
+                "title": "Newer server value",
+                "probability": 5,
+                "impact": 4,
+            },
+        }
+        assert _push(client, project_id, headers, newer).json()["accepted"] == 1
+
+        replay = _push(client, project_id, headers, original).json()
+
+        assert replay["duplicates"] == 1
+        result = replay["results"][0]
+        assert result["replayed"] is True
+        assert result["receipt_server_version"] == 1
+        assert result["server_version"] == 2
+        assert result["server_record"]["version"] == 2
+        assert result["server_record"]["title"] == "Newer server value"
 
 
 def test_conflict_and_error_receipts_replay_the_original_outcome(
@@ -312,12 +358,16 @@ def test_audit_prune_keeps_receipts_inside_idempotency_window(
         }
         assert _push(client, project_id, headers, change).json()["accepted"] == 1
         # pylint: disable-next=import-outside-toplevel
-        from riskapp_server.db.session import SessionLocal, SyncReceipt, utcnow
+        from riskapp_server.db.session import SessionLocal, SyncReceipt, User, utcnow
 
         with SessionLocal() as db:
             receipt = db.get(SyncReceipt, uuid.UUID(change["change_id"]))
             assert receipt is not None
             receipt.processed_at = utcnow() - timedelta(days=200)
+            receipt_user = db.execute(
+                select(User).where(User.email == "receipt-replay@test.com")
+            ).scalar_one()
+            receipt_user.is_superuser = True
             db.commit()
         pruned = client.post(
             f"/projects/{project_id}/maintenance/prune?days=1", headers=headers

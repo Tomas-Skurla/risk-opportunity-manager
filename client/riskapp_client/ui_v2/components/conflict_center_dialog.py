@@ -118,11 +118,16 @@ class ConflictCenterDialog(QDialog):
         return self._conflicts[row]
 
     def _set_action_state(self, conflict: dict[str, Any] | None) -> None:
+        displayed_version = self._displayed_server_version(conflict)
         self.keep_mine_btn.setEnabled(
-            bool(conflict and conflict.get("server_version") is not None)
+            bool(conflict and displayed_version is not None)
         )
         self.use_server_btn.setEnabled(
-            bool(conflict and conflict.get("server_record"))
+            bool(
+                conflict
+                and displayed_version is not None
+                and conflict.get("server_record")
+            )
         )
         self.merge_btn.setEnabled(bool(conflict and mergeable_fields(conflict)))
         if self.use_server_btn.isEnabled():
@@ -133,6 +138,17 @@ class ConflictCenterDialog(QDialog):
             self.use_server_btn.setToolTip(
                 "The saved server copy is unavailable for this conflict"
             )
+
+    @staticmethod
+    def _displayed_server_version(
+        conflict: dict[str, Any] | None,
+    ) -> int | None:
+        if not conflict:
+            return None
+        raw = conflict.get("server_version")
+        if raw is None and isinstance(conflict.get("server_record"), dict):
+            raw = conflict["server_record"].get("version")
+        return raw if isinstance(raw, int) and not isinstance(raw, bool) else None
 
     def _show_selection(self) -> None:
         conflict = self._selected_conflict()
@@ -190,12 +206,22 @@ class ConflictCenterDialog(QDialog):
         ):
             return
         try:
+            expected_server_version = self._displayed_server_version(conflict)
             if resolution == "merge":
                 if not choices or "mine" not in choices.values():
                     raise ValueError("Choose at least one of your values")
-                result = self._resolve_conflict(change_id, resolution, choices)
+                result = self._resolve_conflict(
+                    change_id,
+                    resolution,
+                    choices,
+                    expected_server_version=expected_server_version,
+                )
             else:
-                result = self._resolve_conflict(change_id, resolution)
+                result = self._resolve_conflict(
+                    change_id,
+                    resolution,
+                    expected_server_version=expected_server_version,
+                )
             if not isinstance(result, dict) or not bool(result.get("resolved")):
                 raise RuntimeError("The conflict was not resolved")
         except (KeyError, RuntimeError, ValueError, sqlite3.Error) as exc:

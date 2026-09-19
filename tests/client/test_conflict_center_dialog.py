@@ -96,7 +96,11 @@ def test_keep_mine_requires_confirmation_and_removes_resolved_row(
 
     dialog._resolve_selected("keep_mine")
 
-    resolver.assert_called_once_with("change-1", "keep_mine")
+    resolver.assert_called_once_with(
+        "change-1",
+        "keep_mine",
+        expected_server_version=7,
+    )
     resolved.assert_called_once_with("change-1", "keep_mine")
     assert dialog.conflicts_remaining() == 0
     assert dialog.result() == QDialog.DialogCode.Accepted
@@ -182,6 +186,7 @@ def test_field_choices_send_explicit_selection_to_resolver(qtbot, monkeypatch) -
     resolver.assert_called_once_with(
         "change-1", "merge",
         {"title": "mine", "probability": "server", "impact": "server"},
+        expected_server_version=7,
     )
 
 
@@ -224,6 +229,7 @@ def test_merge_sqlite_failure_is_reported_and_conflict_remains(
     resolver.assert_called_once_with(
         "change-1", "merge",
         {"title": "mine", "probability": "server", "impact": "server"},
+        expected_server_version=7,
     )
     critical.assert_called_once()
     assert "merged write failed" in critical.call_args.args[2]

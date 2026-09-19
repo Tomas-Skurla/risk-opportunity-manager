@@ -738,8 +738,19 @@ class OutboxStore:
                     ).fetchone()
                     if replacement is None:
                         continue
+                    raw_receipt_version = result.get("receipt_server_version")
+                    replacement_version = (
+                        raw_receipt_version
+                        if bool(result.get("replayed"))
+                        and isinstance(raw_receipt_version, int)
+                        and not isinstance(raw_receipt_version, bool)
+                        else server_version
+                    )
                     current_base = int(replacement["base_version"] or 0)
-                    advanced_base = max(current_base, int(server_version or 0))
+                    advanced_base = max(
+                        current_base,
+                        int(replacement_version or 0),
+                    )
                     replacement_record = self._safe_json_loads(
                         replacement["record_json"]
                     )
@@ -758,12 +769,23 @@ class OutboxStore:
                             replacement["change_id"],
                         ),
                     )
+                    metadata_record = server_record
+                    if (
+                        bool(result.get("replayed"))
+                        and replacement_version != server_version
+                        and server_record is not None
+                    ):
+                        metadata_record = {
+                            key: server_record[key]
+                            for key in ("id", "project_id", "code")
+                            if key in server_record
+                        }
                     self._store.advance_push_acknowledgement(
                         project_id,
                         entity=entity,
                         entity_id=entity_id,
-                        server_version=server_version,
-                        server_record=server_record,
+                        server_version=replacement_version,
+                        server_record=metadata_record,
                     )
                 acknowledged += 1
         return acknowledged

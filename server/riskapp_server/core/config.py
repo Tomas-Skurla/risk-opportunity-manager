@@ -121,9 +121,15 @@ ACCESS_TOKEN_MINUTES: int = _env_int(
     "ACCESS_TOKEN_MINUTES", TOKEN_MINUTES, minimum=1, maximum=1440
 )
 REFRESH_TOKEN_DAYS: int = _env_int("REFRESH_TOKEN_DAYS", 30, minimum=1, maximum=365)
+REFRESH_TOKEN_REUSE_GRACE_SECONDS: int = _env_int(
+    "REFRESH_TOKEN_REUSE_GRACE_SECONDS", 30, minimum=0, maximum=300
+)
 
 LOGIN_RATE_LIMIT_PER_MINUTE: int = _env_int(
     "LOGIN_RATE_LIMIT_PER_MINUTE", 10, minimum=1
+)
+LOGIN_IP_RATE_LIMIT_PER_MINUTE: int = _env_int(
+    "LOGIN_IP_RATE_LIMIT_PER_MINUTE", 50, minimum=1
 )
 LOGIN_RATE_LIMIT_WINDOW_SECONDS: int = _env_int(
     "LOGIN_RATE_LIMIT_WINDOW_SECONDS", 60, minimum=1

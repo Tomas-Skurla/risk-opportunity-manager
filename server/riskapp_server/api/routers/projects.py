@@ -252,11 +252,14 @@ def prune_project_logs(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Delete old audit/sync receipt rows for a project.
+    """Delete old audit/sync receipt rows for a project as a superuser.
 
-    This keeps long-running projects from accumulating unbounded log tables.
+    Project administrators are part of the activity being audited, so they
+    cannot shorten or erase their own project's audit history.
     """
-    require_min_role(db, project_id, user.id, min_role=Role.admin)
+    _require_superuser(user)
+    if db.get(Project, project_id) is None:
+        raise HTTPException(status_code=404, detail="Project not found")
     d = int(days or RETENTION_DAYS)
     d = max(1, min(d, 3650))
     cutoff = utcnow() - timedelta(days=d)

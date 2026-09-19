@@ -214,7 +214,12 @@ def test_every_syncable_entity_uses_one_project_sequence(
 
         assessment = client.put(
             f"/projects/{project_id}/risks/{risk['id']}/assessment",
-            json={"probability": 3, "impact": 4, "notes": "Reviewed"},
+            json={
+                "probability": 3,
+                "impact": 4,
+                "notes": "Reviewed",
+                "base_version": 0,
+            },
             headers=headers,
         )
         assert assessment.status_code == 200, assessment.text

@@ -156,7 +156,7 @@ def prune(base_url: str, token: str, project_id: str, days: int) -> dict[str, An
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m riskapp_server.ops.prune_job",
-        description="Call the admin-only retention prune endpoint.",
+        description="Call the superuser-only retention prune endpoint.",
     )
     parser.add_argument("project_id")
     parser.add_argument(

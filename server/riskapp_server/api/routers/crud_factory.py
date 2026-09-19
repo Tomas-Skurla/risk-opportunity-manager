@@ -16,6 +16,7 @@ from riskapp_server.auth.service import get_current_user
 from riskapp_server.core.csv_export import safe_csv_cell
 from riskapp_server.core.filters import ItemFilterParams, apply_item_filters
 from riskapp_server.core.items_crud import (
+    claim_base_version,
     create_item,
     delete_item,
     generate_report,
@@ -295,26 +296,33 @@ def create_crud_router(
 
             now = utcnow()
             if not assessment:
+                if payload.base_version != 0:
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "reason": "version_mismatch",
+                            "server_version": None,
+                        },
+                    )
                 assessment = AssessmentModel(
                     id=uuid.uuid4(),
                     **{parent_id_field: item_id},
                     assessor_user_id=user.id,
                     created_at=now,
                     updated_at=now,
-                    version=0,
+                    version=1,
                     is_deleted=False,
                 )
                 db.add(assessment)
-            elif (
-                payload.base_version is not None
-                and assessment.version != payload.base_version
-            ):
-                raise HTTPException(
-                    status_code=409,
-                    detail={
-                        "reason": "version_mismatch",
-                        "server_version": assessment.version,
-                    },
+            else:
+                assessment = claim_base_version(
+                    db,
+                    AssessmentModel,
+                    (
+                        getattr(AssessmentModel, parent_id_field) == item_id,
+                        AssessmentModel.assessor_user_id == user.id,
+                    ),
+                    payload.base_version,
                 )
 
             assessment.probability = payload.probability
@@ -322,7 +330,6 @@ def create_crud_router(
             assessment.notes = payload.notes
             assessment.is_deleted = False
             assessment.updated_at = now
-            assessment.version = int(assessment.version) + 1
 
             recalculate_item_scores(assessment)
             db.commit()
