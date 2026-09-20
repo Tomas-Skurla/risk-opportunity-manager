@@ -12,7 +12,7 @@ This runs:
 
 1. `python scripts/check_migrations.py` (empty database to Alembic head, then drift detection)
 2. `bash scripts/test.sh` (90% combined, 92% line, and 80% branch coverage ratchets)
-3. `bash scripts/typecheck.sh` (incremental mypy module allowlist)
+3. `bash scripts/typecheck.sh` (both complete application packages)
 4. `bash scripts/lint.sh`
 5. `python -m compileall -q server client scripts`
 6. `python -m pip check`
@@ -37,9 +37,11 @@ bash scripts/check_project.sh --fix
 
 The canonical suite includes headless Qt interaction tests. Install the client lock file and the OS packages from `scripts/setup_os_prereqs.sh --headless-gui` before running the complete suite.
 
-Mypy is intentionally incremental: `[tool.mypy].files` in `pyproject.toml` is the reviewed module allowlist. Add modules as their existing findings are fixed; do not replace the allowlist with the whole repository and suppress the result.
+Mypy checks all modules under `server/riskapp_server` and `client/riskapp_client`. Strict function annotations, unreachable-code checks, extra checks, and unused-ignore checks are enabled package-wide. Only generated Qt `ui_*.py` modules have a narrow override because they are regenerated from Designer forms rather than maintained by hand.
 
 Ruff includes its Bandit-derived `S` security rules. The configured test exceptions cover assertions, obvious fixture credentials, and two narrowly scoped platform fixtures. Production suppressions remain line-specific and must document the validation or fixed input that makes the flagged operation safe.
+
+CI additionally pins third-party actions by full commit SHA. Its container job uses Trivy for repository secret scanning and actionable image vulnerability/secret scanning, then uploads image findings as SARIF when the event has permission. `security-events: write` is scoped to that job.
 
 ## Qt Designer forms
 

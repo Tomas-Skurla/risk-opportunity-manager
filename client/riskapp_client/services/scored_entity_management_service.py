@@ -7,7 +7,7 @@ import uuid
 from collections.abc import Callable, Mapping, MutableMapping
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
-from typing import Any, Generic, TypeVar
+from typing import Any
 
 from riskapp_client.adapters.local_storage.sqlite_data_store import utc_iso
 from riskapp_client.domain.scored_entity_fields import (
@@ -15,11 +15,9 @@ from riskapp_client.domain.scored_entity_fields import (
     SCORED_ENTITY_META_KEYS,
 )
 
-ModelT = TypeVar("ModelT")
-
 
 @dataclass(frozen=True)
-class ScoredEntityWiring(Generic[ModelT]):
+class ScoredEntityWiring[ModelT]:
     """Bind entity-specific store/outbox callables."""
 
     kind: str  # "risk" | "opportunity"
@@ -44,7 +42,7 @@ class ScoredEntityWiring(Generic[ModelT]):
     remote_create_may_exist_fn: Callable[[str, str], bool] | None = None
 
 
-class ScoredEntityService(Generic[ModelT]):
+class ScoredEntityService[ModelT]:
     """Create/update scored entities locally and queue sync."""
 
     def __init__(self, wiring: ScoredEntityWiring[ModelT]) -> None:

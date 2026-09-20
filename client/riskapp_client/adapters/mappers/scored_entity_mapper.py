@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, MutableMapping
-from typing import Any, TypeVar
+from typing import Any
 
 from riskapp_client.domain.scored_entity_fields import (
     SCORED_ENTITY_META_KEYS,
@@ -11,7 +11,6 @@ from riskapp_client.domain.scored_entity_fields import (
 )
 from riskapp_client.utils.normalize import norm_optional_text_fields
 
-ModelT = TypeVar("ModelT")
 
 # Text-like metadata keys.
 SCORED_ENTITY_TEXT_META_KEYS: tuple[str, ...] = tuple(
@@ -93,7 +92,7 @@ def normalize_scored_payload_inplace(
             payload[k] = _opt_int(payload.get(k))
 
 
-def scored_entity_from_mapping(
+def scored_entity_from_mapping[ModelT](
     data: Mapping[str, Any], *, model_cls: type[ModelT]
 ) -> ModelT:
     """Create a Risk/Opportunity model from a mapping (API JSON, sqlite3.Row, dict)."""

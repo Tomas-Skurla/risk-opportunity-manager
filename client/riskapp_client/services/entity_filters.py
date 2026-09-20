@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TypeVar
 
 from riskapp_client.domain.domain_models import Opportunity, Risk, ScoredEntity
 
@@ -54,10 +53,7 @@ RiskFilterCriteria = ScoredFilterCriteria
 OpportunityFilterCriteria = ScoredFilterCriteria
 
 
-TScored = TypeVar("TScored", bound=ScoredEntity)
-
-
-def filter_scored(
+def filter_scored[TScored: ScoredEntity](
     items: Sequence[TScored], criteria: ScoredFilterCriteria
 ) -> list[TScored]:
     """Filter any scored entity according to UI criteria."""

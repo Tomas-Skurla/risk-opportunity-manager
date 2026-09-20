@@ -4,7 +4,7 @@ This guide describes the recommended local setup using the repository scripts. T
 
 ## Prerequisites
 
-- Python 3.11 through 3.14. Python 3.14 is supported by the current lock files.
+- Python 3.14. Docker, CI, Black, Ruff, mypy, and dependency relocking all use this same minor version.
 - A shell capable of running Bash scripts.
 - Two terminal windows for running the server and client.
 - For the desktop GUI, install OS-level Qt/X11 runtime libraries through `scripts/setup_os_prereqs.sh`.
@@ -75,7 +75,7 @@ If your default `python3` is not the version you want, provide an interpreter ex
 PYTHON_BIN=python3.14 bash scripts/setup_python_env.sh
 ```
 
-The script accepts Python 3.11 through 3.14. It creates `.venv`, installs:
+The script requires Python 3.14. It creates `.venv`, installs:
 
 ```text
 server/requirements.lock

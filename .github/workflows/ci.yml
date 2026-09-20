@@ -6,7 +6,6 @@ on:
 
 permissions:
   contents: read
-  security-events: write   # required to upload Trivy SARIF to code scanning
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -26,7 +25,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
-          python-version: "3.12"
+          python-version: "3.14"
           cache: pip
           cache-dependency-path: |
             server/requirements.lock
@@ -53,10 +52,24 @@ jobs:
     name: Container image
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    permissions:
+      contents: read
+      security-events: write
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+
+      - name: Scan repository for exposed secrets
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: v0.74.0
+          scan-type: fs
+          scan-ref: .
+          scanners: secret
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          format: table
 
       - name: Build test target
         run: docker build --target test -t riskapp:test .
@@ -116,7 +129,7 @@ jobs:
           version: v0.74.0
           trivyignores: .trivyignore.yaml
           image-ref: riskapp-api:ci
-          scanners: vuln
+          scanners: vuln,secret
           severity: CRITICAL,HIGH
           ignore-unfixed: true
           exit-code: "1"
@@ -133,7 +146,7 @@ jobs:
           version: v0.74.0
           trivyignores: .trivyignore.yaml
           image-ref: riskapp-api:ci
-          scanners: vuln
+          scanners: vuln,secret
           severity: CRITICAL,HIGH
           ignore-unfixed: true
           limit-severities-for-sarif: true

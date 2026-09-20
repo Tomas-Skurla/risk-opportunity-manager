@@ -35,7 +35,6 @@ from riskapp_client.domain.scored_entity_fields import (
 )
 
 ModelT = TypeVar("ModelT")
-ValueT = TypeVar("ValueT")
 
 _TEXT_META_KEYS: set[str] = {
     name
@@ -102,7 +101,7 @@ def _row_get(row: sqlite3.Row, key: str, default: Any = None) -> Any:
         return default
 
 
-def _value_or_existing(
+def _value_or_existing[ValueT](
     value: ValueT | None,
     existing: sqlite3.Row | None,
     key: str,

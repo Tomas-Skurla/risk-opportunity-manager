@@ -38,7 +38,7 @@ python scripts/check_migrations.py
 echo "Running tests..."
 bash scripts/test.sh
 
-echo "Running incremental type checks..."
+echo "Running package-wide type checks..."
 bash scripts/typecheck.sh
 
 echo "Running lint..."

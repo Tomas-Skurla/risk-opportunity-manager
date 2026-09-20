@@ -10,7 +10,7 @@ RiskApp is an offline-first risk and opportunity manager: a FastAPI/SQLAlchemy A
 - authorization enforced consistently across REST and sync paths;
 - Argon2id password hashing with automatic migration of legacy PBKDF2 hashes after a successful login;
 - bounded request/response handling, literal search escaping, and safe CSV export;
-- isolated API and client-core tests plus incremental mypy, Ruff, compile, and dependency checks;
+- isolated API and client-core tests plus package-wide mypy, Ruff, compile, and dependency checks;
 - reproducible runtime lock files and an automated CI gate.
 
 ## Quick start
@@ -22,13 +22,15 @@ See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for boundaries, invariants, security
 The suite runs Qt offscreen, so it does not need a display server but still requires the locked PySide6 runtime:
 
 ```bash
-python3 -m venv .venv
+python3.14 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements-test.txt
 bash scripts/check_project.sh
 ```
 
 The check script validates a fresh Alembic migration, runs tests with a 90% combined coverage gate plus independent 92% line and 80% branch ratchets, package-wide mypy checks, Ruff, byte-compilation, and `pip check`. CI runs the same command on every push and pull request. Black remains available through `bash scripts/format.sh`; formatting-only normalization is intentionally separate.
+
+CI pins third-party actions by full commit SHA, keeps security-event write access on the container job only, and uses Trivy to block actionable image vulnerabilities and exposed secrets. Trivy's image findings are also uploaded as SARIF when GitHub permits the event to write to code scanning
 
 ## Run the application
 

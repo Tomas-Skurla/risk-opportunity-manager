@@ -20,7 +20,7 @@ scripts/
   setup_os_prereqs.sh       # best-effort OS package prerequisites for apt/dnf/yum/pacman/zypper/apk/brew
   setup_python_env.sh       # creates .venv and installs runtime locks + dev tools
   check_project.sh          # runs tests, type checks, lint, and pip check
-  typecheck.sh              # checks the incremental mypy module allowlist
+  typecheck.sh              # checks both complete application packages
   diagnose_qt_runtime.sh    # diagnoses missing PySide6/Qt native libraries
   relock_python_deps.sh     # regenerates server/client lock files separately
   reset_dev_state.sh        # removes dev SQLite DBs

@@ -11,7 +11,7 @@ pytest-qt>=4.4,<5
 # FastAPI/Starlette's in-process TestClient uses the maintained HTTPX2 client.
 httpx2>=2,<3
 
-ruff>=0.5,<1
-black>=24,<27
+ruff>=0.14,<1
+black>=26,<27
 mypy>=2.3,<3
 types-python-jose>=3.5,<4
