@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
 )
+from riskapp_client import __version__
 from riskapp_client.ui_v2.tabs.actions_tab import ActionsTab
 from riskapp_client.ui_v2.tabs.assessments_tab import AssessmentsTab
 from riskapp_client.ui_v2.tabs.helpdesk_tab import HelpDeskTab
@@ -135,7 +136,7 @@ class LayoutMixin:
         window = cast(QMainWindow, self)
         self.ui = Ui_MainWindow()
         self.ui.setupUi(window)
-        window.setWindowTitle("RiskApp")
+        window.setWindowTitle(f"RiskApp {__version__}")
         self.project_list = self.ui.project_list
         self.sync_btn = self.ui.sync_btn
         self.new_project_btn = self.ui.new_project_btn

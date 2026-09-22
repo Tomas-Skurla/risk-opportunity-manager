@@ -1,5 +1,10 @@
 # Offline Risk & Opportunity Manager
 
+[![CI](https://github.com/Tomas-Skurla/risk-opportunity-manager/actions/workflows/ci.yml/badge.svg?branch=upgrades%2Fbugfixes)](https://github.com/Tomas-Skurla/risk-opportunity-manager/actions/workflows/ci.yml)
+[![Coverage gate](https://img.shields.io/badge/coverage%20gate-90%25%20combined-brightgreen)](docs/README_QA.md)
+[![Python 3.14](https://img.shields.io/badge/python-3.14-blue.svg)](docs/SETUP_GUIDE.md)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
 RiskApp is an offline-first risk and opportunity manager: a FastAPI/SQLAlchemy API and a PySide6 desktop client with a local SQLite cache, persistent synchronization outbox, version-based conflict detection, project RBAC, audit receipts, and hashed rotating refresh tokens.
 
 ## What this repository demonstrates
@@ -16,6 +21,17 @@ RiskApp is an offline-first risk and opportunity manager: a FastAPI/SQLAlchemy A
 ## Quick start
 
 See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for boundaries, invariants, security choices, and explicit production trade-offs.
+
+## Screenshots
+
+### Risk workspace
+
+![RiskApp main window showing the project risk workspace](docs/images/riskapp-main-window.png)
+
+### Field-level conflict merge
+
+![RiskApp field merge dialog comparing local and server values](docs/images/conflict-field-merge.png)
+
 
 ## Run the review checks
 

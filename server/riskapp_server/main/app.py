@@ -14,6 +14,7 @@ from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.gzip import GZipMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from riskapp_server import __version__
 from riskapp_server.api.routers.actions import router as actions_router
 from riskapp_server.api.routers.auth_routes import router as auth_router
 from riskapp_server.api.routers.helpdesk import router as helpdesk_router
@@ -122,7 +123,7 @@ def create_app() -> FastAPI:
     application = FastAPI(
         title="RiskApp API",
         summary="Offline-first risk and opportunity management API",
-        version="0.1.0",
+        version=__version__,
         lifespan=lifespan,
     )
 

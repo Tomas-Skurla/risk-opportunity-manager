@@ -8,6 +8,7 @@ from unittest.mock import Mock
 
 import pytest
 from PySide6.QtWidgets import QDialog, QLineEdit, QMessageBox, QTableWidget
+from riskapp_client import __version__
 from riskapp_client.domain.domain_models import Backend, Member, Risk
 from riskapp_client.ui_v2.components.custom_gui_widgets import (
     LoginDialog,
@@ -240,7 +241,7 @@ def test_main_window_builds_all_views_and_common_gui_helpers(
     qtbot.addWidget(window)
     window.top_tab.auto_snap_timer.stop()
 
-    assert window.windowTitle() == "RiskApp"
+    assert window.windowTitle() == f"RiskApp {__version__}"
     assert window.ui.main_stacked_widget.count() == 8
     assert window.ui.sidebar_list.count() == 8
     assert window.risk_form.btn.text() == "Save Risk"

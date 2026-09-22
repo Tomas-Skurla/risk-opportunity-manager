@@ -11,7 +11,6 @@ from riskapp_client.domain.scored_entity_fields import (
 )
 from riskapp_client.utils.normalize import norm_optional_text_fields
 
-
 # Text-like metadata keys.
 SCORED_ENTITY_TEXT_META_KEYS: tuple[str, ...] = tuple(
     k
