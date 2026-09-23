@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: riskapp-api
+  namespace: riskapp
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: riskapp-api
+  template:
+    metadata:
+      labels:
+        app: riskapp-api
+    spec:
+      securityContext:
+        fsGroup: 1000
+      containers:
+        - name: api
+          image: riskapp-api:lab-1
+          imagePullPolicy: Never
+          ports:
+            - name: http
+              containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: riskapp-config
+            - secretRef:
+                name: riskapp-secrets
+          volumeMounts:
+            - mountPath: /data
+              name: data
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+              httpHeaders:
+                - name: Host
+                  value: localhost
+            timeoutSeconds: 3
+      volumes:
+          - name: data
+            persistentVolumeClaim:
+              claimName: riskapp-data

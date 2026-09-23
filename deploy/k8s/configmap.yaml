@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: riskapp-config
+  namespace: riskapp
+data:
+  ENV: development
+  DATABASE_URL: sqlite+pysqlite:////data/riskapp.db
+  AUTO_CREATE_SCHEMA: "1"
+  ALLOWED_HOSTS: localhost,127.0.0.1
