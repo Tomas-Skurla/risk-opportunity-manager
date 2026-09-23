@@ -1,6 +1,6 @@
 # Offline Risk & Opportunity Manager
 
-[![CI](https://github.com/Tomas-Skurla/risk-opportunity-manager/actions/workflows/ci.yml/badge.svg?branch=upgrades%2Fbugfixes)](https://github.com/Tomas-Skurla/risk-opportunity-manager/actions/workflows/ci.yml)
+[![CI](https://github.com/Tomas-Skurla/risk-opportunity-manager/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Tomas-Skurla/risk-opportunity-manager/actions/workflows/ci.yml)
 [![Coverage gate](https://img.shields.io/badge/coverage%20gate-90%25%20combined-brightgreen)](docs/README_QA.md)
 [![Python 3.14](https://img.shields.io/badge/python-3.14-blue.svg)](docs/SETUP_GUIDE.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
@@ -62,14 +62,17 @@ bash scripts/check_project.sh
 Start the API:
 
 ```bash
-RESET_SERVER_DB=1 bash scripts/run_server_dev.sh
+bash scripts/run_server_dev.sh
 ```
 
 Start the client in another terminal:
 
 ```bash
-RESET_CLIENT_DB=1 bash scripts/run_client_dev.sh
+bash scripts/run_client_dev.sh
 ```
+
+
+These startup commands preserve existing data. For a deliberate clean reset, prefix the corresponding command with `RESET_SERVER_DB=1` or `RESET_CLIENT_DB=1`. **Those reset flags delete the database, including any unsynced client changes.**
 
 The development launcher binds to localhost and bootstraps `admin@example.com` / `SuperHeslo123!`. These are local demo credentials only; deployed environments must provide their own secret and account settings. Interactive API documentation is available at `http://127.0.0.1:8000/docs`; health status is at `/health`.
 
