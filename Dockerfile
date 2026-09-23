@@ -2,7 +2,7 @@
 
 # Keep the readable tag and pin the multi-platform image index by digest.
 # Dependabot updates this direct FROM reference via .github/dependabot.yml.
-FROM python:3.14-slim-bookworm@sha256:416f0db2a2b561945630cef9877a7ea0581b27449eb9fd9df42f03e1b74b5b63 AS base
+FROM python:3.14-slim-bookworm@sha256:82bc3c539b8813ada9d68c63b40158fa002f7f33de9bf3312a3dfdc0620dff56 AS base
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
