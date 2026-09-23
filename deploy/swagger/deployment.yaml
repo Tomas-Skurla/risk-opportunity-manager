@@ -1,0 +1,24 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: riskapp-swagger
+  namespace: riskapp
+spec:
+  selector:
+    matchLabels:
+      app: riskapp-swagger
+  template:
+    metadata:
+      labels:
+        app: riskapp-swagger
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: swagger-ui
+          image: docker.swagger.io/swaggerapi/swagger-ui:v5.32.0
+          imagePullPolicy: Never
+          envFrom:
+            - configMapRef:
+                name: riskapp-swagger-env
+          ports:
+            - containerPort: 8080
