@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     Boolean,
     CheckConstraint,
     DateTime,
@@ -20,18 +22,12 @@ from sqlalchemy import (
     UniqueConstraint,
     create_engine,
     event,
+    insert,
+    select,
+    update,
 )
-
-try:
-    # SQLAlchemy 2.x generic UUID type.
-    from sqlalchemy.types import Uuid as SAUuid
-except (ImportError, AttributeError):  # pragma: no cover
-    try:
-        from sqlalchemy import Uuid as SAUuid
-    except (ImportError, AttributeError):  # pragma: no cover
-        # Fallback for older SQLAlchemy releases.
-        from sqlalchemy.dialects.postgresql import UUID as SAUuid
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
+from sqlalchemy.types import Uuid as SAUuid
 
 from riskapp_server.core.config import (
     AUTO_CREATE_SCHEMA,
@@ -77,8 +73,8 @@ engine = create_engine(DATABASE_URL, **_engine_kwargs)
 if DATABASE_URL.startswith("sqlite"):
 
     @event.listens_for(engine, "connect")
-    def _enable_sqlite_foreign_keys(dbapi_conn, _):
-        """SQLite does not enforce declared foreign keys unless enabled per connection."""
+    def _enable_sqlite_foreign_keys(dbapi_conn: Any, _: Any) -> None:
+        """Enable SQLite foreign-key enforcement for each connection."""
         cursor = dbapi_conn.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.close()
@@ -87,7 +83,7 @@ if DATABASE_URL.startswith("sqlite"):
 if "postgresql" in DATABASE_URL and DB_STATEMENT_TIMEOUT_MS:
 
     @event.listens_for(engine, "connect")
-    def _set_statement_timeout(dbapi_conn, _):
+    def _set_statement_timeout(dbapi_conn: Any, _: Any) -> None:
         # Apply the timeout per connection.
         cur = dbapi_conn.cursor()
         cur.execute("SET statement_timeout = %s", (int(DB_STATEMENT_TIMEOUT_MS),))
@@ -95,12 +91,12 @@ if "postgresql" in DATABASE_URL and DB_STATEMENT_TIMEOUT_MS:
 
 
 # Keep ORM objects usable after commit in request handlers.
-SessionLocal = sessionmaker(
+SessionLocal = sessionmaker( # pylint: disable=invalid-name
     bind=engine, autoflush=False, autocommit=False, expire_on_commit=False
 )
 
 
-def get_db():
+def get_db() -> Iterator[Session]:
     db = SessionLocal()
     try:
         yield db
@@ -115,10 +111,20 @@ def init_db() -> None:
 
 
 class Role(StrEnum):
+    # Public domain names intentionally match their lowercase stored values.
+    # pylint: disable=invalid-name
     admin = "admin"
     manager = "manager"
     member = "member"
     viewer = "viewer"
+
+
+@runtime_checkable
+class _StatusChangeable(Protocol):
+    """Object that can record a status transition."""
+
+    def change_status(self, new_status: str, now: datetime) -> None:
+        """Record a status transition at ``now``."""
 
 
 class SyncMixin:
@@ -132,16 +138,23 @@ class SyncMixin:
     is_deleted: Mapped[bool] = mapped_column(
         Boolean, default=False, nullable=False, index=True
     )
+    # Assigned from SyncProjectState in the same transaction as every write.
+    # Pull synchronization uses this value instead of wall-clock timestamps.
+    change_sequence: Mapped[int] = mapped_column(
+        BigInteger, default=0, nullable=False
+    )
 
     def soft_delete(self, now: datetime) -> None:
         self.is_deleted = True
         self.updated_at = now
         self.version = int(self.version) + 1
-        if hasattr(self, "change_status"):
+        if isinstance(self, _StatusChangeable):
             self.change_status("deleted", now)
 
 
 class RiskStatus(StrEnum):
+    # Public domain names intentionally match their lowercase stored values.
+    # pylint: disable=invalid-name
     concept = "concept"
     active = "active"
     closed = "closed"
@@ -150,13 +163,13 @@ class RiskStatus(StrEnum):
 
 
 class SyncReceipt(Base):
-    """Stores processed sync changes by change_id."""
+    """Stores processed sync changes; change IDs are globally unique."""
 
     __tablename__ = "sync_receipts"
 
     id = None  # type: ignore[assignment]  # suppress type checker warning
     __table_args__ = (
-        # Allow the same change_id in different user/project scopes.
+        # The primary key reserves a change ID across all users and projects.
         UniqueConstraint("change_id", "user_id", "project_id", name="uq_sync_receipt"),
         Index("ix_sync_receipts_project_processed", "project_id", "processed_at"),
     )
@@ -182,6 +195,9 @@ class SyncReceipt(Base):
 
     status: Mapped[str] = mapped_column(String(20), index=True, nullable=False)
     response: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    # Pre-migration receipts have no original request to hash. Never replay one
+    # without verifying its payload against this digest.
+    payload_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     processed_at: Mapped[datetime] = mapped_column(
         DateTime, default=utcnow, nullable=False
@@ -292,6 +308,27 @@ class Project(Base):
     )
 
 
+class SyncProjectState(Base):
+    """Per-project high-water mark for the transactional change feed."""
+
+    __tablename__ = "sync_project_state"
+    __table_args__ = (
+        CheckConstraint(
+            "last_sequence >= 0", name="ck_sync_project_state_nonnegative"
+        ),
+    )
+
+    id = None  # type: ignore[assignment]  # project_id is the sole primary key
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        SAUuid(as_uuid=True),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    last_sequence: Mapped[int] = mapped_column(
+        BigInteger, default=0, nullable=False
+    )
+
+
 class ProjectMember(Base):
     __tablename__ = "project_members"
     __table_args__ = (
@@ -376,6 +413,12 @@ class Item(Base, ItemBaseMixin):
             "score",
         ),
         Index("ix_items_project_type_updated", "project_id", "type", "updated_at"),
+        Index(
+            "ix_items_project_type_change_sequence",
+            "project_id",
+            "type",
+            "change_sequence",
+        ),
     )
     type: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
 
@@ -383,7 +426,7 @@ class Item(Base, ItemBaseMixin):
 def _validate_scale_1_5(field: str, value: int | None) -> None:
     if value is None:
         raise ValueError(f"{field} must not be null")
-    if not (1 <= int(value) <= 5):
+    if not 1 <= int(value) <= 5:
         raise ValueError(f"{field} must be in range 1..5 (got {value!r})")
 
 
@@ -407,6 +450,9 @@ class Assessment(Base, AssessmentMixin):
         UniqueConstraint("item_id", "assessor_user_id", name="uq_item_assessor"),
         Index("ix_assessments_item_updated", "item_id", "updated_at"),
         Index("ix_assessments_assessor_updated", "assessor_user_id", "updated_at"),
+        Index(
+            "ix_assessments_item_change_sequence", "item_id", "change_sequence"
+        ),
     )
     item_id: Mapped[uuid.UUID] = mapped_column(
         SAUuid(as_uuid=True),
@@ -428,7 +474,7 @@ class Assessment(Base, AssessmentMixin):
 @event.listens_for(Item, "before_update")
 @event.listens_for(Assessment, "before_insert")
 @event.listens_for(Assessment, "before_update")
-def _compute_score(mapper, connection, target: Any) -> None:
+def _compute_score(_mapper: Any, _connection: Any, target: Any) -> None:
     # Keep score in sync with probability × impact.
     _validate_scale_1_5("probability", getattr(target, "probability", None))
     _validate_scale_1_5("impact", getattr(target, "impact", None))
@@ -436,18 +482,24 @@ def _compute_score(mapper, connection, target: Any) -> None:
 
 
 class ActionKind(StrEnum):
+    # Public domain names intentionally match their lowercase stored values.
+    # pylint: disable=invalid-name
     mitigation = "mitigation"
     contingency = "contingency"
     exploit = "exploit"
 
 
 class ActionStatus(StrEnum):
+    # Public domain names intentionally match their lowercase stored values.
+    # pylint: disable=invalid-name
     open = "open"
     doing = "doing"
     done = "done"
 
 
 class HelpDeskStatus(StrEnum):
+    # Public domain names intentionally match their lowercase stored values.
+    # pylint: disable=invalid-name
     open = "open"
     in_progress = "in_progress"
     resolved = "resolved"
@@ -455,6 +507,8 @@ class HelpDeskStatus(StrEnum):
 
 
 class HelpDeskPriority(StrEnum):
+    # Public domain names intentionally match their lowercase stored values.
+    # pylint: disable=invalid-name
     low = "low"
     medium = "medium"
     high = "high"
@@ -462,6 +516,8 @@ class HelpDeskPriority(StrEnum):
 
 
 class HelpDeskCategory(StrEnum):
+    # Public domain names intentionally match their lowercase stored values.
+    # pylint: disable=invalid-name
     bug = "bug"
     question = "question"
     feature_request = "feature_request"
@@ -477,6 +533,11 @@ class HelpDeskTicket(Base, SyncMixin):
             "project_id",
             "is_deleted",
             "updated_at",
+        ),
+        Index(
+            "ix_helpdesk_project_change_sequence",
+            "project_id",
+            "change_sequence",
         ),
         Index(
             "ix_helpdesk_project_status_created", "project_id", "status", "created_at"
@@ -529,6 +590,9 @@ class Action(Base, SyncMixin):
             "updated_at",
         ),
         Index("ix_actions_project_item", "project_id", "item_id"),
+        Index(
+            "ix_actions_project_change_sequence", "project_id", "change_sequence"
+        ),
     )
     project_id: Mapped[uuid.UUID] = mapped_column(
         SAUuid(as_uuid=True),
@@ -595,3 +659,56 @@ class ScoreSnapshot(Base):
     created_by: Mapped[uuid.UUID] = mapped_column(
         SAUuid(as_uuid=True), ForeignKey("users.id"), index=True, nullable=False
     )
+
+
+def _next_change_sequence(connection: Any, project_id: uuid.UUID) -> int:
+    """Reserve the next sequence while holding the project counter's write lock."""
+    result = connection.execute(
+        update(SyncProjectState)
+        .where(SyncProjectState.project_id == project_id)
+        .values(last_sequence=SyncProjectState.last_sequence + 1)
+    )
+    if result.rowcount != 1:
+        raise RuntimeError(f"Missing synchronization state for project {project_id}")
+    return int(
+        connection.execute(
+            select(SyncProjectState.last_sequence).where(
+                SyncProjectState.project_id == project_id
+            )
+        ).scalar_one()
+    )
+
+
+def _sync_entity_project_id(connection: Any, target: Any) -> uuid.UUID:
+    if isinstance(target, Assessment):
+        project_id = connection.execute(
+            select(Item.project_id).where(Item.id == target.item_id)
+        ).scalar_one_or_none()
+        if project_id is None:
+            raise RuntimeError(
+                f"Cannot sequence assessment {target.id}: parent item is missing"
+            )
+        return project_id
+    return target.project_id
+
+
+@event.listens_for(Project, "after_insert")
+def _create_project_sync_state(_mapper: Any, connection: Any, target: Project) -> None:
+    """Create the counter atomically with a new project."""
+    connection.execute(
+        insert(SyncProjectState).values(project_id=target.id, last_sequence=0)
+    )
+
+
+@event.listens_for(Item, "before_insert")
+@event.listens_for(Item, "before_update")
+@event.listens_for(Assessment, "before_insert")
+@event.listens_for(Assessment, "before_update")
+@event.listens_for(Action, "before_insert")
+@event.listens_for(Action, "before_update")
+@event.listens_for(HelpDeskTicket, "before_insert")
+@event.listens_for(HelpDeskTicket, "before_update")
+def _assign_change_sequence(_mapper: Any, connection: Any, target: Any) -> None:
+    """Stamp every syncable write from the transaction-owned project counter."""
+    project_id = _sync_entity_project_id(connection, target)
+    target.change_sequence = _next_change_sequence(connection, project_id)

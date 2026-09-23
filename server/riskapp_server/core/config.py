@@ -5,6 +5,7 @@ The project intentionally keeps configuration dependency-free. Invalid values fa
 from __future__ import annotations
 
 import os
+import warnings
 
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 _FALSE_VALUES = {"0", "false", "no", "off"}
@@ -47,20 +48,72 @@ def _env_int(
     return value
 
 
+def _env_int_with_deprecated_alias(
+    name: str,
+    deprecated_name: str,
+    default: int,
+    *,
+    minimum: int | None = None,
+    maximum: int | None = None,
+) -> int:
+    """Read an integer setting while temporarily accepting an old name."""
+    canonical_is_set = name in os.environ
+    deprecated_is_set = deprecated_name in os.environ
+    if deprecated_is_set:
+        warnings.warn(
+            f"{deprecated_name} is deprecated; use {name}",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+    selected_name = name if canonical_is_set or not deprecated_is_set else deprecated_name
+    return _env_int(
+        selected_name,
+        default,
+        minimum=minimum,
+        maximum=maximum,
+    )
+
+
 def _env_list(name: str, default: str = "") -> list[str]:
     return [
         part.strip() for part in os.getenv(name, default).split(",") if part.strip()
     ]
 
 
+def _env_choice(name: str, default: str, choices: set[str]) -> str:
+    """Read a case-insensitive setting constrained to explicit values."""
+    value = os.getenv(name, default).strip().lower()
+    if value not in choices:
+        raise ConfigurationError(
+            f"{name} must be one of: {', '.join(sorted(choices))}"
+        )
+    return value
+
+
 def _optional_env(name: str) -> str | None:
     value = os.getenv(name, "").strip()
     return value or None
 
+RISKAPP_LOG_LEVEL: str = _env_choice(
+    "RISKAPP_LOG_LEVEL",
+    "info",
+    {"critical", "error", "warning", "info", "debug"},
+).upper()
+RISKAPP_LOG_FORMAT: str = _env_choice(
+    "RISKAPP_LOG_FORMAT", "plain", {"plain", "json"}
+)
 
-ENV: str = os.getenv("ENV", "development").strip().lower()
+ENV: str = _env_choice(
+    "ENV",
+    "development",
+    {"development", "production", "test"},
+)
 
 SECRET_KEY: str = os.getenv("SECRET_KEY", "change-me").strip()
+# Refresh/password-reset tokens are HMACed with this independent key. An empty
+# value is accepted only for development/test compatibility; auth then falls
+# back to SECRET_KEY. Production validation requires an explicit value.
+TOKEN_HASH_KEY: str = os.getenv("TOKEN_HASH_KEY", "").strip()
 ALLOW_INSECURE_DEFAULT_SECRET: bool = _env_bool("ALLOW_INSECURE_DEFAULT_SECRET", False)
 ALGORITHM: str = os.getenv("ALGORITHM", "HS256").strip().upper()
 TOKEN_MINUTES: int = _env_int("TOKEN_MINUTES", 15, minimum=1, maximum=1440)
@@ -68,9 +121,15 @@ ACCESS_TOKEN_MINUTES: int = _env_int(
     "ACCESS_TOKEN_MINUTES", TOKEN_MINUTES, minimum=1, maximum=1440
 )
 REFRESH_TOKEN_DAYS: int = _env_int("REFRESH_TOKEN_DAYS", 30, minimum=1, maximum=365)
+REFRESH_TOKEN_REUSE_GRACE_SECONDS: int = _env_int(
+    "REFRESH_TOKEN_REUSE_GRACE_SECONDS", 30, minimum=0, maximum=300
+)
 
 LOGIN_RATE_LIMIT_PER_MINUTE: int = _env_int(
     "LOGIN_RATE_LIMIT_PER_MINUTE", 10, minimum=1
+)
+LOGIN_IP_RATE_LIMIT_PER_MINUTE: int = _env_int(
+    "LOGIN_IP_RATE_LIMIT_PER_MINUTE", 50, minimum=1
 )
 LOGIN_RATE_LIMIT_WINDOW_SECONDS: int = _env_int(
     "LOGIN_RATE_LIMIT_WINDOW_SECONDS", 60, minimum=1
@@ -101,6 +160,9 @@ TRUST_X_FORWARDED_PROTO: bool = _env_bool("TRUST_X_FORWARDED_PROTO", False)
 INITIAL_SUPERUSER_EMAIL: str | None = _optional_env("INITIAL_SUPERUSER_EMAIL")
 INITIAL_SUPERUSER_PASSWORD: str | None = _optional_env("INITIAL_SUPERUSER_PASSWORD")
 
+# Retained only for configuration compatibility with deployments created before
+# Argon2id became the default. Stored PBKDF2 hashes carry their own iteration
+# count and are upgraded after a successful login.
 PBKDF2_ITERS: int = _env_int("PBKDF2_ITERS", 200_000, minimum=100_000)
 
 DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite+pysqlite:///./riskapp.db").strip()
@@ -120,9 +182,19 @@ AUTO_CREATE_SCHEMA: bool = _env_bool("AUTO_CREATE_SCHEMA", ENV != "production")
 MAX_SYNC_PULL_PER_ENTITY: int = _env_int(
     "MAX_SYNC_PULL_PER_ENTITY", 5000, minimum=1, maximum=50_000
 )
-SYNC_PUSH_EXUNGE_EVERY: int = _env_int("SYNC_PUSH_EXUNGE_EVERY", 200, minimum=1)
+SYNC_PUSH_EXPUNGE_EVERY: int = _env_int_with_deprecated_alias(
+    "SYNC_PUSH_EXPUNGE_EVERY",
+    "SYNC_PUSH_EXUNGE_EVERY",
+    200,
+    minimum=1,
+)
+# Deprecated Python-level compatibility alias. New code must use EXPUNGE.
+SYNC_PUSH_EXUNGE_EVERY: int = SYNC_PUSH_EXPUNGE_EVERY
 SNAPSHOT_INSERT_CHUNK: int = _env_int("SNAPSHOT_INSERT_CHUNK", 1000, minimum=100)
 RETENTION_DAYS: int = _env_int("RETENTION_DAYS", 180, minimum=1)
+SYNC_RECEIPT_RETENTION_DAYS: int = _env_int(
+    "SYNC_RECEIPT_RETENTION_DAYS", 365, minimum=1
+)
 
 CORS_ORIGINS: list[str] = _env_list("CORS_ORIGINS")
 ALLOWED_HOSTS: list[str] = _env_list(
@@ -133,7 +205,8 @@ ALLOWED_HOSTS: list[str] = _env_list(
 def validate_runtime_config() -> None:
     """Fail closed for settings that affect authentication or request trust."""
     errors: list[str] = []
-    insecure_secret = not SECRET_KEY or SECRET_KEY == "change-me"
+    # This literal identifies the deliberately rejected development sentinel.
+    insecure_secret = not SECRET_KEY or SECRET_KEY == "change-me"  # noqa: S105
     local_env = ENV in {"development", "test"}
 
     if ALGORITHM not in {"HS256", "HS384", "HS512"}:
@@ -155,6 +228,10 @@ def validate_runtime_config() -> None:
         if len(SECRET_KEY) < 32:
             errors.append(
                 "SECRET_KEY must contain at least 32 characters in production"
+            )
+        if len(TOKEN_HASH_KEY) < 32:
+            errors.append(
+                "TOKEN_HASH_KEY must contain at least 32 characters in production"
             )
         if PASSWORD_RESET_RETURN_TOKEN:
             errors.append("PASSWORD_RESET_RETURN_TOKEN is forbidden in production")

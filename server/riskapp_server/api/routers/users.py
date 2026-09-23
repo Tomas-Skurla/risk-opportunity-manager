@@ -69,7 +69,7 @@ def change_password(
     payload: ChangePasswordIn,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
-):
+) -> None:
     if not verify_pw(payload.old_password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid current password")
     _apply_new_password(db, user, payload.new_password)
@@ -81,7 +81,7 @@ def request_password_reset(
     payload: PasswordResetRequestIn,
     request: Request,
     db: Session = Depends(get_db),
-):
+) -> dict[str, str]:
     # Return the same response whether the account exists or not.
     email = str(payload.email).lower()
     client_ip = (request.client.host if request.client else "") or "unknown"
@@ -129,7 +129,7 @@ def request_password_reset(
 @router.post("/password-reset/confirm", status_code=204)
 def confirm_password_reset(
     payload: PasswordResetConfirmIn, db: Session = Depends(get_db)
-):
+) -> None:
     now = utcnow()
     token_hash = hash_bearer_secret(payload.token)
     pr: PasswordResetToken | None = (
@@ -160,7 +160,7 @@ def admin_deactivate_user(
     user_id: uuid.UUID,
     db: Session = Depends(get_db),
     actor: User = Depends(get_current_user),
-):
+) -> None:
     _require_superuser(actor)
     target = db.get(User, user_id)
     if not target:
@@ -178,7 +178,7 @@ def admin_activate_user(
     user_id: uuid.UUID,
     db: Session = Depends(get_db),
     actor: User = Depends(get_current_user),
-):
+) -> None:
     _require_superuser(actor)
     target = db.get(User, user_id)
     if not target:
@@ -196,7 +196,7 @@ def admin_set_password(
     payload: AdminSetPasswordIn,
     db: Session = Depends(get_db),
     actor: User = Depends(get_current_user),
-):
+) -> None:
     _require_superuser(actor)
     target = db.get(User, user_id)
     if not target:

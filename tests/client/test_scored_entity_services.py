@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
+from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -19,24 +20,27 @@ from riskapp_client.services.scored_entity_management_service import (
     ScoredEntityWiring,
 )
 
+# These tests deliberately exercise protected service seams using mocks.
+# pylint: disable=protected-access
+
 
 class GetFallbackMapping(Mapping[str, object]):
     """Mapping that exercises the service's ``.get`` fallback."""
 
     def __init__(self, values: dict[str, object]) -> None:
-        self.values = values
+        self._items = values
 
     def __getitem__(self, key: str) -> object:
         raise ValueError(key)
 
     def __iter__(self) -> Iterator[str]:
-        return iter(self.values)
+        return iter(self._items)
 
     def __len__(self) -> int:
-        return len(self.values)
+        return len(self._items)
 
     def get(self, key: str, default=None):
-        return self.values.get(key, default)
+        return self._items.get(key, default)
 
 
 _DEFAULT_NEXT_CODE = object()
@@ -56,6 +60,7 @@ def _service(
         queue_delete=Mock(),
         discard=Mock(),
         soft_delete=Mock(return_value=("project-1", version)),
+        transaction=Mock(side_effect=nullcontext),
         next_code=next_code,
     )
     wiring = ScoredEntityWiring(
@@ -70,6 +75,7 @@ def _service(
         queue_delete_fn=calls.queue_delete,
         discard_pending_changes_fn=calls.discard,
         soft_delete_local_fn=calls.soft_delete,
+        write_transaction_fn=calls.transaction,
         next_code_fn=next_code,
     )
     return ScoredEntityService(wiring), calls, wiring
@@ -78,7 +84,7 @@ def _service(
 def test_scored_payload_normalization_covers_strict_and_lenient_inputs() -> None:
     empty: dict[str, object] = {}
     normalize_scored_payload_inplace(empty)
-    assert empty == {}
+    assert not empty
 
     payload: dict[str, object] = {
         "probability": " 4 ",
@@ -163,7 +169,7 @@ def test_scored_service_create_update_delete_and_code_fallbacks(monkeypatch) -> 
         "riskapp_client.services.scored_entity_management_service.uuid.uuid4",
         lambda: "risk-new",
     )
-    service, calls, wiring = _service(
+    service, calls, _ = _service(
         row=GetFallbackMapping(
             {
                 "status": "active",
@@ -240,9 +246,16 @@ def _facade(**values) -> OfflineFirstBackend:
         "_sync": Mock(),
     }
     defaults.update(values)
+    defaults["store"].write_transaction.side_effect = nullcontext
     for name, value in defaults.items():
         setattr(backend, name, value)
     return backend
+
+
+def _mock(method: object) -> Mock:
+    """Check that a facade dependency is the mock installed by this test."""
+    assert isinstance(method, Mock)
+    return method
 
 
 def test_offline_facade_project_visibility_bootstrap_and_naming() -> None:
@@ -325,9 +338,12 @@ def test_offline_facade_permissions_reports_and_delegation() -> None:
     backend.list_members("server-1")
     backend.add_member("server-1", user_email="u@example.test", role="manager")
     backend.remove_member("server-1", member_user_id="user-1")
-    backend._members.list.assert_called_once_with("server-1")
-    backend._members.add.assert_called_once()
-    backend._members.remove.assert_called_once()
+    # Pylint follows the production method type through _mock's runtime check.
+    # pylint: disable=no-member
+    _mock(backend._members.list).assert_called_once_with("server-1")
+    _mock(backend._members.add).assert_called_once()
+    _mock(backend._members.remove).assert_called_once()
+    # pylint: enable=no-member
 
     risks = [
         Risk("r1", "local-1", title="A", probability=1, impact=2, status="open"),
@@ -343,7 +359,7 @@ def test_offline_facade_permissions_reports_and_delegation() -> None:
         ),
         Risk("r3", "local-1", title="C", probability=5, impact=5, status="closed"),
     ]
-    backend._risks.list.return_value = risks
+    _mock(backend._risks.list).return_value = risks
     report = backend.risks_report("local-1", min_score=0, max_score=25, status="(any)")
     assert report["total"] == 3
     assert report["min_score"] == 2
@@ -361,26 +377,30 @@ def test_offline_facade_permissions_reports_and_delegation() -> None:
     remote.opportunities_report.return_value = {"total": 7}
     assert backend.opportunities_report("server-1") == {"total": 7}
 
-    backend._risks.create.return_value = Risk("r4", "p", title="new")
+    _mock(backend._risks.create).return_value = Risk("r4", "p", title="new")
     backend.create_risk("p", title="new", probability=2, impact=2, category="ops")
     backend.update_risk(
         "p", "r4", title="changed", probability=3, impact=4, base_version=8
     )
     backend.delete_risk("p", "r4")
-    backend.outbox.override_base_version.assert_called_with(
+    # pylint: disable=no-member
+    _mock(backend.outbox.override_base_version).assert_called_with(
         "p", entity="risk", entity_id="r4", base_version=8
     )
-    backend._risks.delete.assert_called_once_with("r4")
+    _mock(backend._risks.delete).assert_called_once_with("r4")
+    # pylint: enable=no-member
 
-    backend._opps.create.return_value = Opportunity("o1", "p", title="new")
+    _mock(backend._opps.create).return_value = Opportunity("o1", "p", title="new")
     backend.create_opportunity("p", title="new", probability=2, impact=2)
     backend.update_opportunity(
         "p", "o1", title="changed", probability=3, impact=4, base_version=9
     )
     backend.delete_opportunity("p", "o1")
-    backend.outbox.override_base_version.assert_called_with(
+    # pylint: disable=no-member
+    _mock(backend.outbox.override_base_version).assert_called_with(
         "p", entity="opportunity", entity_id="o1", base_version=9
     )
+    # pylint: enable=no-member
 
 
 def test_offline_facade_user_snapshot_sync_and_feature_wrappers() -> None:
@@ -402,9 +422,11 @@ def test_offline_facade_user_snapshot_sync_and_feature_wrappers() -> None:
         backend.upsert_my_assessment("p", "risk", "r", 2, 3)
     store.get_meta.return_value = "cached-user"
     backend.upsert_my_assessment("p", "risk", "r", 2, 3, "notes")
-    backend._assessments.upsert_my.assert_called_once_with(
+    # pylint: disable=no-member
+    _mock(backend._assessments.upsert_my).assert_called_once_with(
         "p", "risk", "r", "cached-user", 2, 3, "notes"
     )
+    # pylint: enable=no-member
 
     with pytest.raises(RuntimeError, match="Snapshots require"):
         backend.create_snapshot("local-1")
@@ -420,17 +442,35 @@ def test_offline_facade_user_snapshot_sync_and_feature_wrappers() -> None:
     backend.list_assessments("p", "risk", "r")
     backend.pending_count("p")
     backend.blocked_count("p")
+    backend.deferred_count("p")
+    backend.conflict_count("p")
+    backend.error_count("p")
+    backend.last_sync_time("p")
+    backend.next_retry_at("p")
     backend.can_sync()
     backend.sync_project("p")
     backend.blocked_details("p")
+    backend.conflict_details("p")
+    backend.resolve_conflict("change-1", "later")
     backend.list_helpdesk_tickets("p")
     backend.create_helpdesk_ticket("p", title="ticket")
     backend.update_helpdesk_ticket("t1", status="closed")
     backend.delete_helpdesk_ticket("t1")
 
-    backend._actions.list.assert_called_once_with("p")
-    backend._actions.create.assert_called_once()
-    backend._actions.update.assert_called_once()
-    backend._assessments.list.assert_called_once_with("p", "risk", "r")
-    backend._sync.sync_project.assert_called_once_with("p")
-    backend._helpdesk.delete.assert_called_once_with("t1")
+    # pylint: disable=no-member
+    _mock(backend._actions.list).assert_called_once_with("p")
+    _mock(backend._actions.create).assert_called_once()
+    _mock(backend._actions.update).assert_called_once()
+    _mock(backend._assessments.list).assert_called_once_with("p", "risk", "r")
+    _mock(backend._sync.sync_project).assert_called_once_with("p")
+    _mock(backend._sync.conflict_count).assert_called_once_with("p")
+    _mock(backend._sync.error_count).assert_called_once_with("p")
+    _mock(backend._sync.deferred_count).assert_called_once_with("p")
+    _mock(backend._sync.last_sync_time).assert_called_once_with("p")
+    _mock(backend._sync.next_retry_at).assert_called_once_with("p")
+    _mock(backend._sync.conflict_details).assert_called_once_with("p")
+    _mock(backend._sync.resolve_conflict).assert_called_once_with(
+        "change-1", "later"
+    )
+    _mock(backend._helpdesk.delete).assert_called_once_with("t1")
+    # pylint: enable=no-member

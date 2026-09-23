@@ -36,36 +36,36 @@ class AssessmentService:
 
         version = self._get_version_or_0(assessment_id)
 
-        self._store.upsert_local_assessment(
-            assessment_id=assessment_id,
-            project_id=project_id,
-            item_type=item_type,
-            item_id=item_id,
-            assessor_user_id=assessor_user_id,
-            probability=int(probability),
-            impact=int(impact),
-            notes=notes or "",
-            version=version,
-            is_deleted=False,
-            updated_at=updated_at,
-            dirty=1,
-        )
-        # IMPORTANT: queue_assessment_upsert accepts keyword arguments only.
-        # Also note that the server derives assessor_user_id from the JWT user,
-        # so we do not send it as part of the sync record.
-        self._outbox.queue_assessment_upsert(
-            assessment_id,
-            project_id,
-            item_id=item_id,
-            **(
-                {"risk_id": item_id}
-                if item_type == "risk"
-                else {"opportunity_id": item_id}
-            ),
-            probability=int(probability),
-            impact=int(impact),
-            notes=(notes or ""),
-        )
+        with self._store.write_transaction():
+            self._store.upsert_local_assessment(
+                assessment_id=assessment_id,
+                project_id=project_id,
+                item_type=item_type,
+                item_id=item_id,
+                assessor_user_id=assessor_user_id,
+                probability=int(probability),
+                impact=int(impact),
+                notes=notes or "",
+                version=version,
+                is_deleted=False,
+                updated_at=updated_at,
+                dirty=1,
+            )
+            # The server derives assessor_user_id from the JWT user, so it is
+            # intentionally omitted from the synchronization record.
+            self._outbox.queue_assessment_upsert(
+                assessment_id,
+                project_id,
+                item_id=item_id,
+                **(
+                    {"risk_id": item_id}
+                    if item_type == "risk"
+                    else {"opportunity_id": item_id}
+                ),
+                probability=int(probability),
+                impact=int(impact),
+                notes=(notes or ""),
+            )
 
         return Assessment(
             id=assessment_id,

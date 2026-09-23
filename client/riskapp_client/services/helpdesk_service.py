@@ -29,17 +29,18 @@ class HelpDeskService:
         priority: str = "medium",
         reporter_email: str = "",
     ) -> HelpDeskTicket:
-        ticket = self._store.create_helpdesk_ticket(
-            project_id,
-            title=title,
-            description=description,
-            category=category,
-            priority=priority,
-            reporter_email=reporter_email,
-        )
-        self._outbox.queue_helpdesk_upsert(
-            ticket.id, project_id, **self._ticket_fields(ticket)
-        )
+        with self._store.write_transaction():
+            ticket = self._store.create_helpdesk_ticket(
+                project_id,
+                title=title,
+                description=description,
+                category=category,
+                priority=priority,
+                reporter_email=reporter_email,
+            )
+            self._outbox.queue_helpdesk_upsert(
+                ticket.id, project_id, **self._ticket_fields(ticket)
+            )
         return ticket
 
     def update(
@@ -52,38 +53,39 @@ class HelpDeskService:
         priority: str | None = None,
         status: str | None = None,
     ) -> HelpDeskTicket:
-        ticket = self._store.update_helpdesk_ticket(
-            ticket_id,
-            title=title,
-            description=description,
-            category=category,
-            priority=priority,
-            status=status,
-        )
-        project_id = ticket.project_id
-        self._outbox.queue_helpdesk_upsert(
-            ticket.id, project_id, **self._ticket_fields(ticket)
-        )
+        with self._store.write_transaction():
+            ticket = self._store.update_helpdesk_ticket(
+                ticket_id,
+                title=title,
+                description=description,
+                category=category,
+                priority=priority,
+                status=status,
+            )
+            project_id = ticket.project_id
+            self._outbox.queue_helpdesk_upsert(
+                ticket.id, project_id, **self._ticket_fields(ticket)
+            )
         return ticket
 
     def delete(self, ticket_id: str) -> None:
-        project_id, version = self._store.get_helpdesk_ticket_project_and_version(
-            ticket_id
-        )
-
-        # Ticket never reached the server: drop any queued local upsert/delete and
-        # remove the row entirely so there is no stale tombstone in local storage.
-        if int(version) < 1:
-            self._store.delete_helpdesk_ticket(ticket_id)
-            self._outbox.discard_entity_changes(
-                project_id,
-                entity="helpdesk_ticket",
-                entity_id=ticket_id,
+        with self._store.write_transaction():
+            project_id, version = (
+                self._store.get_helpdesk_ticket_project_and_version(ticket_id)
             )
-            return
+            # Ticket never reached the server: drop any queued local upsert/delete
+            # and remove the row entirely so no stale tombstone remains locally.
+            if int(version) < 1:
+                self._store.delete_helpdesk_ticket(ticket_id)
+                self._outbox.discard_entity_changes(
+                    project_id,
+                    entity="helpdesk_ticket",
+                    entity_id=ticket_id,
+                )
+                return
 
-        self._store.soft_delete_helpdesk_ticket(ticket_id)
-        self._outbox.queue_helpdesk_delete(ticket_id, project_id)
+            self._store.soft_delete_helpdesk_ticket(ticket_id)
+            self._outbox.queue_helpdesk_delete(ticket_id, project_id)
 
     # ---- private helpers ---------------------------------------------------
 

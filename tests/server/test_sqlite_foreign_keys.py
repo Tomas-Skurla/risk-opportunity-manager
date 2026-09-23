@@ -9,6 +9,8 @@ def test_server_sqlite_connections_enforce_foreign_keys(
     """Every server SQLite connection enables declared FK constraints."""
     app = isolated_app_factory(f"sqlite+pysqlite:///{tmp_path / 'fk.db'}")
     with TestClient(app):
+        # The engine must be the one created by isolated_app_factory.
+        # pylint: disable-next=import-outside-toplevel
         from riskapp_server.db.session import engine
 
         with engine.connect() as connection:

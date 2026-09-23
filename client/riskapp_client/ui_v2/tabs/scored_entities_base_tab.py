@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
+from typing import Any, cast
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QMouseEvent  # pylint: disable=no-name-in-module
 from PySide6.QtWidgets import (
     QAbstractScrollArea,
     QHeaderView,
@@ -17,7 +19,7 @@ from riskapp_client.services.entity_filters import ANY_STATUS
 from riskapp_client.ui_v2.components.custom_gui_widgets import (
     setup_readonly_table,
 )
-from riskapp_client.ui_v2.tabs.ui_scored_entities_tab import (
+from riskapp_client.ui_v2.ui.ui_scored_entities_tab import (
     Ui_Form as Ui_ScoredEntitiesTab,
 )
 
@@ -42,45 +44,51 @@ class ScoredEntitiesTab(QWidget):
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
+        # Retained for compatibility; sizing is managed by the window mixin.
+        _ = on_fit_table_card
         self._on_refresh = on_refresh
         self._on_new_item = on_new_item
         self.ui = Ui_ScoredEntitiesTab()
         self.ui.setupUi(self)
         setup_readonly_table(self.ui.table, excel_delegate=True)
         hh = self.ui.table.horizontalHeader()
-        hh.setSectionResizeMode(QHeaderView.ResizeToContents)
-        self.ui.table.setSizeAdjustPolicy(QAbstractScrollArea.AdjustToContents)
-        self.ui.table.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Maximum)
-        if self.ui.table.horizontalHeaderItem(0):
-            self.ui.table.horizontalHeaderItem(0).setToolTip(
+        hh.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self.ui.table.setSizeAdjustPolicy(
+            QAbstractScrollArea.SizeAdjustPolicy.AdjustToContents
+        )
+        self.ui.table.setSizePolicy(
+            QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Maximum
+        )
+        if (header_item := self.ui.table.horizontalHeaderItem(0)) is not None:
+            header_item.setToolTip(
                 "Code: A unique identifier or short reference"
             )
-        if self.ui.table.horizontalHeaderItem(1):
-            self.ui.table.horizontalHeaderItem(1).setToolTip(
+        if (header_item := self.ui.table.horizontalHeaderItem(1)) is not None:
+            header_item.setToolTip(
                 "Title: The name or brief summary"
             )
-        if self.ui.table.horizontalHeaderItem(2):
-            self.ui.table.horizontalHeaderItem(2).setToolTip(
+        if (header_item := self.ui.table.horizontalHeaderItem(2)) is not None:
+            header_item.setToolTip(
                 "Category: The classification or grouping"
             )
-        if self.ui.table.horizontalHeaderItem(3):
-            self.ui.table.horizontalHeaderItem(3).setToolTip(
+        if (header_item := self.ui.table.horizontalHeaderItem(3)) is not None:
+            header_item.setToolTip(
                 "Status: The current lifecycle state"
             )
-        if self.ui.table.horizontalHeaderItem(4):
-            self.ui.table.horizontalHeaderItem(4).setToolTip(
+        if (header_item := self.ui.table.horizontalHeaderItem(4)) is not None:
+            header_item.setToolTip(
                 "Owner: The team member assigned to manage this"
             )
-        if self.ui.table.horizontalHeaderItem(5):
-            self.ui.table.horizontalHeaderItem(5).setToolTip(
+        if (header_item := self.ui.table.horizontalHeaderItem(5)) is not None:
+            header_item.setToolTip(
                 "Probability: The likelihood of this occurring (1-5)"
             )
-        if self.ui.table.horizontalHeaderItem(6):
-            self.ui.table.horizontalHeaderItem(6).setToolTip(
+        if (header_item := self.ui.table.horizontalHeaderItem(6)) is not None:
+            header_item.setToolTip(
                 "Impact: The severity if this occurs (1-5)"
             )
-        if self.ui.table.horizontalHeaderItem(7):
-            self.ui.table.horizontalHeaderItem(7).setToolTip(
+        if (header_item := self.ui.table.horizontalHeaderItem(7)) is not None:
+            header_item.setToolTip(
                 "Score: Calculated as Probability × Impact (1-25)"
             )
         self.ui.filter_search.setToolTip("Search by Code, Title, or Description")
@@ -99,7 +107,9 @@ class ScoredEntitiesTab(QWidget):
         self.ui.clear_btn.setToolTip("Clear all active filters")
         self.ui.new_btn.setToolTip("Create a new blank item")
         self.ui.delete_btn.setToolTip("Delete the currently selected item")
-        self.ui.verticalLayout_2.setAlignment(Qt.AlignTop)
+        self.ui.verticalLayout_2.setAlignment(Qt.AlignmentFlag.AlignTop)
+        # PySide exposes bound signals dynamically to Pylint.
+        # pylint: disable-next=no-member
         self.ui.table.cellClicked.connect(on_item_clicked)
         self.ui.splitter.setStretchFactor(0, 3)
         self.ui.splitter.setStretchFactor(1, 7)
@@ -109,40 +119,45 @@ class ScoredEntitiesTab(QWidget):
         self.ui.filter_owner.addItem("(any owner)", None)
         self.ui.filter_owner.addItem("(unassigned)", "__unassigned__")
 
+        # PySide exposes bound signals dynamically to Pylint.
+        # pylint: disable=no-member
         self.ui.export_btn.clicked.connect(on_export_csv)
         self.ui.clear_btn.clicked.connect(self.clear_filters)
         self.ui.new_btn.clicked.connect(on_new_item)
         self.ui.delete_btn.clicked.connect(on_delete_item)
 
-        for w in (
+        for text_filter in (
             self.ui.filter_search,
             self.ui.filter_category,
             self.ui.filter_from,
             self.ui.filter_to,
         ):
-            w.textChanged.connect(lambda *_: self._on_refresh())
-        for w in (self.ui.filter_min_score, self.ui.filter_max_score):
-            w.valueChanged.connect(lambda *_: self._on_refresh())
+            text_filter.textChanged.connect(lambda *_: self._on_refresh())
+        for score_filter in (self.ui.filter_min_score, self.ui.filter_max_score):
+            score_filter.valueChanged.connect(lambda *_: self._on_refresh())
         self.ui.filter_status.currentTextChanged.connect(lambda *_: self._on_refresh())
         self.ui.filter_owner.currentIndexChanged.connect(lambda *_: self._on_refresh())
+        # pylint: enable=no-member
         original_mouse_press = self.ui.table.mousePressEvent
 
-        def _table_mouse_press(event):
+        def _table_mouse_press(event: QMouseEvent) -> None:
             item = self.ui.table.itemAt(event.pos())
             if not item:  # No row was clicked
                 self.ui.table.clearSelection()
                 self._on_new_item()
             original_mouse_press(event)
 
-        self.ui.table.mousePressEvent = _table_mouse_press
+        # PySide permits per-instance event-handler replacement at runtime, but
+        # its type stubs model mousePressEvent as a non-assignable method.
+        cast(Any, self.ui.table).mousePressEvent = _table_mouse_press
         original_card_press = self.ui.table_card.mousePressEvent
 
-        def _card_mouse_press(event):
+        def _card_mouse_press(event: QMouseEvent) -> None:
             self.ui.table.clearSelection()
             self._on_new_item()
             original_card_press(event)
 
-        self.ui.table_card.mousePressEvent = _card_mouse_press
+        cast(Any, self.ui.table_card).mousePressEvent = _card_mouse_press
         self.table = self.ui.table
         self.form = self.ui.form
         self.form.on_submit = on_save_item
@@ -153,10 +168,14 @@ class ScoredEntitiesTab(QWidget):
         _original_retranslate = self.form.ui.retranslateUi
         _btn = self.form.btn
         _label = self._entity_label
-        def _patched_retranslate(w):
-            _original_retranslate(w)
+        # Match the generated Ui_Form callback's keyword parameter name.
+        # pylint: disable-next=invalid-name
+        def _patched_retranslate(Form: QWidget) -> None:  # noqa: N803
+            _original_retranslate(Form)
             _btn.setText(f"Save {_label}")
-        self.form.ui.retranslateUi = _patched_retranslate
+
+        # Generated Qt methods are intentionally replaceable at runtime.
+        cast(Any, self.form.ui).retranslateUi = _patched_retranslate
         if hasattr(self.form, "track_dirty_state"):
             self.form.track_dirty_state(on_mark_dirty)
         self.new_btn = self.ui.new_btn
@@ -201,7 +220,7 @@ class ScoredEntitiesTab(QWidget):
             w.blockSignals(False)
         self._on_refresh()
 
-    def set_owner_filter_members(self, members) -> None:
+    def set_owner_filter_members(self, members: Iterable[Any] | None) -> None:
         """Populate the Owner filter dropdown with project members.
 
         Keeps the current selection when possible.

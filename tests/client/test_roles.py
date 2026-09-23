@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
+from riskapp_client.utils.roles import (
+    is_known_role,
+    normalize_role,
+    role_at_least,
+)
+
 
 def test_role_at_least_and_normalize_role() -> None:
     """normalize_role lowercases and trims; role_at_least respects the role hierarchy"""
-    from riskapp_client.utils.roles import (
-        is_known_role,
-        normalize_role,
-        role_at_least,
-    )
-
     # normalize_role
     assert normalize_role(" Admin ") == "admin"
     assert normalize_role("MEMBER") == "member"

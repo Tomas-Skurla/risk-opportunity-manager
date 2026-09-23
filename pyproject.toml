@@ -9,10 +9,16 @@ qt_api = "pyside6"
 branch = true
 source = ["server/riskapp_server", "client/riskapp_client"]
 omit = [
-  "client/riskapp_client/ui_v2/components/ui_*.py",
-  "client/riskapp_client/ui_v2/tabs/ui_*.py",
-  "client/riskapp_client/ui_v2/ui_*.py",
+  "client/riskapp_client/ui_v2/ui/ui_*.py",
 ]
+
+[tool.pylint.main]
+extension-pkg-allow-list = ["PySide6"]
+init-hook = "import sys; sys.path[:0] = ['client', 'server']"
+source-roots = ["client", "server"]
+
+[tool.pyright]
+extraPaths = ["server", "client"]
 
 [tool.coverage.report]
 show_missing = true
@@ -21,7 +27,7 @@ precision = 2
 
 [tool.black]
 line-length = 88
-target-version = ["py311"]
+target-version = ["py314"]
 extend-exclude = '''
 (
   /\.venv
@@ -31,21 +37,41 @@ extend-exclude = '''
 )
 '''
 
+[tool.mypy]
+python_version = "3.14"
+mypy_path = ["server", "client"]
+files = [
+  "server/riskapp_server",
+  "client/riskapp_client",
+]
+check_untyped_defs = true
+disallow_untyped_defs = true
+extra_checks = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unreachable = true
+warn_unused_configs = true
+warn_unused_ignores = true
+show_error_codes = true
+pretty = true
+
+[[tool.mypy.overrides]]
+module = ["riskapp_client.ui_v2.ui.*"]
+ignore_errors = true
+
 [tool.ruff]
-target-version = "py311"
+target-version = "py314"
 line-length = 88
 extend-exclude = [
   ".venv",
   ".git",
   "__pycache__",
-  "client/riskapp_client/ui_v2/components/ui_*.py",
-  "client/riskapp_client/ui_v2/tabs/ui_*.py",
-  "client/riskapp_client/ui_v2/ui_*.py",
+  "client/riskapp_client/ui_v2/ui/ui_*.py",
 ]
 
 [tool.ruff.lint]
 select = [
-  "E", "F", "I", "B", "UP", "SIM", "W",
+  "E", "F", "I", "B", "UP", "SIM", "W", "S",
 ]
 ignore = [
   "E501",
@@ -54,7 +80,13 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = [
   "S101",
+  # Tests intentionally use obvious, non-production credential literals.
+  "S105",
+  "S106",
+  "S107",
 ]
+"tests/client/test_gui_behavior_coverage.py" = ["S108"]
+"tests/server/test_ops_cli.py" = ["S104"]
 
 "server/riskapp_server/api/routers/**/*.py" = ["B008"]
 "server/riskapp_server/auth/service.py" = ["B008"]

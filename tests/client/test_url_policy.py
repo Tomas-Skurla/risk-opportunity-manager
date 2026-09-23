@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import pytest
+from riskapp_client.utils.urls import UrlPolicy, validate_base_url
 
 
 def test_validate_base_url_accepts_https_and_localhost_http() -> None:
-    """validate_base_url accepts https everywhere and http only for localhost by default"""
-    from riskapp_client.utils.urls import UrlPolicy, validate_base_url
+    """HTTPS is accepted; HTTP requires localhost by default."""
+
 
     policy = UrlPolicy()  # allow_http_localhost=True, allow_http_anywhere=False
 
@@ -32,8 +33,8 @@ def test_validate_base_url_accepts_https_and_localhost_http() -> None:
 def test_validate_base_url_rejects_credentials_query_whitespace_and_bad_scheme() -> (
     None
 ):
-    """validate_base_url rejects empty, whitespace, bad scheme, credentials, query and fragment URLs"""
-    from riskapp_client.utils.urls import UrlPolicy, validate_base_url
+    """Reject malformed URLs, credentials, queries and fragments."""
+
 
     policy = UrlPolicy()
     bad_urls = [

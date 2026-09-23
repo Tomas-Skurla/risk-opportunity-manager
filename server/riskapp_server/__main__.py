@@ -14,7 +14,8 @@ def _env_flag(name: str, default: bool) -> bool:
 
 def main() -> int:
     # Lazy import so this file stays importable even if uvicorn isn't installed.
-    import uvicorn  # type: ignore
+    # pylint: disable-next=import-outside-toplevel
+    import uvicorn
 
     env = os.getenv("ENV", "development").strip().lower()
     host = os.getenv("RISKAPP_HOST", "127.0.0.1")

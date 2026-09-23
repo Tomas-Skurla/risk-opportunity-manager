@@ -1,9 +1,14 @@
 import csv
 import io
 import uuid
+from collections.abc import Callable, Iterator, Sequence
+from enum import Enum
+from types import FunctionType, GenericAlias
+from typing import Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -11,6 +16,7 @@ from riskapp_server.auth.service import get_current_user
 from riskapp_server.core.csv_export import safe_csv_cell
 from riskapp_server.core.filters import ItemFilterParams, apply_item_filters
 from riskapp_server.core.items_crud import (
+    claim_base_version,
     create_item,
     delete_item,
     generate_report,
@@ -23,40 +29,56 @@ from riskapp_server.db.session import RiskStatus, Role, User, get_db, utcnow
 from riskapp_server.schemas.models import AssessmentIn, ScoreReportOut
 
 
+def _set_payload_schema(
+    endpoint: Callable[..., Any], schema: type[BaseModel]
+) -> None:
+    """Install a concrete request model before FastAPI inspects an endpoint."""
+    cast(FunctionType, endpoint).__annotations__["payload"] = schema
+
+
 def create_crud_router(
     *,
     prefix: str,
-    tags: list[str],
-    Model,
-    CreateSchema,
-    UpdateSchema,
-    OutSchema,
+    tags: Sequence[str | Enum],
+    Model: type[Any],
+    CreateSchema: type[BaseModel],
+    UpdateSchema: type[BaseModel],
+    OutSchema: type[BaseModel],
     fixed_type: str | None = None,
-    AssessmentModel=None,
-    AssessmentOutSchema=None,
+    AssessmentModel: type[Any] | None = None,
+    AssessmentOutSchema: type[BaseModel] | None = None,
 ) -> APIRouter:
     """Create crud router."""
-    r = APIRouter(tags=tags)
+    r = APIRouter(tags=list(tags))
 
-    @r.post(
-        f"/projects/{{project_id}}/{prefix}", response_model=OutSchema, status_code=201
-    )
     def create_obj(
         project_id: uuid.UUID,
-        payload: CreateSchema,
+        payload: BaseModel,
         db: Session = Depends(get_db),
         user: User = Depends(get_current_user),
-    ):
+    ) -> Any:
         require_min_role(db, project_id, user.id, min_role=Role.member)
         return create_item(db, user.id, project_id, payload, Model)
 
-    @r.get(f"/projects/{{project_id}}/{prefix}", response_model=list[OutSchema])
+    _set_payload_schema(create_obj, CreateSchema)
+    r.add_api_route(
+        f"/projects/{{project_id}}/{prefix}",
+        create_obj,
+        methods=["POST"],
+        response_model=OutSchema,
+        status_code=201,
+    )
+
+    @r.get(
+        f"/projects/{{project_id}}/{prefix}",
+        response_model=GenericAlias(list, OutSchema),
+    )
     def list_objs(
         project_id: uuid.UUID,
         filters: ItemFilterParams = Depends(),
         db: Session = Depends(get_db),
         user: User = Depends(get_current_user),
-    ):
+    ) -> Sequence[Any]:
 
         ensure_member(db, project_id, user.id)
         f = vars(filters)
@@ -70,7 +92,7 @@ def create_crud_router(
         filters: ItemFilterParams = Depends(),
         db: Session = Depends(get_db),
         user: User = Depends(get_current_user),
-    ):
+    ) -> StreamingResponse:
         """Export the current filtered page as CSV."""
         ensure_member(db, project_id, user.id)
         f = vars(filters)
@@ -107,7 +129,7 @@ def create_crud_router(
         if offset:
             stmt = stmt.offset(offset)
 
-        cols = [
+        raw_cols = [
             "id",
             "type" if hasattr(Model, "type") else None,
             "code",
@@ -123,9 +145,9 @@ def create_crud_router(
             "version",
             "is_deleted",
         ]
-        cols = [c for c in cols if c]
+        cols = [c for c in raw_cols if c is not None]
 
-        def rows():
+        def rows() -> Iterator[bytes]:
             buf = io.StringIO()
             w = csv.writer(buf)
             w.writerow(cols)
@@ -142,14 +164,13 @@ def create_crud_router(
         headers = {"Content-Disposition": f"attachment; filename={prefix}_export.csv"}
         return StreamingResponse(rows(), media_type="text/csv", headers=headers)
 
-    @r.patch(f"/projects/{{project_id}}/{prefix}/{{item_id}}", response_model=OutSchema)
     def update_obj(
         project_id: uuid.UUID,
         item_id: uuid.UUID,
-        payload: UpdateSchema,
+        payload: BaseModel,
         db: Session = Depends(get_db),
         user: User = Depends(get_current_user),
-    ):
+    ) -> Any:
         status_val = getattr(payload, "status", None)
         status_s = str(getattr(status_val, "value", status_val) or "").lower().strip()
         min_role = Role.manager if status_s == RiskStatus.deleted.value else Role.member
@@ -157,6 +178,14 @@ def create_crud_router(
         return update_item(
             db, project_id, item_id, payload, Model, item_type=fixed_type
         )
+
+    _set_payload_schema(update_obj, UpdateSchema)
+    r.add_api_route(
+        f"/projects/{{project_id}}/{prefix}/{{item_id}}",
+        update_obj,
+        methods=["PATCH"],
+        response_model=OutSchema,
+    )
 
     @r.delete(
         f"/projects/{{project_id}}/{prefix}/{{item_id}}",
@@ -180,7 +209,7 @@ def create_crud_router(
         filters: ItemFilterParams = Depends(),
         db: Session = Depends(get_db),
         user: User = Depends(get_current_user),
-    ):
+    ) -> ScoreReportOut:
         ensure_member(db, project_id, user.id)
         f = vars(filters)
         if fixed_type:
@@ -192,14 +221,14 @@ def create_crud_router(
 
         @r.get(
             f"/projects/{{project_id}}/{prefix}/{{item_id}}/assessments",
-            response_model=list[AssessmentOutSchema],
+            response_model=GenericAlias(list, AssessmentOutSchema),
         )
         def list_assessments(
             project_id: uuid.UUID,
             item_id: uuid.UUID,
             db: Session = Depends(get_db),
             user: User = Depends(get_current_user),
-        ):
+        ) -> Sequence[Any]:
             ensure_member(db, project_id, user.id)
             if not db.execute(
                 select(Model.id).where(
@@ -237,7 +266,7 @@ def create_crud_router(
             payload: AssessmentIn,
             db: Session = Depends(get_db),
             user: User = Depends(get_current_user),
-        ):
+        ) -> Any:
             """Upsert the calling user's assessment for a scored item."""
             require_min_role(db, project_id, user.id, min_role=Role.member)
             if not db.execute(
@@ -267,26 +296,33 @@ def create_crud_router(
 
             now = utcnow()
             if not assessment:
+                if payload.base_version != 0:
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "reason": "version_mismatch",
+                            "server_version": None,
+                        },
+                    )
                 assessment = AssessmentModel(
                     id=uuid.uuid4(),
                     **{parent_id_field: item_id},
                     assessor_user_id=user.id,
                     created_at=now,
                     updated_at=now,
-                    version=0,
+                    version=1,
                     is_deleted=False,
                 )
                 db.add(assessment)
-            elif (
-                payload.base_version is not None
-                and assessment.version != payload.base_version
-            ):
-                raise HTTPException(
-                    status_code=409,
-                    detail={
-                        "reason": "version_mismatch",
-                        "server_version": assessment.version,
-                    },
+            else:
+                assessment = claim_base_version(
+                    db,
+                    AssessmentModel,
+                    (
+                        getattr(AssessmentModel, parent_id_field) == item_id,
+                        AssessmentModel.assessor_user_id == user.id,
+                    ),
+                    payload.base_version,
                 )
 
             assessment.probability = payload.probability
@@ -294,7 +330,6 @@ def create_crud_router(
             assessment.notes = payload.notes
             assessment.is_deleted = False
             assessment.updated_at = now
-            assessment.version = int(assessment.version) + 1
 
             recalculate_item_scores(assessment)
             db.commit()

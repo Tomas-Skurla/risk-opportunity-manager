@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import uuid
+from typing import cast
 
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from riskapp_server.sync import engine
+from sqlalchemy.orm import Session
 
 
 def _register_and_create_project(client: TestClient) -> tuple[str, dict[str, str]]:
@@ -20,7 +22,7 @@ def _register_and_create_project(client: TestClient) -> tuple[str, dict[str, str
     return response.json()["id"], headers
 
 
-def test_duplicate_change_id_in_one_push_is_applied_once(
+def test_changed_payload_with_same_id_is_rejected_without_reapplying(
     tmp_path, isolated_app_factory
 ) -> None:
     app = isolated_app_factory(f"sqlite+pysqlite:///{tmp_path / 'batch-sync.db'}")
@@ -64,8 +66,10 @@ def test_duplicate_change_id_in_one_push_is_applied_once(
 
         assert response.status_code == 200
         assert response.json()["accepted"] == 1
-        assert response.json()["duplicates"] == 1
-        assert response.json()["duplicate_change_ids"] == [change_id]
+        assert response.json()["duplicates"] == 0
+        assert response.json()["duplicate_change_ids"] == []
+        assert response.json()["errors"][0]["reason"] == "change_id_payload_mismatch"
+        assert response.json()["results"][1]["replayed"] is False
 
         response = client.post(
             f"/projects/{project_id}/sync/pull",
@@ -92,7 +96,8 @@ def test_commit_failure_rolls_back_without_exposing_database_details(
     monkeypatch.setattr(engine, "ensure_member", lambda *_args: "member")
 
     with pytest.raises(HTTPException) as caught:
-        engine.push_changes(session, uuid.uuid4(), uuid.uuid4(), [])
+        # The failure-injection double implements only the exercised Session calls.
+        engine.push_changes(cast(Session, session), uuid.uuid4(), uuid.uuid4(), [])
 
     assert caught.value.status_code == 500
     assert caught.value.detail == "Sync push commit failed"

@@ -45,7 +45,7 @@ def _export_scored_entities(
         writer = csv.writer(handle)
         writer.writerow(list(SCORED_ENTITY_CSV_COLUMNS))
         for ent in items:
-            out_row = []
+            out_row: list[str | int] = []
             for col in SCORED_ENTITY_CSV_COLUMNS:
                 v = getattr(ent, col, None)
                 if col in _NUMERIC_COLS and v is not None:

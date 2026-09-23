@@ -7,13 +7,26 @@ import sqlite3
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from riskapp_client.adapters.local_storage.sqlite_data_store import LocalStore, utc_iso
 from riskapp_client.domain.scored_entity_fields import SCORED_ENTITY_OUTBOX_ALLOWED_KEYS
 
 STATUS_PENDING = "pending"
+STATUS_RETRY = "retry"
 STATUS_BLOCKED = "blocked"
+RETRY_DELAYS_SECONDS = (2, 5, 15, 60, 300)
+BLOCKING_FAILURE_KINDS = {
+    "conflict",
+    "validation",
+    "permission",
+    "authentication",
+    "error",
+}
+
+# SQL fragments interpolated below are assembled only from fixed clauses or
+# generated "?" placeholders. All runtime values remain bound parameters.
 
 
 @dataclass(frozen=True)
@@ -54,16 +67,60 @@ class OutboxStore:
             where += " AND project_id=?"
             params.append(project_id)
         row = self.conn.execute(
-            f"SELECT COUNT(*) AS c FROM outbox WHERE {where};", params
+            f"SELECT COUNT(*) AS c FROM outbox WHERE {where};",  # noqa: S608
+            params,
         ).fetchone()
         return int(row["c"]) if row else 0
 
     def pending_count(self, project_id: str | None = None) -> int:
-        return self._count_by_status(STATUS_PENDING, project_id)
+        where = "status IN (?, ?)"
+        params: list[object] = [STATUS_PENDING, STATUS_RETRY]
+        if project_id:
+            where += " AND project_id=?"
+            params.append(project_id)
+        row = self.conn.execute(
+            f"SELECT COUNT(*) AS c FROM outbox WHERE {where};",  # noqa: S608
+            params,
+        ).fetchone()
+        return int(row["c"]) if row else 0
+
+    def deferred_count(self, project_id: str | None = None) -> int:
+        """Count transient failures waiting for their next retry."""
+        return self._count_by_status(STATUS_RETRY, project_id)
 
     def blocked_count(self, project_id: str | None = None) -> int:
         """Count changes that are blocked due to sync errors/conflicts."""
         return self._count_by_status(STATUS_BLOCKED, project_id)
+
+    def _count_blocked_kind(
+        self, failure_kind: str, project_id: str | None = None
+    ) -> int:
+        where = "status=?"
+        params: list[object] = [STATUS_BLOCKED]
+        if failure_kind == "conflict":
+            where += " AND failure_kind=?"
+            params.append("conflict")
+        else:
+            # Rows created before failure_kind was introduced are sync errors
+            # unless they were explicitly classified as conflicts.
+            where += " AND failure_kind<>?"
+            params.append("conflict")
+        if project_id:
+            where += " AND project_id=?"
+            params.append(project_id)
+        row = self.conn.execute(
+            f"SELECT COUNT(*) AS c FROM outbox WHERE {where};",  # noqa: S608
+            params,
+        ).fetchone()
+        return int(row["c"]) if row else 0
+
+    def conflict_count(self, project_id: str | None = None) -> int:
+        """Count blocked changes that need an explicit conflict decision."""
+        return self._count_blocked_kind("conflict", project_id)
+
+    def error_count(self, project_id: str | None = None) -> int:
+        """Count blocked non-conflict synchronization errors."""
+        return self._count_blocked_kind("error", project_id)
 
     def _safe_json_loads(self, raw: str | None) -> dict[str, Any]:
         """Best-effort decode of `last_error` payloads stored in the outbox."""
@@ -75,6 +132,58 @@ class OutboxStore:
             return {"detail": str(raw)}
         return parsed if isinstance(parsed, dict) else {"detail": str(parsed)}
 
+    def _blocked_row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
+        """Decode one blocked outbox row without losing its saved outcome."""
+        record = self._safe_json_loads(row["record_json"])
+        outcome = self._safe_json_loads(row["result_json"])
+        if not outcome:
+            # Backwards compatibility for rows blocked before result_json was
+            # added to the local schema.
+            outcome = self._safe_json_loads(row["last_error"])
+        title = (
+            record.get("title")
+            or record.get("name")
+            or outcome.get("title")
+            or outcome.get("name")
+            or row["entity_id"]
+        )
+        return {
+            "change_id": row["change_id"],
+            "project_id": row["project_id"],
+            "entity": row["entity"],
+            "op": row["op"],
+            "entity_id": row["entity_id"],
+            "base_version": row["base_version"],
+            "record": record,
+            "title": str(title),
+            "reason": str(
+                outcome.get("reason")
+                or outcome.get("message")
+                or outcome.get("detail")
+                or row["last_error"]
+                or "Blocked by sync error"
+            ),
+            "server_version": outcome.get("server_version"),
+            "server_record": outcome.get("server_record"),
+            "server_updated_at": outcome.get("server_updated_at"),
+            "failure_kind": str(row["failure_kind"] or "error"),
+            "detail": outcome,
+            "created_at": row["created_at"],
+        }
+
+    def get_blocked_change(self, change_id: str) -> dict[str, Any] | None:
+        """Return one blocked change by its exact receipt ID."""
+        row = self.conn.execute(
+            """
+            SELECT change_id, project_id, entity, op, entity_id, base_version,
+                   record_json, last_error, failure_kind, result_json, created_at
+            FROM outbox
+            WHERE change_id=? AND status=?
+            """,
+            (str(change_id), STATUS_BLOCKED),
+        ).fetchone()
+        return self._blocked_row_to_dict(row) if row else None
+
     def get_blocked_changes(
         self, project_id: str | None = None, limit: int = 100
     ) -> list[dict[str, Any]]:
@@ -83,7 +192,8 @@ class OutboxStore:
         if project_id:
             rows = self.conn.execute(
                 """
-                SELECT change_id, entity, op, entity_id, base_version, record_json, last_error
+                SELECT change_id, project_id, entity, op, entity_id, base_version,
+                       record_json, last_error, failure_kind, result_json, created_at
                 FROM outbox
                 WHERE project_id=? AND status=?
                 ORDER BY created_at ASC
@@ -94,7 +204,8 @@ class OutboxStore:
         else:
             rows = self.conn.execute(
                 """
-                SELECT change_id, entity, op, entity_id, base_version, record_json, last_error
+                SELECT change_id, project_id, entity, op, entity_id, base_version,
+                       record_json, last_error, failure_kind, result_json, created_at
                 FROM outbox
                 WHERE status=?
                 ORDER BY created_at ASC
@@ -103,38 +214,7 @@ class OutboxStore:
                 (STATUS_BLOCKED, int(limit)),
             ).fetchall()
 
-        out: list[dict[str, Any]] = []
-        for row in rows:
-            record = self._safe_json_loads(row["record_json"])
-            err = self._safe_json_loads(row["last_error"])
-            title = (
-                record.get("title")
-                or record.get("name")
-                or err.get("title")
-                or err.get("name")
-                or row["entity_id"]
-            )
-            out.append(
-                {
-                    "change_id": row["change_id"],
-                    "entity": row["entity"],
-                    "op": row["op"],
-                    "entity_id": row["entity_id"],
-                    "base_version": row["base_version"],
-                    "record": record,
-                    "title": str(title),
-                    "reason": str(
-                        err.get("reason")
-                        or err.get("message")
-                        or err.get("detail")
-                        or row["last_error"]
-                        or "Blocked by sync error"
-                    ),
-                    "server_version": err.get("server_version"),
-                    "detail": err,
-                }
-            )
-        return out
+        return [self._blocked_row_to_dict(row) for row in rows]
 
     def _replace_outbox_entry(
         self,
@@ -145,18 +225,73 @@ class OutboxStore:
         entity_id: str,
         base_version: int | None,
         record: dict[str, Any],
+        force_rebase: bool = False,
     ) -> str:
         change_id = str(uuid.uuid4())
         record_json = json.dumps(record)
-        # Squash and replacement are one transaction. If serialization or insert
-        # fails, the existing offline change remains intact.
-        with self.conn:
+        # Squash and replacement are one transaction. This joins an active
+        # service transaction so the domain row and outbox row commit together.
+        with self._store.write_transaction():
             cur = self.conn.cursor()
+            existing = cur.execute(
+                """
+                SELECT change_id, op, base_version, status, failure_kind,
+                       last_attempt_at
+                FROM outbox
+                WHERE project_id=? AND entity=? AND entity_id=?
+                  AND status IN (?, ?, ?)
+                ORDER BY created_at ASC
+                LIMIT 1
+                """,
+                (
+                    project_id,
+                    entity,
+                    entity_id,
+                    STATUS_PENDING,
+                    STATUS_RETRY,
+                    STATUS_BLOCKED,
+                ),
+            ).fetchone()
+            if (
+                existing is not None
+                and not force_rebase
+                and existing["status"] == STATUS_BLOCKED
+                and existing["failure_kind"] == "conflict"
+            ):
+                # Editing the local copy does not resolve the conflict. Keep the
+                # saved server outcome and receipt ID while refreshing "mine".
+                cur.execute(
+                    "UPDATE outbox SET op=?, record_json=? WHERE change_id=?;",
+                    (op, record_json, existing["change_id"]),
+                )
+                return str(existing["change_id"])
+
+            effective_base_version = base_version
+            if existing is not None and not force_rebase:
+                # Squashing another local edit must retain the version on which
+                # the first unacknowledged edit was based.
+                effective_base_version = existing["base_version"]
+                if (
+                    effective_base_version is None
+                    and existing["op"] == "upsert"
+                    and existing["last_attempt_at"]
+                ):
+                    # A version-zero create may already have committed remotely
+                    # even though its response was lost. Any replacement edit is
+                    # therefore based on the first possible server version.
+                    effective_base_version = 1
             cur.execute(
                 "DELETE FROM outbox "
                 "WHERE project_id=? AND entity=? AND entity_id=? "
-                "AND status IN (?, ?);",
-                (project_id, entity, entity_id, STATUS_PENDING, STATUS_BLOCKED),
+                "AND status IN (?, ?, ?);",
+                (
+                    project_id,
+                    entity,
+                    entity_id,
+                    STATUS_PENDING,
+                    STATUS_RETRY,
+                    STATUS_BLOCKED,
+                ),
             )
             cur.execute(
                 """
@@ -172,7 +307,7 @@ class OutboxStore:
                     entity,
                     op,
                     entity_id,
-                    base_version,
+                    effective_base_version,
                     record_json,
                     STATUS_PENDING,
                     utc_iso(),
@@ -202,11 +337,19 @@ class OutboxStore:
             return
         bv: int | None = bv_raw if bv_raw >= 1 else None
 
-        self.conn.execute(
-            "UPDATE outbox SET base_version=? WHERE project_id=? AND entity=? AND entity_id=? AND status IN (?, ?);",
-            (bv, project_id, entity, str(entity_id), STATUS_PENDING, STATUS_BLOCKED),
-        )
-        self.conn.commit()
+        with self._store.write_transaction():
+            self.conn.execute(
+                "UPDATE outbox SET base_version=? WHERE project_id=? AND entity=? "
+                "AND entity_id=? AND status IN (?, ?);",
+                (
+                    bv,
+                    project_id,
+                    entity,
+                    str(entity_id),
+                    STATUS_PENDING,
+                    STATUS_RETRY,
+                ),
+            )
 
     def discard_entity_changes(
         self, project_id: str, *, entity: str, entity_id: str
@@ -216,14 +359,50 @@ class OutboxStore:
         Used when an entity was created locally and deleted before first sync:
         the correct remote net effect is no-op.
         """
-        self.conn.execute(
+        with self._store.write_transaction():
+            self.conn.execute(
+                """
+                DELETE FROM outbox
+                WHERE project_id=? AND entity=? AND entity_id=?
+                  AND status IN (?, ?, ?);
+                """,
+                (
+                    project_id,
+                    entity,
+                    str(entity_id),
+                    STATUS_PENDING,
+                    STATUS_RETRY,
+                    STATUS_BLOCKED,
+                ),
+            )
+
+    def remote_create_may_exist(
+        self, project_id: str, *, entity: str, entity_id: str
+    ) -> bool:
+        """Return whether a version-zero create may already exist remotely."""
+        row = self.conn.execute(
             """
-            DELETE FROM outbox
-            WHERE project_id=? AND entity=? AND entity_id=? AND status IN (?, ?);
+            SELECT op, base_version, last_attempt_at
+            FROM outbox
+            WHERE project_id=? AND entity=? AND entity_id=?
+              AND status IN (?, ?, ?)
+            ORDER BY created_at ASC
+            LIMIT 1
             """,
-            (project_id, entity, str(entity_id), STATUS_PENDING, STATUS_BLOCKED),
+            (
+                project_id,
+                entity,
+                str(entity_id),
+                STATUS_PENDING,
+                STATUS_RETRY,
+                STATUS_BLOCKED,
+            ),
+        ).fetchone()
+        return bool(
+            row is not None
+            and row["op"] == "upsert"
+            and (row["base_version"] is not None or row["last_attempt_at"])
         )
-        self.conn.commit()
 
     def _queue_scored_upsert(
         self,
@@ -288,7 +467,26 @@ class OutboxStore:
         get_project_and_version: Callable,
     ) -> None:
         _, ver = get_project_and_version(entity_id)
-        base_v = ver if ver >= 1 else None
+        force_rebase = False
+        if ver >= 1:
+            base_v: int | None = ver
+        elif self.remote_create_may_exist(
+            project_id,
+            entity=entity,
+            entity_id=entity_id,
+        ):
+            # The create request crossed the send boundary. If its response was
+            # lost, deleting it must target the version-one server row instead
+            # of collapsing the local create/delete pair to a no-op.
+            base_v = 1
+            force_rebase = True
+        else:
+            self.discard_entity_changes(
+                project_id,
+                entity=entity,
+                entity_id=entity_id,
+            )
+            return
         self._replace_outbox_entry(
             project_id=project_id,
             entity=entity,
@@ -296,6 +494,7 @@ class OutboxStore:
             entity_id=entity_id,
             base_version=base_v,
             record={"id": entity_id},
+            force_rebase=force_rebase,
         )
 
     def queue_risk_delete(self, project_id: str, risk_id: str) -> None:
@@ -375,18 +574,30 @@ class OutboxStore:
         )
 
     def get_pending_changes(
-        self, project_id: str, limit: int = 100
+        self,
+        project_id: str,
+        limit: int = 100,
+        *,
+        now: str | None = None,
     ) -> list[dict[str, Any]]:
         limit = max(1, min(int(limit), 1000))
+        ready_at = str(now or utc_iso())
         rows = self.conn.execute(
             """
             SELECT change_id, entity, op, base_version, record_json
             FROM outbox
-            WHERE project_id=? AND status=?
+            WHERE project_id=?
+              AND (
+                    status=?
+                    OR (
+                        status=?
+                        AND (next_retry_at='' OR next_retry_at<=?)
+                    )
+                  )
             ORDER BY created_at ASC
             LIMIT ?
             """,
-            (project_id, STATUS_PENDING, int(limit)),
+            (project_id, STATUS_PENDING, STATUS_RETRY, ready_at, int(limit)),
         ).fetchall()
         out: list[dict[str, Any]] = []
         for row in rows:
@@ -401,19 +612,290 @@ class OutboxStore:
             )
         return out
 
+    def next_retry_at(self, project_id: str | None = None) -> str | None:
+        """Return the earliest scheduled transient retry, if any."""
+        where = "status=? AND next_retry_at<>''"
+        params: list[object] = [STATUS_RETRY]
+        if project_id:
+            where += " AND project_id=?"
+            params.append(project_id)
+        row = self.conn.execute(
+            f"SELECT MIN(next_retry_at) AS ts FROM outbox WHERE {where};",  # noqa: S608
+            params,
+        ).fetchone()
+        return str(row["ts"]) if row and row["ts"] else None
+
     def delete_outbox_ids(self, change_ids: list[str]) -> None:
         if not change_ids:
             return
         q = ",".join(["?"] * len(change_ids))
-        self.conn.execute(f"DELETE FROM outbox WHERE change_id IN ({q});", change_ids)
-        self.conn.commit()
+        with self._store.write_transaction():
+            self.conn.execute(
+                f"DELETE FROM outbox WHERE change_id IN ({q});",  # noqa: S608
+                change_ids,
+            )
 
-    def block_outbox_id(self, change_id: str, err: str) -> None:
-        self.conn.execute(
-            "UPDATE outbox SET status=?, last_error=? WHERE change_id=?;",
-            (STATUS_BLOCKED, err[:500], change_id),
+    def mark_outbox_ids_attempted(
+        self, change_ids: list[str], *, attempted_at: str | None = None
+    ) -> None:
+        """Persist the send boundary before performing the network request."""
+        ids = [str(change_id) for change_id in change_ids if change_id]
+        if not ids:
+            return
+        q = ",".join(["?"] * len(ids))
+        timestamp = str(attempted_at or utc_iso())
+        with self._store.write_transaction():
+            self.conn.execute(
+                f"UPDATE outbox SET last_attempt_at=? "  # noqa: S608
+                f"WHERE change_id IN ({q});",  # noqa: S608
+                [timestamp, *ids],
+            )
+
+    def acknowledge_accepted_results(
+        self,
+        project_id: str,
+        results: list[dict[str, Any]],
+    ) -> int:
+        """Atomically apply accepted server rows and remove their outbox entries."""
+        acknowledged = 0
+        with self._store.write_transaction():
+            self._store.release_scored_codes_for_acknowledgements(
+                project_id,
+                results,
+            )
+            for result in results:
+                change_id = str(result.get("change_id") or "")
+                if not change_id or result.get("status") != "accepted":
+                    continue
+                row = self.conn.execute(
+                    """
+                    SELECT entity, entity_id
+                    FROM outbox
+                    WHERE change_id=? AND project_id=?
+                    """,
+                    (change_id, project_id),
+                ).fetchone()
+                result_entity = str(result.get("entity") or "")
+                result_entity_id = str(result.get("entity_id") or "")
+                if row is not None:
+                    entity = str(row["entity"])
+                    entity_id = str(row["entity_id"])
+                    if (
+                        result_entity not in {"", entity}
+                        or result_entity_id not in {"", entity_id}
+                    ):
+                        raise RuntimeError(
+                            "Push acknowledgement does not match outbox"
+                        )
+                else:
+                    # A newer local edit can replace a sent receipt. The result
+                    # still advances that replacement's base version, but must
+                    # never overwrite its editable field values.
+                    entity = result_entity
+                    entity_id = result_entity_id
+                    if not entity or not entity_id:
+                        continue
+
+                raw_version = result.get("server_version")
+                server_version: int | None = (
+                    raw_version
+                    if isinstance(raw_version, int)
+                    and not isinstance(raw_version, bool)
+                    else None
+                )
+                raw_record = result.get("server_record")
+                server_record: dict[str, Any] | None = (
+                    dict(raw_record) if isinstance(raw_record, dict) else None
+                )
+                if row is not None:
+                    self.conn.execute(
+                        "DELETE FROM outbox WHERE change_id=?;", (change_id,)
+                    )
+                    self._store.apply_push_acknowledgement(
+                        project_id,
+                        entity=entity,
+                        entity_id=entity_id,
+                        server_version=server_version,
+                        server_record=server_record,
+                    )
+                else:
+                    replacement = self.conn.execute(
+                        """
+                        SELECT change_id, base_version, record_json
+                        FROM outbox
+                        WHERE project_id=? AND entity=? AND entity_id=?
+                          AND status IN (?, ?)
+                        ORDER BY created_at ASC
+                        LIMIT 1
+                        """,
+                        (
+                            project_id,
+                            entity,
+                            entity_id,
+                            STATUS_PENDING,
+                            STATUS_RETRY,
+                        ),
+                    ).fetchone()
+                    if replacement is None:
+                        continue
+                    raw_receipt_version = result.get("receipt_server_version")
+                    replacement_version = (
+                        raw_receipt_version
+                        if bool(result.get("replayed"))
+                        and isinstance(raw_receipt_version, int)
+                        and not isinstance(raw_receipt_version, bool)
+                        else server_version
+                    )
+                    current_base = int(replacement["base_version"] or 0)
+                    advanced_base = max(
+                        current_base,
+                        int(replacement_version or 0),
+                    )
+                    replacement_record = self._safe_json_loads(
+                        replacement["record_json"]
+                    )
+                    if (
+                        entity in {"risk", "opportunity"}
+                        and server_record is not None
+                        and "code" in server_record
+                    ):
+                        replacement_record["code"] = server_record.get("code")
+                    self.conn.execute(
+                        "UPDATE outbox SET base_version=?, record_json=? "
+                        "WHERE change_id=?;",
+                        (
+                            advanced_base or None,
+                            json.dumps(replacement_record),
+                            replacement["change_id"],
+                        ),
+                    )
+                    metadata_record = server_record
+                    if (
+                        bool(result.get("replayed"))
+                        and replacement_version != server_version
+                        and server_record is not None
+                    ):
+                        metadata_record = {
+                            key: server_record[key]
+                            for key in ("id", "project_id", "code")
+                            if key in server_record
+                        }
+                    self._store.advance_push_acknowledgement(
+                        project_id,
+                        entity=entity,
+                        entity_id=entity_id,
+                        server_version=replacement_version,
+                        server_record=metadata_record,
+                    )
+                acknowledged += 1
+        return acknowledged
+
+    def _encode_failure(
+        self, err: str | dict[str, Any]
+    ) -> tuple[dict[str, Any], str, str]:
+        outcome = (
+            dict(err) if isinstance(err, dict) else self._safe_json_loads(err)
         )
-        self.conn.commit()
+        result_json = json.dumps(outcome, default=str, separators=(",", ":"))
+        summary = str(
+            outcome.get("reason")
+            or outcome.get("message")
+            or outcome.get("detail")
+            or err
+        )
+        return outcome, result_json, summary
+
+    def defer_outbox_id(
+        self,
+        change_id: str,
+        err: str | dict[str, Any],
+        *,
+        retry_after_seconds: int | None = None,
+        now: datetime | None = None,
+    ) -> str | None:
+        """Schedule a transient failure using bounded exponential backoff."""
+        outcome, result_json, summary = self._encode_failure(err)
+        now_value = now or datetime.now(UTC)
+        if now_value.tzinfo is None:
+            now_value = now_value.replace(tzinfo=UTC)
+        now_dt = now_value.astimezone(UTC).replace(tzinfo=None)
+        with self._store.write_transaction():
+            row = self.conn.execute(
+                "SELECT retry_count FROM outbox WHERE change_id=?;", (change_id,)
+            ).fetchone()
+            if not row:
+                return None
+            attempt = int(row["retry_count"] or 0) + 1
+            if retry_after_seconds is None:
+                delay = RETRY_DELAYS_SECONDS[
+                    min(attempt - 1, len(RETRY_DELAYS_SECONDS) - 1)
+                ]
+            else:
+                delay = max(0, min(int(retry_after_seconds), 86_400))
+            attempted_at = now_dt.isoformat()
+            retry_at = (now_dt + timedelta(seconds=delay)).isoformat()
+            failure_kind = str(outcome.get("failure_kind") or "transient")
+            self.conn.execute(
+                """
+                UPDATE outbox
+                SET status=?, last_error=?, failure_kind=?, result_json=?,
+                    retry_count=?, next_retry_at=?, last_attempt_at=?
+                WHERE change_id=?;
+                """,
+                (
+                    STATUS_RETRY,
+                    summary[:500],
+                    failure_kind,
+                    result_json,
+                    attempt,
+                    retry_at,
+                    attempted_at,
+                    change_id,
+                ),
+            )
+        return retry_at
+
+    def release_authentication_blocks(self, project_id: str | None = None) -> int:
+        """Make login-blocked writes eligible after a new authenticated session."""
+        project_clause = " AND project_id=?" if project_id else ""
+        params: list[object] = [STATUS_PENDING, STATUS_BLOCKED]
+        if project_id:
+            params.append(project_id)
+        with self._store.write_transaction():
+            result = self.conn.execute(
+                f"""
+                UPDATE outbox
+                SET status=?, next_retry_at=''
+                WHERE status=? AND failure_kind='authentication'{project_clause};
+                """,  # noqa: S608
+                params,
+            )
+        return int(result.rowcount or 0)
+
+    def block_outbox_id(
+        self,
+        change_id: str,
+        err: str | dict[str, Any],
+        *,
+        failure_kind: str = "error",
+    ) -> None:
+        if failure_kind not in BLOCKING_FAILURE_KINDS:
+            raise ValueError(f"Unknown outbox failure kind: {failure_kind!r}")
+        _outcome, result_json, summary = self._encode_failure(err)
+        attempted_at = datetime.now(UTC).replace(tzinfo=None).isoformat()
+        with self._store.write_transaction():
+            self.conn.execute(
+                "UPDATE outbox SET status=?, last_error=?, failure_kind=?, "
+                "result_json=?, next_retry_at='', last_attempt_at=? WHERE change_id=?;",
+                (
+                    STATUS_BLOCKED,
+                    summary[:500],
+                    failure_kind,
+                    result_json,
+                    attempted_at,
+                    change_id,
+                ),
+            )
 
     def requeue_conflict_with_new_id(
         self, change_id: str, server_version: int
@@ -437,4 +919,24 @@ class OutboxStore:
             entity_id=entity_id,
             base_version=int(server_version),
             record=record,
+            force_rebase=True,
+        )
+
+    def queue_merged_upsert(
+        self,
+        project_id: str,
+        entity: str,
+        entity_id: str,
+        server_version: int,
+        record: dict[str, Any],
+    ) -> str:
+        """Queue a new receipt ID for an explicit server-based field merge."""
+        return self._replace_outbox_entry(
+            project_id=project_id,
+            entity=entity,
+            op="upsert",
+            entity_id=entity_id,
+            base_version=server_version,
+            record=record,
+            force_rebase=True,
         )

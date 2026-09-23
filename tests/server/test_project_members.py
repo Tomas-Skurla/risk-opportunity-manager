@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
+# The local imports use the models reloaded for the isolated test database.
+# pylint: disable=import-outside-toplevel
+
 
 def test_cannot_remove_or_downgrade_last_admin(tmp_path, isolated_app_factory):
     """The last admin of a project cannot be downgraded or removed by themselves"""

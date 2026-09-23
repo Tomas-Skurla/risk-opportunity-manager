@@ -2,10 +2,92 @@
 
 from __future__ import annotations
 
+import logging
+import re
+import time
+import uuid
+
 from starlette.datastructures import MutableHeaders
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from riskapp_server.core.logging_config import bind_request_id, reset_request_id
+
+_REQUEST_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+_REQUEST_LOGGER = logging.getLogger("riskapp_server.request")
+
+
+def _request_id_from_scope(scope: Scope) -> str:
+    for name, value in scope.get("headers") or []:
+        if name.lower() != b"x-request-id":
+            continue
+        try:
+            candidate = value.decode("ascii")
+        except UnicodeDecodeError:
+            break
+        if _REQUEST_ID_PATTERN.fullmatch(candidate):
+            return candidate
+        break
+    return str(uuid.uuid4())
+
+
+class RequestCorrelationMiddleware:
+    """Correlate application logs and responses with one safe request ID."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        correlation_id = _request_id_from_scope(scope)
+        scope.setdefault("state", {})["request_id"] = correlation_id
+        token = bind_request_id(correlation_id)
+        started = time.perf_counter()
+        status_code = 500
+
+        async def add_request_id(message: Message) -> None:
+            nonlocal status_code
+            if message["type"] == "http.response.start":
+                status_code = int(message["status"])
+                MutableHeaders(scope=message)["X-Request-ID"] = correlation_id
+            await send(message)
+
+        try:
+            await self.app(scope, receive, add_request_id)
+        # This is the application-wide observation boundary; re-raise after
+        # attaching correlation metadata so Starlette retains error handling.
+        except Exception:  # pylint: disable=broad-exception-caught
+            _REQUEST_LOGGER.exception(
+                "HTTP request failed",
+                extra={
+                    "http_method": scope.get("method", ""),
+                    "http_path": scope.get("path", ""),
+                    "http_status": status_code,
+                    "duration_ms": round(
+                        (time.perf_counter() - started) * 1000,
+                        3,
+                    ),
+                },
+            )
+            raise
+        else:
+            _REQUEST_LOGGER.info(
+                "HTTP request completed",
+                extra={
+                    "http_method": scope.get("method", ""),
+                    "http_path": scope.get("path", ""),
+                    "http_status": status_code,
+                    "duration_ms": round(
+                        (time.perf_counter() - started) * 1000,
+                        3,
+                    ),
+                },
+            )
+        finally:
+            reset_request_id(token)
 
 class _RequestBodyTooLarge(Exception):
     pass

@@ -6,6 +6,7 @@ versions trip over uuid.UUID here when building the schema.
 
 import uuid
 from datetime import date, datetime, timedelta
+from typing import Any
 
 from fastapi import HTTPException, Query
 from sqlalchemy import or_
@@ -66,7 +67,11 @@ def csv_list(value: str | None) -> list[str]:
 
 
 def apply_date_range(
-    stmt: Select, field, *, from_date: date | None, to_date: date | None
+    stmt: Select,
+    field: Any,
+    *,
+    from_date: date | None,
+    to_date: date | None,
 ) -> Select:
     if from_date is not None:
         stmt = stmt.where(field >= datetime.combine(from_date, datetime.min.time()))
@@ -89,7 +94,7 @@ def normalize_score_range(
 
 def apply_item_filters(
     stmt: Select,
-    Model,
+    model: type[Any],
     *,
     search: str | None,
     item_type: str | None,
@@ -97,7 +102,7 @@ def apply_item_filters(
     max_score: int | None,
     status: str | None,
     category: str | None,
-    owner_user_id,
+    owner_user_id: uuid.UUID | None,
     owner_unassigned: bool = False,
     from_date: date | None,
     to_date: date | None,
@@ -109,14 +114,14 @@ def apply_item_filters(
     non_deleted = [s for s in status_values if s != RiskStatus.deleted.value]
 
     if include_deleted:
-        cond = Model.is_deleted.is_(True)
+        cond = model.is_deleted.is_(True)
         if non_deleted:
-            cond = or_(cond, Model.status.in_(non_deleted))
+            cond = or_(cond, model.status.in_(non_deleted))
         stmt = stmt.where(cond)
     else:
-        stmt = stmt.where(Model.is_deleted.is_(False))
+        stmt = stmt.where(model.is_deleted.is_(False))
         if non_deleted:
-            stmt = stmt.where(Model.status.in_(non_deleted))
+            stmt = stmt.where(model.status.in_(non_deleted))
 
     if category and category.strip():
         cats = csv_list(category)
@@ -124,36 +129,36 @@ def apply_item_filters(
             stmt = stmt.where(
                 or_(
                     *[
-                        Model.category.ilike(f"%{_escape_like(c)}%", escape="\\")
+                        model.category.ilike(f"%{_escape_like(c)}%", escape="\\")
                         for c in cats
                     ]
                 )
             )
 
-    if item_type and hasattr(Model, "type"):
-        stmt = stmt.where(Model.type == item_type.lower().strip())
+    if item_type and hasattr(model, "type"):
+        stmt = stmt.where(model.type == item_type.lower().strip())
 
     if owner_unassigned:
-        stmt = stmt.where(Model.owner_user_id.is_(None))
+        stmt = stmt.where(model.owner_user_id.is_(None))
     elif owner_user_id is not None:
-        stmt = stmt.where(Model.owner_user_id == owner_user_id)
+        stmt = stmt.where(model.owner_user_id == owner_user_id)
 
     stmt = apply_date_range(
-        stmt, Model.identified_at, from_date=from_date, to_date=to_date
+        stmt, model.identified_at, from_date=from_date, to_date=to_date
     )
 
     if search and search.strip():
         q = f"%{_escape_like(search.strip())}%"
         stmt = stmt.where(
             or_(
-                Model.title.ilike(q, escape="\\"),
-                Model.code.ilike(q, escape="\\"),
+                model.title.ilike(q, escape="\\"),
+                model.code.ilike(q, escape="\\"),
             )
         )
 
     if min_score is not None:
-        stmt = stmt.where(Model.score >= int(min_score))
+        stmt = stmt.where(model.score >= int(min_score))
     if max_score is not None:
-        stmt = stmt.where(Model.score <= int(max_score))
+        stmt = stmt.where(model.score <= int(max_score))
 
     return stmt

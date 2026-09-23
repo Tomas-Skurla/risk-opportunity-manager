@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import Mock
 
 import pytest
 from PySide6.QtWidgets import QDialog, QLineEdit, QMessageBox, QTableWidget
-from riskapp_client.domain.domain_models import Member, Risk
+from riskapp_client import __version__
+from riskapp_client.domain.domain_models import Backend, Member, Risk
 from riskapp_client.ui_v2.components.custom_gui_widgets import (
     LoginDialog,
     NewProjectDialog,
@@ -25,6 +27,9 @@ from riskapp_client.ui_v2.tabs.members_tab import MembersTab
 from riskapp_client.ui_v2.tabs.opportunities_tab import OpportunitiesTab
 from riskapp_client.ui_v2.tabs.risks_tab import RisksTab
 from riskapp_client.ui_v2.tabs.top_history_tab import TopHistoryTab
+
+# Interaction tests exercise private widget handlers and UI helpers directly.
+# pylint: disable=protected-access
 
 
 def test_login_and_server_down_dialog_choices(qtbot) -> None:
@@ -51,7 +56,7 @@ def test_login_and_server_down_dialog_choices(qtbot) -> None:
     )
     qtbot.addWidget(down)
     down._choose_with_account()
-    assert down.result() == QDialog.Accepted
+    assert down.result() == QDialog.DialogCode.Accepted
     assert down.choice == ServerDownDialog.OFFLINE_WITH_ACCOUNT
 
     anonymous = ServerDownDialog("offline")
@@ -75,7 +80,7 @@ def test_registration_password_policy(password, message) -> None:
     assert any(
         message in issue for issue in RegisterDialog._check_password_policy(password)
     )
-    assert RegisterDialog._check_password_policy("StrongPassword1!") == []
+    assert not RegisterDialog._check_password_policy("StrongPassword1!")
 
 
 def test_registration_dialog_validates_each_field(monkeypatch, qtbot) -> None:
@@ -109,7 +114,7 @@ def test_registration_dialog_validates_each_field(monkeypatch, qtbot) -> None:
     dialog.ui.confirm_password.setText("StrongPassword1!")
     assert dialog.values()[0] == "https://api.example.test"
     dialog._validate_and_accept()
-    assert dialog.result() == QDialog.Accepted
+    assert dialog.result() == QDialog.DialogCode.Accepted
 
 
 def test_new_project_dialog_requires_a_name(monkeypatch, qtbot) -> None:
@@ -128,7 +133,7 @@ def test_new_project_dialog_requires_a_name(monkeypatch, qtbot) -> None:
     dialog.desc_edit.setPlainText("  Move the system  ")
     assert dialog.values() == ("Migration", "Move the system")
     dialog._validate_and_accept()
-    assert dialog.result() == QDialog.Accepted
+    assert dialog.result() == QDialog.DialogCode.Accepted
 
 
 def test_risk_form_round_trips_values_permissions_and_members(qtbot) -> None:
@@ -218,7 +223,9 @@ def test_readonly_table_setup_configures_selection_and_delegate(qtbot) -> None:
     assert table.itemDelegate() is not None
 
 
-def test_main_window_builds_all_views_and_common_gui_helpers(monkeypatch, qtbot) -> None:
+def test_main_window_builds_all_views_and_common_gui_helpers(
+    monkeypatch, qtbot
+) -> None:
     class EmptyBackend:
         def list_projects(self):
             return []
@@ -229,11 +236,12 @@ def test_main_window_builds_all_views_and_common_gui_helpers(monkeypatch, qtbot)
         "critical",
         lambda _parent, _title, message, *_args: critical.append(message),
     )
-    window = MainWindow(EmptyBackend())
+    # A deliberately incomplete backend tests the window's fallback behavior.
+    window = MainWindow(cast(Backend, EmptyBackend()))
     qtbot.addWidget(window)
     window.top_tab.auto_snap_timer.stop()
 
-    assert window.windowTitle() == "RiskApp"
+    assert window.windowTitle() == f"RiskApp {__version__}"
     assert window.ui.main_stacked_widget.count() == 8
     assert window.ui.sidebar_list.count() == 8
     assert window.risk_form.btn.text() == "Save Risk"
@@ -247,7 +255,10 @@ def test_main_window_builds_all_views_and_common_gui_helpers(monkeypatch, qtbot)
     window._select_row_by_entity_id(None, table=window.risks_table)
 
     assert window._call_backend("Failure", lambda: 42) == 42
-    assert window._call_backend("Failure", Mock(side_effect=RuntimeError("boom"))) is None
+    assert (
+        window._call_backend("Failure", Mock(side_effect=RuntimeError("boom")))
+        is None
+    )
     assert critical == ["boom"]
 
     window._update_scored_filter_report(window.filter_report, 0, [])

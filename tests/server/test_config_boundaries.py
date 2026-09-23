@@ -2,7 +2,40 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
+
+# These tests intentionally inspect private environment-parsing helpers.
+# pylint: disable=protected-access
+# Keep imports local to use the configuration currently loaded by the tests.
+# pylint: disable=import-outside-toplevel
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_configuration_import_rejects_unknown_environment_mode() -> None:
+    environment = os.environ.copy()
+    environment["ENV"] = "prod"
+    python_paths = [str(ROOT / "server"), str(ROOT / "client")]
+    if inherited_path := environment.get("PYTHONPATH"):
+        python_paths.append(inherited_path)
+    environment["PYTHONPATH"] = os.pathsep.join(python_paths)
+
+    result = subprocess.run(  # noqa: S603 - fixed interpreter and import statement
+        [sys.executable, "-c", "import riskapp_server.core.config"],
+        cwd=ROOT,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "ENV must be one of: development, production, test" in result.stderr
 
 
 def test_environment_helpers_reject_malformed_and_out_of_range_values(
@@ -32,6 +65,36 @@ def test_environment_helpers_reject_malformed_and_out_of_range_values(
     monkeypatch.setenv("INT_SETTING", "7")
     assert config._env_int("INT_SETTING", 5, minimum=1, maximum=10) == 7
 
+    monkeypatch.setenv("CHOICE_SETTING", " JSON ")
+    assert config._env_choice("CHOICE_SETTING", "plain", {"plain", "json"}) == "json"
+    monkeypatch.setenv("CHOICE_SETTING", "xml")
+    with pytest.raises(config.ConfigurationError, match="CHOICE_SETTING"):
+        config._env_choice("CHOICE_SETTING", "plain", {"plain", "json"})
+
+def test_integer_setting_deprecated_alias_and_canonical_precedence(
+    monkeypatch,
+) -> None:
+    import riskapp_server.core.config as config
+
+    monkeypatch.delenv("NEW_SETTING", raising=False)
+    monkeypatch.setenv("OLD_SETTING", "17")
+    with pytest.warns(DeprecationWarning, match="OLD_SETTING is deprecated"):
+        assert (
+            config._env_int_with_deprecated_alias(
+                "NEW_SETTING", "OLD_SETTING", 5, minimum=1
+            )
+            == 17
+        )
+
+    monkeypatch.setenv("NEW_SETTING", "23")
+    with pytest.warns(DeprecationWarning, match="OLD_SETTING is deprecated"):
+        assert (
+            config._env_int_with_deprecated_alias(
+                "NEW_SETTING", "OLD_SETTING", 5, minimum=1
+            )
+            == 23
+        )
+
 
 def test_runtime_validation_reports_all_unsafe_settings(monkeypatch) -> None:
     import riskapp_server.core.config as config
@@ -40,6 +103,7 @@ def test_runtime_validation_reports_all_unsafe_settings(monkeypatch) -> None:
         "ENV": "production",
         "ALGORITHM": "RS256",
         "SECRET_KEY": "short",
+        "TOKEN_HASH_KEY": "short",
         "ALLOW_INSECURE_DEFAULT_SECRET": True,
         "CORS_ORIGINS": ["*"],
         "INITIAL_SUPERUSER_EMAIL": "root@example.test",
@@ -59,6 +123,7 @@ def test_runtime_validation_reports_all_unsafe_settings(monkeypatch) -> None:
     assert "must be set together" in message
     assert "forbidden in production" in message
     assert "at least 32 characters" in message
+    assert "TOKEN_HASH_KEY" in message
     assert "explicit hostnames" in message
 
 
@@ -69,6 +134,7 @@ def test_valid_production_and_local_settings_pass(monkeypatch) -> None:
         "ENV": "production",
         "ALGORITHM": "HS512",
         "SECRET_KEY": "s" * 32,
+        "TOKEN_HASH_KEY": "t" * 32,
         "ALLOW_INSECURE_DEFAULT_SECRET": False,
         "CORS_ORIGINS": ["https://app.example.test"],
         "INITIAL_SUPERUSER_EMAIL": None,

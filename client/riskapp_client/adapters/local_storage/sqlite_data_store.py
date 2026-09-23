@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import os
+import re
 import sqlite3
 import uuid
+from collections.abc import Iterator
 from datetime import UTC, datetime
-from typing import Any, TypeVar
+from types import TracebackType
+from typing import Any, TypeVar, cast
 
 from riskapp_client.adapters.local_storage.schema import ensure_schema
 from riskapp_client.adapters.mappers.action_assessment_mapper import (
@@ -15,6 +19,7 @@ from riskapp_client.adapters.mappers.action_assessment_mapper import (
 from riskapp_client.adapters.mappers.scored_entity_mapper import (
     scored_entity_from_mapping,
 )
+from riskapp_client.domain.conflict_fields import MERGE_FIELDS
 from riskapp_client.domain.domain_models import (
     Action,
     Assessment,
@@ -56,12 +61,23 @@ _VALID_TABLES: set[str] = {
     "helpdesk_tickets",
 }
 
+# sqlite3 can bind values but not identifiers. Dynamic identifiers in this
+# module are allow-listed or checked here; every user value remains a parameter.
+_SQL_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+
 
 def _check_table(table: str) -> str:
     """Validate a table name."""
     if table not in _VALID_TABLES:
         raise ValueError(f"Unknown table name: {table!r}")
     return table
+
+
+def _check_identifier(identifier: str) -> str:
+    """Reject unsafe column identifiers used by private SQL builders."""
+    if not _SQL_IDENTIFIER.fullmatch(identifier):
+        raise ValueError(f"Unsafe SQLite identifier: {identifier!r}")
+    return identifier
 
 
 def utc_iso() -> str:
@@ -85,6 +101,20 @@ def _row_get(row: sqlite3.Row, key: str, default: Any = None) -> Any:
         return default
 
 
+def _value_or_existing[ValueT](
+    value: ValueT | None,
+    existing: sqlite3.Row | None,
+    key: str,
+    default: ValueT,
+) -> ValueT:
+    """Prefer an explicit value, then an existing SQLite value, then a default."""
+    if value is not None:
+        return value
+    if existing is None:
+        return default
+    return cast(ValueT, existing[key])
+
+
 class LocalStore:
     def __init__(self, db_path: str) -> None:
         self.db_path = db_path
@@ -96,6 +126,8 @@ class LocalStore:
         # Reduce transient "database is locked" errors in WAL mode.
         self.conn = sqlite3.connect(self.db_path, timeout=5.0)
         self.conn.row_factory = sqlite3.Row
+        self._write_depth = 0
+        self._rollback_only = False
         # Cached project data should remain private even when opening a DB that
         # was created by an older version with permissive mode bits.
         if os.path.exists(db_path):
@@ -110,12 +142,63 @@ class LocalStore:
     def __enter__(self) -> LocalStore:  # noqa: PYI034
         return self
 
-    def __exit__(self, exc_type, exc, tb) -> None:
+    def __exit__(
+        self,
+        _exc_type: type[BaseException] | None,
+        _exc: BaseException | None,
+        _traceback: TracebackType | None,
+    ) -> None:
         """Release resources when leaving the context manager."""
         self.close()
 
     def _init_schema(self) -> None:
         ensure_schema(self.conn)
+
+    @contextlib.contextmanager
+    def write_transaction(self) -> Iterator[sqlite3.Connection]:
+        """Run local writes in one nest-aware SQLite transaction.
+
+        Service methods own the outer transaction. Lower-level store and outbox
+        methods may safely join it; their normal commits are deferred until the
+        outermost context exits. A failed nested operation marks the whole unit
+        of work for rollback, even if an intermediate caller catches the error.
+        """
+        outermost = self._write_depth == 0
+        if outermost:
+            if self.conn.in_transaction:
+                raise RuntimeError(
+                    "SQLite transaction was started outside LocalStore.write_transaction"
+                )
+            self.conn.execute("BEGIN IMMEDIATE;")
+            self._rollback_only = False
+
+        self._write_depth += 1
+        try:
+            yield self.conn
+        except BaseException:
+            self._rollback_only = True
+            if outermost:
+                self.conn.rollback()
+            raise
+        else:
+            if outermost:
+                if self._rollback_only:
+                    self.conn.rollback()
+                    raise RuntimeError("Nested local write failed; transaction rolled back")
+                try:
+                    self.conn.commit()
+                except BaseException:
+                    self.conn.rollback()
+                    raise
+        finally:
+            self._write_depth -= 1
+            if outermost:
+                self._rollback_only = False
+
+    def _commit_if_needed(self) -> None:
+        """Commit a standalone write, or defer to the active service transaction."""
+        if self._write_depth == 0:
+            self.conn.commit()
 
     def _upsert_row(
         self, table: str, record: dict[str, Any], cur: Any = None, pk: str = "id"
@@ -123,16 +206,18 @@ class LocalStore:
         """Insert or update a row."""
         _check_table(table)
         cols = list(record.keys())
+        for identifier in (*cols, pk):
+            _check_identifier(identifier)
         placeholders = ", ".join(["?"] * len(cols))
         set_clause = ", ".join([f"{c}=excluded.{c}" for c in cols if c != pk])
         if set_clause:
             sql = (
-                f"INSERT INTO {table} ({','.join(cols)}) VALUES ({placeholders}) "
+                f"INSERT INTO {table} ({','.join(cols)}) VALUES ({placeholders}) "  # noqa: S608
                 f"ON CONFLICT({pk}) DO UPDATE SET {set_clause}"
             )
         else:
             sql = (
-                f"INSERT INTO {table} ({','.join(cols)}) VALUES ({placeholders}) "
+                f"INSERT INTO {table} ({','.join(cols)}) VALUES ({placeholders}) "  # noqa: S608
                 f"ON CONFLICT({pk}) DO NOTHING"
             )
         (cur or self.conn).execute(sql, tuple(record[c] for c in cols))
@@ -174,7 +259,7 @@ class LocalStore:
                 "created_by": owner,
             },
         )
-        self.conn.commit()
+        self._commit_if_needed()
         return Project(
             id=pid,
             name=str(name or "Local Project"),
@@ -194,7 +279,7 @@ class LocalStore:
         # The parent id and every child reference move atomically. Deferring FK
         # checks until commit avoids the previous PRAGMA foreign_keys=OFF flow,
         # which accidentally left enforcement disabled for the connection.
-        with self.conn:
+        with self.write_transaction():
             cur = self.conn.cursor()
             cur.execute("PRAGMA defer_foreign_keys=ON;")
             self._upsert_row(
@@ -217,16 +302,16 @@ class LocalStore:
                 "outbox",
             ):
                 cur.execute(
-                    f"UPDATE {table} SET project_id=? WHERE project_id=?;",
+                    f"UPDATE {table} SET project_id=? WHERE project_id=?;",  # noqa: S608
                     (new_id, old_id),
                 )
             cur.execute("DELETE FROM projects WHERE id=?;", (old_id,))
-        if (self.get_meta("bootstrap_project_id") or "") == old_id:
-            self.set_meta("bootstrap_project_id", new_id)
-        if (self.get_meta("bootstrap_user_project_id") or "") == old_id:
-            self.set_meta("bootstrap_user_project_id", new_id)
-        if (self.get_meta("bootstrap_anon_project_id") or "") == old_id:
-            self.set_meta("bootstrap_anon_project_id", new_id)
+            if (self.get_meta("bootstrap_project_id") or "") == old_id:
+                self.set_meta("bootstrap_project_id", new_id)
+            if (self.get_meta("bootstrap_user_project_id") or "") == old_id:
+                self.set_meta("bootstrap_user_project_id", new_id)
+            if (self.get_meta("bootstrap_anon_project_id") or "") == old_id:
+                self.set_meta("bootstrap_anon_project_id", new_id)
 
     def upsert_projects(self, projects: list[Project]) -> None:
         cur = self.conn.cursor()
@@ -241,7 +326,7 @@ class LocalStore:
                 },
                 cur,
             )
-        self.conn.commit()
+        self._commit_if_needed()
 
     def sync_projects(self, server_projects: list[Project]) -> None:
         """Merge server project list with local cache.
@@ -274,7 +359,8 @@ class LocalStore:
                 "outbox",
             ):
                 count = self.conn.execute(
-                    f"SELECT COUNT(*) FROM {child_table} WHERE project_id = ?;", (pid,)
+                    f"SELECT COUNT(*) FROM {child_table} WHERE project_id = ?;",  # noqa: S608
+                    (pid,),
                 ).fetchone()[0]
                 if count and int(count) > 0:
                     has_data = True
@@ -284,11 +370,12 @@ class LocalStore:
             # Clean up an empty project the user can no longer access.
             for child_table in ("helpdesk_tickets", "sync_state"):
                 self.conn.execute(
-                    f"DELETE FROM {child_table} WHERE project_id = ?;", (pid,)
+                    f"DELETE FROM {child_table} WHERE project_id = ?;",  # noqa: S608
+                    (pid,),
                 )
             self.conn.execute("DELETE FROM projects WHERE id = ?;", (pid,))
         self.upsert_projects(server_projects)
-        self.conn.commit()
+        self._commit_if_needed()
 
     def list_actions(self, project_id: str) -> list[Action]:
         rows = self.conn.execute(
@@ -304,10 +391,49 @@ class LocalStore:
 
     def _pending_outbox_ids(self, project_id: str, *, entity: str) -> set[str]:
         rows = self.conn.execute(
-            "SELECT entity_id FROM outbox WHERE project_id=? AND entity=? AND status='pending';",
+            "SELECT entity_id FROM outbox WHERE project_id=? AND entity=? "
+            "AND status IN ('pending', 'retry', 'blocked');",
             (project_id, entity),
         ).fetchall()
         return {str(r["entity_id"]) for r in rows}
+
+    def _remember_conflict_server_record(
+        self,
+        project_id: str,
+        entity: str,
+        entity_id: str,
+        server_record: dict[str, Any],
+    ) -> None:
+        """Keep the newest pulled server copy separate from the dirty local row."""
+        row = self.conn.execute(
+            """
+            SELECT change_id, result_json
+            FROM outbox
+            WHERE project_id=? AND entity=? AND entity_id=?
+              AND status='blocked' AND failure_kind='conflict'
+            LIMIT 1
+            """,
+            (project_id, entity, entity_id),
+        ).fetchone()
+        if row is None:
+            return
+        try:
+            parsed = json.loads(str(row["result_json"] or "{}"))
+        except (TypeError, ValueError):
+            parsed = {}
+        outcome = parsed if isinstance(parsed, dict) else {}
+        outcome["server_version"] = int(server_record.get("version") or 0)
+        outcome["server_record"] = dict(server_record)
+        outcome["server_updated_at"] = str(
+            server_record.get("updated_at") or ""
+        )
+        self.conn.execute(
+            "UPDATE outbox SET result_json=? WHERE change_id=?;",
+            (
+                json.dumps(outcome, default=str, separators=(",", ":")),
+                row["change_id"],
+            ),
+        )
 
     def _get_action_row(self, action_id: str) -> sqlite3.Row | None:
         return self.conn.execute(
@@ -339,9 +465,6 @@ class LocalStore:
     ) -> None:
         existing = self._get_action_row(action_id)
 
-        def _fallback(val, key, default):
-            return val if val is not None else (existing[key] if existing else default)
-
         self._upsert_row(
             "actions",
             {
@@ -354,13 +477,19 @@ class LocalStore:
                 "description": description or "",
                 "status": status or "open",
                 "owner_user_id": owner_user_id,
-                "version": int(_fallback(version, "version", 0)),
-                "is_deleted": int(_fallback(is_deleted, "is_deleted", 0)),
-                "updated_at": str(_fallback(updated_at, "updated_at", "")),
+                "version": int(
+                    _value_or_existing(version, existing, "version", 0)
+                ),
+                "is_deleted": int(
+                    _value_or_existing(is_deleted, existing, "is_deleted", False)
+                ),
+                "updated_at": str(
+                    _value_or_existing(updated_at, existing, "updated_at", "")
+                ),
                 "dirty": int(dirty),
             },
         )
-        self.conn.commit()
+        self._commit_if_needed()
 
     def _apply_pull_entities(
         self,
@@ -377,9 +506,11 @@ class LocalStore:
         for raw in server_items:
             obj = mapper_fn(raw)
             if obj.id in pending_ids:
-                cur.execute(
-                    f"UPDATE {table_name} SET version=?, updated_at=? WHERE id=?;",
-                    (int(obj.version), str(obj.updated_at or ""), str(obj.id)),
+                self._remember_conflict_server_record(
+                    project_id,
+                    entity_name,
+                    str(obj.id),
+                    raw,
                 )
                 continue
             record = record_builder_fn(obj, raw)
@@ -389,12 +520,14 @@ class LocalStore:
             record["updated_at"] = str(obj.updated_at or "")
             record["dirty"] = 0
             self._upsert_row(table_name, record, cur)
-        self.conn.commit()
+        self._commit_if_needed()
 
     def apply_pull_actions(
         self, project_id: str, server_actions: list[dict[str, Any]]
     ) -> None:
-        def build_record(action, _raw):
+        def build_record(
+            action: Action, _raw: dict[str, Any]
+        ) -> dict[str, Any]:
             return {
                 "risk_id": action.risk_id,
                 "opportunity_id": action.opportunity_id,
@@ -437,14 +570,14 @@ class LocalStore:
 
     def set_meta(self, key: str, value: str) -> None:
         self._upsert_row("meta", {"key": key, "value": value}, pk="key")
-        self.conn.commit()
+        self._commit_if_needed()
 
     def _next_code(self, project_id: str, *, table: str, prefix: str) -> str:
         """Local code generator (for example R-001 or O-001)."""
         self._assert_scored_table(table)
         like = f"{prefix}-%"
         rows = self.conn.execute(
-            f"SELECT code FROM {table} WHERE project_id=? AND code LIKE ? AND code IS NOT NULL;",
+            f"SELECT code FROM {table} WHERE project_id=? AND code LIKE ? AND code IS NOT NULL;",  # noqa: S608
             (project_id, like),
         ).fetchall()
         max_n = 0
@@ -483,7 +616,7 @@ class LocalStore:
             FROM {table}
             WHERE project_id=? AND is_deleted=0
             ORDER BY (probability*impact) DESC, title ASC
-            """,
+            """,  # noqa: S608
             (project_id,),
         ).fetchall()
         return [scored_entity_from_mapping(r, model_cls=model_cls) for r in rows]
@@ -491,7 +624,8 @@ class LocalStore:
     def _get_scored_row(self, table: str, entity_id: str) -> sqlite3.Row | None:
         self._assert_scored_table(table)
         return self.conn.execute(
-            f"SELECT * FROM {table} WHERE id=?;", (entity_id,)
+            f"SELECT * FROM {table} WHERE id=?;",  # noqa: S608
+            (entity_id,),
         ).fetchone()
 
     def _get_scored_project_and_version(
@@ -512,10 +646,10 @@ class LocalStore:
         project_id = str(row["project_id"])
         version = int(row["version"] or 0)
         self.conn.execute(
-            f"UPDATE {table} SET is_deleted=1, dirty=1, updated_at=? WHERE id=?;",
+            f"UPDATE {table} SET is_deleted=1, dirty=1, updated_at=? WHERE id=?;",  # noqa: S608
             (utc_iso(), entity_id),
         )
-        self.conn.commit()
+        self._commit_if_needed()
         return project_id, version
 
     def _norm_scored_meta(self, meta: dict[str, Any]) -> dict[str, Any]:
@@ -548,12 +682,12 @@ class LocalStore:
         self._assert_scored_table(table)
         existing = self._get_scored_row(table, entity_id)
 
-        def _fallback(val, key, default):
-            return val if val is not None else (existing[key] if existing else default)
+        v = int(_value_or_existing(version, existing, "version", 0))
+        is_del = int(
+            _value_or_existing(is_deleted, existing, "is_deleted", False)
+        )
+        upd = str(_value_or_existing(updated_at, existing, "updated_at", ""))
 
-        v = int(_fallback(version, "version", 0))
-        is_del = int(_fallback(is_deleted, "is_deleted", 0))
-        upd = str(_fallback(updated_at, "updated_at", ""))
         m = self._norm_scored_meta(meta)
         if not m.get("status"):
             m["status"] = "concept"
@@ -579,7 +713,7 @@ class LocalStore:
             "dirty": int(dirty),
         }
         self._upsert_row(table, record)
-        self.conn.commit()
+        self._commit_if_needed()
 
     def _apply_pull_scored_entities(
         self,
@@ -593,7 +727,8 @@ class LocalStore:
         pending_ids = {
             r["entity_id"]
             for r in self.conn.execute(
-                "SELECT entity_id FROM outbox WHERE project_id=? AND entity=? AND status='pending';",
+                "SELECT entity_id FROM outbox WHERE project_id=? AND entity=? "
+                "AND status IN ('pending', 'retry', 'blocked');",
                 (project_id, outbox_entity),
             ).fetchall()
         }
@@ -603,9 +738,14 @@ class LocalStore:
             ver = int(ent.get("version") or 0)
             upd = str(ent.get("updated_at") or "")
             if eid in pending_ids:
-                cur.execute(
-                    f"UPDATE {table} SET version=?, updated_at=? WHERE id=?;",
-                    (ver, upd, eid),
+                # Keep the last acknowledged version while a local write is
+                # pending. The server's newer version belongs in conflict
+                # metadata until the user explicitly resolves the conflict.
+                self._remember_conflict_server_record(
+                    project_id,
+                    outbox_entity,
+                    eid,
+                    ent,
                 )
                 continue
             meta = {k: ent.get(k) for k in SCORED_ENTITY_META_KEYS}
@@ -625,7 +765,7 @@ class LocalStore:
                 "dirty": 0,
             }
             self._upsert_row(table, record, cur)
-        self.conn.commit()
+        self._commit_if_needed()
 
     def list_risks(self, project_id: str) -> list[Risk]:
         return self._list_scored_entities(project_id, table="risks", model_cls=Risk)
@@ -669,8 +809,11 @@ class LocalStore:
 
     def _mark_entity_clean(self, table: str, entity_id: str) -> None:
         _check_table(table)
-        self.conn.execute(f"UPDATE {table} SET dirty=0 WHERE id=?;", (entity_id,))
-        self.conn.commit()
+        self.conn.execute(
+            f"UPDATE {table} SET dirty=0 WHERE id=?;",  # noqa: S608
+            (entity_id,),
+        )
+        self._commit_if_needed()
 
     def mark_risk_clean(self, risk_id: str) -> None:
         self._mark_entity_clean("risks", risk_id)
@@ -683,6 +826,181 @@ class LocalStore:
 
     def mark_assessment_clean(self, assessment_id: str) -> None:
         self._mark_entity_clean("assessments", assessment_id)
+
+    def apply_push_acknowledgement(
+        self,
+        project_id: str,
+        *,
+        entity: str,
+        entity_id: str,
+        server_version: int | None,
+        server_record: dict[str, Any] | None,
+    ) -> None:
+        """Apply the canonical row returned for one accepted outbox change."""
+        if server_record is not None:
+            record = dict(server_record)
+            record_id = str(record.get("id") or "")
+            if record_id and record_id != entity_id:
+                raise RuntimeError("Push acknowledgement returned another entity")
+            record_project = str(record.get("project_id") or "")
+            if record_project and record_project != project_id:
+                raise RuntimeError("Push acknowledgement returned another project")
+            record["id"] = entity_id
+            record["project_id"] = project_id
+            if server_version is not None:
+                record_version = int(record.get("version") or 0)
+                if record_version != server_version:
+                    raise RuntimeError("Push acknowledgement version mismatch")
+
+            appliers = {
+                "risk": self.apply_pull_risks,
+                "opportunity": self.apply_pull_opportunities,
+                "action": self.apply_pull_actions,
+                "assessment": self.apply_pull_assessments,
+                "helpdesk_ticket": self.apply_pull_helpdesk_tickets,
+            }
+            apply_record = appliers.get(entity)
+            if apply_record is None:
+                raise ValueError(f"Unsupported sync entity: {entity!r}")
+            apply_record(project_id, [record])
+            return
+
+        if server_version is None:
+            # Compatibility with servers that predate canonical push results.
+            return
+        table_by_entity = {
+            "risk": "risks",
+            "opportunity": "opportunities",
+            "action": "actions",
+            "assessment": "assessments",
+            "helpdesk_ticket": "helpdesk_tickets",
+        }
+        table = table_by_entity.get(entity)
+        if table is None:
+            raise ValueError(f"Unsupported sync entity: {entity!r}")
+        _check_table(table)
+        self.conn.execute(
+            f"UPDATE {table} SET version=?, dirty=0 "  # noqa: S608
+            "WHERE id=? AND project_id=?;",
+            (server_version, entity_id, project_id),
+        )
+        self._commit_if_needed()
+
+    def release_scored_codes_for_acknowledgements(
+        self,
+        project_id: str,
+        results: list[dict[str, Any]],
+    ) -> None:
+        """Release local codes before applying a canonical acknowledgement batch.
+
+        Server-assigned codes can form a local swap (for example R-001/R-002
+        becoming R-002/R-003). Clearing all affected owners first prevents the
+        per-project unique index from rejecting an otherwise valid batch.
+        """
+        grouped: dict[str, tuple[set[str], set[str]]] = {
+            "risk": (set(), set()),
+            "opportunity": (set(), set()),
+        }
+        for result in results:
+            entity = str(result.get("entity") or "")
+            if entity not in grouped or result.get("status") != "accepted":
+                continue
+            record = result.get("server_record")
+            if not isinstance(record, dict):
+                continue
+            entity_id = str(result.get("entity_id") or record.get("id") or "")
+            record_id = str(record.get("id") or entity_id)
+            record_project = str(record.get("project_id") or project_id)
+            if entity_id and record_id != entity_id:
+                raise RuntimeError("Push acknowledgement returned another entity")
+            if record_project != project_id:
+                raise RuntimeError("Push acknowledgement returned another project")
+            if entity_id:
+                grouped[entity][0].add(entity_id)
+            code = str(record.get("code") or "").strip()
+            if code:
+                grouped[entity][1].add(code)
+
+        table_by_entity = {"risk": "risks", "opportunity": "opportunities"}
+        for entity, (entity_ids, codes) in grouped.items():
+            if not entity_ids and not codes:
+                continue
+            clauses: list[str] = []
+            params: list[object] = [project_id]
+            if entity_ids:
+                placeholders = ",".join(["?"] * len(entity_ids))
+                clauses.append(f"id IN ({placeholders})")
+                params.extend(sorted(entity_ids))
+            if codes:
+                placeholders = ",".join(["?"] * len(codes))
+                clauses.append(f"code IN ({placeholders})")
+                params.extend(sorted(codes))
+            table = table_by_entity[entity]
+            self.conn.execute(
+                f"UPDATE {table} SET code=NULL WHERE project_id=? "  # noqa: S608
+                f"AND ({' OR '.join(clauses)});",  # noqa: S608
+                params,
+            )
+        self._commit_if_needed()
+
+    def advance_push_acknowledgement(
+        self,
+        project_id: str,
+        *,
+        entity: str,
+        entity_id: str,
+        server_version: int | None,
+        server_record: dict[str, Any] | None,
+    ) -> None:
+        """Advance server-owned metadata without overwriting a newer local edit."""
+        table_by_entity = {
+            "risk": "risks",
+            "opportunity": "opportunities",
+            "action": "actions",
+            "assessment": "assessments",
+            "helpdesk_ticket": "helpdesk_tickets",
+        }
+        table = table_by_entity.get(entity)
+        if table is None:
+            raise ValueError(f"Unsupported sync entity: {entity!r}")
+        record = dict(server_record or {})
+        record_id = str(record.get("id") or entity_id)
+        record_project = str(record.get("project_id") or project_id)
+        if record_id != entity_id:
+            raise RuntimeError("Push acknowledgement returned another entity")
+        if record_project != project_id:
+            raise RuntimeError("Push acknowledgement returned another project")
+        raw_record_version = record.get("version")
+        record_version = (
+            int(raw_record_version)
+            if isinstance(raw_record_version, int)
+            and not isinstance(raw_record_version, bool)
+            else None
+        )
+        if (
+            server_version is not None
+            and record_version is not None
+            and server_version != record_version
+        ):
+            raise RuntimeError("Push acknowledgement version mismatch")
+        version = server_version if server_version is not None else record_version
+        assignments: list[str] = []
+        params: list[object] = []
+        if version is not None:
+            assignments.append("version=MAX(version, ?)")
+            params.append(version)
+        if entity in {"risk", "opportunity"} and "code" in record:
+            assignments.append("code=?")
+            params.append(record.get("code"))
+        if not assignments:
+            return
+        params.extend((entity_id, project_id))
+        self.conn.execute(
+            f"UPDATE {table} SET {', '.join(assignments)} "  # noqa: S608
+            "WHERE id=? AND project_id=?;",
+            params,
+        )
+        self._commit_if_needed()
 
     def list_opportunities(self, project_id: str) -> list[Opportunity]:
         return self._list_scored_entities(
@@ -821,7 +1139,7 @@ class LocalStore:
                 "dirty": int(dirty),
             },
         )
-        self.conn.commit()
+        self._commit_if_needed()
 
     def get_last_server_time(self, project_id: str) -> str:
         row = self.conn.execute(
@@ -829,13 +1147,74 @@ class LocalStore:
         ).fetchone()
         return str(row["last_server_time"]) if row else "1970-01-01T00:00:00"
 
+    def get_last_server_sequence(self, project_id: str) -> int:
+        row = self.conn.execute(
+            "SELECT last_server_sequence FROM sync_state WHERE project_id=?;",
+            (project_id,),
+        ).fetchone()
+        return int(row["last_server_sequence"] or 0) if row else 0
+
     def set_last_server_time(self, project_id: str, server_time: str) -> None:
+        """Update the display timestamp without discarding a sequence watermark."""
+        self.set_sync_watermark(
+            project_id,
+            server_time,
+            self.get_last_server_sequence(project_id),
+        )
+
+    def set_sync_watermark(
+        self,
+        project_id: str,
+        server_time: str,
+        server_sequence: int | None,
+    ) -> None:
+        sequence = 0 if server_sequence is None else int(server_sequence)
+        if sequence < 0:
+            raise ValueError("server_sequence must be nonnegative")
         self._upsert_row(
             "sync_state",
-            {"project_id": project_id, "last_server_time": server_time},
+            {
+                "project_id": project_id,
+                "last_server_time": server_time,
+                "last_server_sequence": sequence,
+            },
             pk="project_id",
         )
-        self.conn.commit()
+        self._commit_if_needed()
+
+    def reset_sync_watermark(self, project_id: str, server_time: str) -> None:
+        self.set_sync_watermark(project_id, server_time, 0)
+
+    def apply_merged_fields(
+        self, entity: str, project_id: str, entity_id: str, record: dict[str, Any]
+    ) -> None:
+        """Mark a server-based merge dirty while preserving its version."""
+        tables = {
+            "risk": "risks", "opportunity": "opportunities",
+            "action": "actions", "assessment": "assessments",
+            "helpdesk_ticket": "helpdesk_tickets",
+        }
+        if entity not in tables:
+            raise ValueError("Unsupported merge entity")
+        table = tables[entity]
+        names = [key for key in MERGE_FIELDS[entity] if key in record]
+        for key in names:
+            _check_identifier(key)
+        assignments = ", ".join(f"{key}=?" for key in names)
+        params = [record[key] for key in names]
+        if entity == "assessment":
+            # Unlike scored risks, assessments persist their derived score.
+            # Recompute it from the chosen values in the same atomic update.
+            assignments = f"{assignments}, score=?"
+            params.append(int(record["probability"]) * int(record["impact"]))
+        assignments = f"{assignments}, dirty=1" if assignments else "dirty=1"
+        result = self.conn.execute(
+            f"UPDATE {table} SET {assignments} WHERE id=? AND project_id=?;",  # noqa: S608
+            (*params, entity_id, project_id),
+        )
+        if result.rowcount != 1:
+            raise RuntimeError("The merged local item is unavailable")
+        self._commit_if_needed()
 
     def apply_pull_risks(
         self, project_id: str, server_risks: list[dict[str, Any]]
@@ -860,7 +1239,9 @@ class LocalStore:
     def apply_pull_assessments(
         self, project_id: str, server_assessments: list[dict[str, Any]]
     ) -> None:
-        def build_record(assessment, raw):
+        def build_record(
+            assessment: Assessment, raw: dict[str, Any]
+        ) -> dict[str, Any]:
             item_id = str(assessment.item_id)
             item_type = self._infer_assessment_item_type(project_id, item_id, raw)
             risk_id = item_id if item_type == "risk" else None
@@ -966,7 +1347,7 @@ class LocalStore:
                 now,
             ),
         )
-        self.conn.commit()
+        self._commit_if_needed()
         row = self.conn.execute(
             "SELECT * FROM helpdesk_tickets WHERE id = ?;", (ticket_id,)
         ).fetchone()
@@ -1009,10 +1390,10 @@ class LocalStore:
             params.append(status)
         params.append(ticket_id)
         self.conn.execute(
-            f"UPDATE helpdesk_tickets SET {', '.join(sets)} WHERE id = ?;",
+            f"UPDATE helpdesk_tickets SET {', '.join(sets)} WHERE id = ?;",  # noqa: S608
             params,
         )
-        self.conn.commit()
+        self._commit_if_needed()
         row = self.conn.execute(
             "SELECT * FROM helpdesk_tickets WHERE id = ?;", (ticket_id,)
         ).fetchone()
@@ -1021,7 +1402,7 @@ class LocalStore:
     def delete_helpdesk_ticket(self, ticket_id: str) -> None:
         """Permanently delete a help-desk ticket."""
         self.conn.execute("DELETE FROM helpdesk_tickets WHERE id = ?;", (ticket_id,))
-        self.conn.commit()
+        self._commit_if_needed()
 
     def soft_delete_helpdesk_ticket(self, ticket_id: str) -> tuple[str, int]:
         """Soft-delete a synced help-desk ticket and mark it dirty for sync."""
@@ -1037,7 +1418,7 @@ class LocalStore:
             "UPDATE helpdesk_tickets SET is_deleted = 1, dirty = 1, updated_at = ? WHERE id = ?;",
             (utc_iso(), ticket_id),
         )
-        self.conn.commit()
+        self._commit_if_needed()
         return project_id, version
 
     def apply_pull_helpdesk_tickets(self, project_id: str, items: list[dict]) -> None:
@@ -1052,13 +1433,11 @@ class LocalStore:
             if not ticket_id:
                 continue
             if ticket_id in pending_ids:
-                self.conn.execute(
-                    "UPDATE helpdesk_tickets SET version = ?, updated_at = ? WHERE id = ?;",
-                    (
-                        int(item.get("version") or 0),
-                        str(item.get("updated_at") or ""),
-                        ticket_id,
-                    ),
+                self._remember_conflict_server_record(
+                    project_id,
+                    "helpdesk_ticket",
+                    ticket_id,
+                    item,
                 )
                 continue
             self.conn.execute(
@@ -1068,6 +1447,7 @@ class LocalStore:
                      reporter_email, version, is_deleted, dirty, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
+                    project_id     = excluded.project_id,
                     title          = excluded.title,
                     description    = excluded.description,
                     category       = excluded.category,
@@ -1077,6 +1457,7 @@ class LocalStore:
                     version        = excluded.version,
                     is_deleted     = excluded.is_deleted,
                     dirty          = 0,
+                    created_at     = excluded.created_at,
                     updated_at     = excluded.updated_at;
                 """,
                 (
@@ -1094,4 +1475,4 @@ class LocalStore:
                     str(item.get("updated_at") or ""),
                 ),
             )
-        self.conn.commit()
+        self._commit_if_needed()

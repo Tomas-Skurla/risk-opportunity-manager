@@ -1,7 +1,9 @@
 alembic==1.19.1
 annotated-doc==0.0.4
 annotated-types==0.7.0
-anyio==4.13.0
+anyio==4.14.2
+argon2-cffi==25.1.0
+argon2-cffi-bindings==26.1.0
 cffi==2.0.0
 click==8.3.3
 cryptography==50.0.0
@@ -12,7 +14,7 @@ fastapi==0.136.1
 greenlet==3.5.0
 h11==0.16.0
 httptools==0.7.1
-idna==3.13
+idna==3.18
 Mako==1.4.1
 MarkupSafe==3.0.3
 packaging==26.2
@@ -32,7 +34,7 @@ starlette==1.6.0
 typing-inspection==0.4.2
 typing_extensions==4.15.0
 uvicorn==0.46.0
-uvloop==0.22.1
+uvloop==0.22.1; sys_platform != "win32"
 watchfiles==1.1.1
 websockets==16.0
 wheel==0.47.0

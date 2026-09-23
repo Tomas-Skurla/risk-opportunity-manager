@@ -12,7 +12,8 @@ updates:
     commit-message:
       prefix: "build(docker)"
 
-  # Versioned action references in this repository's workflows.
+  # Full-length action commit references in this repository's workflows.
+  # Dependabot preserves immutable SHA pinning while updating release comments.
   - package-ecosystem: github-actions
     directory: /
     schedule:

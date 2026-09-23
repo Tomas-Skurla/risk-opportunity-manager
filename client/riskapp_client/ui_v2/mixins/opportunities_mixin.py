@@ -5,15 +5,57 @@ Filtering, table rendering, editor behavior, and CSV export for opportunities.
 
 from __future__ import annotations
 
-from riskapp_client.adapters.local_storage import csv_data_exporter as export_csv
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
+
+from riskapp_client.adapters.export import csv_data_exporter as export_csv
 from riskapp_client.services import entity_filters as filters
 from riskapp_client.ui_v2.mixins.scored_entity_mixin import ScoredEntityMixin
+
+if TYPE_CHECKING:
+    from PySide6.QtWidgets import (
+        QComboBox,
+        QLabel,
+        QLineEdit,
+        QSpinBox,
+        QTableWidget,
+        QTableWidgetItem,
+    )
+    from riskapp_client.domain.domain_models import Opportunity
+    from riskapp_client.ui_v2.components.custom_gui_widgets import RiskForm
+    from riskapp_client.ui_v2.tabs.opportunities_tab import OpportunitiesTab
 
 
 class OpportunitiesMixin(ScoredEntityMixin):
     """MainWindow mixin: OpportunitiesMixin"""
 
-    def _mark_opp_editor_dirty(self, *args) -> None:
+    backend: Any
+    current_opportunity_id: str | None
+    current_project_id: str | None
+    opp_editor_label: QLabel
+    opp_filter_category: QLineEdit
+    opp_filter_from: QLineEdit
+    opp_filter_max_score: QSpinBox
+    opp_filter_min_score: QSpinBox
+    opp_filter_owner: QComboBox
+    opp_filter_report: QLabel
+    opp_filter_search: QLineEdit
+    opp_filter_status: QComboBox
+    opp_filter_to: QLineEdit
+    opp_form: RiskForm
+    opps_tab: OpportunitiesTab
+    opps_table: QTableWidget
+    _opp_cache: dict[str, Opportunity]
+    _opp_editor_dirty: bool
+    _opportunity_editor_base_version: int | None
+    _opp_title_by_id: dict[str, str]
+    _mk_item: Callable[..., QTableWidgetItem]
+    _refresh_action_opp_combo: Callable[[], None]
+    _refresh_actions: Callable[..., None]
+    _refresh_matrix: Callable[[], None]
+    _sync_assessment_state: Callable[..., None]
+
+    def _mark_opp_editor_dirty(self, *_args: object) -> None:
         self._opp_editor_dirty = True
 
     def _commit_opp_editor_changes(
@@ -26,6 +68,7 @@ class OpportunitiesMixin(ScoredEntityMixin):
             self.backend.update_opportunity,
             self._refresh_opportunities if refresh else None,
             select_id,
+            base_version=self._opportunity_editor_base_version,
         ):
             self._opp_editor_dirty = False
 
@@ -34,7 +77,12 @@ class OpportunitiesMixin(ScoredEntityMixin):
             "opportunities.csv", self._opp_cache, export_csv.export_opportunities
         )
 
-    def _refresh_opportunities(self, select_id: str | None = None) -> None:
+    def _refresh_opportunities(
+        self,
+        select_id: str | None = None,
+        *,
+        use_remote_report: bool = True,
+    ) -> None:
         pid = self.current_project_id
         if not pid:
             return
@@ -57,7 +105,11 @@ class OpportunitiesMixin(ScoredEntityMixin):
             self.opps_table,
             filters_dict,
             self._mk_item,
-            getattr(self.backend, "opportunities_report", None),
+            (
+                getattr(self.backend, "opportunities_report", None)
+                if use_remote_report
+                else None
+            ),
             select_id,
         )
         if res is not None:
@@ -79,6 +131,10 @@ class OpportunitiesMixin(ScoredEntityMixin):
         )
         if new_id:
             self.current_opportunity_id = new_id
+            selected = self._opp_cache.get(new_id)
+            self._opportunity_editor_base_version = (
+                int(selected.version) if selected is not None else None
+            )
             self._opp_editor_dirty = False
             self._sync_assessment_state("opportunity", new_id, self.opps_tab)
 
@@ -92,6 +148,7 @@ class OpportunitiesMixin(ScoredEntityMixin):
         self._sync_assessment_state("opportunity", None, self.opps_tab)
 
     def _save_opportunity(self, payload: dict) -> None:
+        was_new = self.current_opportunity_id is None
         extra = [self._refresh_action_opp_combo, self._refresh_actions]
         saved_id = self._save_entity(
             payload,
@@ -103,14 +160,20 @@ class OpportunitiesMixin(ScoredEntityMixin):
             self.opp_editor_label,
             "Editor",
             extra,
+            base_version=self._opportunity_editor_base_version,
         )
         if saved_id:
             self.current_opportunity_id = saved_id
+            if was_new:
+                selected = self._opp_cache.get(saved_id)
+                self._opportunity_editor_base_version = (
+                    int(selected.version) if selected is not None else 0
+                )
             self._opp_editor_dirty = False
             self._sync_assessment_state("opportunity", saved_id, self.opps_tab)
 
     def _delete_opportunity(self) -> None:
-        def refresh_all():
+        def refresh_all() -> None:
             self._refresh_opportunities()
             self._refresh_action_opp_combo()
             self._refresh_actions()

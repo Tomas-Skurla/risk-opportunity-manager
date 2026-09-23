@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Protocol, TypeVar
 
-from riskapp_client.domain.domain_models import Opportunity, Risk
+from riskapp_client.domain.domain_models import Opportunity, Risk, ScoredEntity
 
 
 def parse_date(value: str) -> datetime | None:
@@ -53,23 +53,8 @@ RiskFilterCriteria = ScoredFilterCriteria
 OpportunityFilterCriteria = ScoredFilterCriteria
 
 
-class _Scored(Protocol):
-
-    title: str | None
-    code: str | None
-    category: str | None
-    description: str | None
-    score: int
-    status: str | None
-    owner_user_id: str | None
-    identified_at: str | None
-
-
-TScored = TypeVar("TScored", bound=_Scored)
-
-
-def filter_scored(
-    items: list[TScored], criteria: ScoredFilterCriteria
+def filter_scored[TScored: ScoredEntity](
+    items: Sequence[TScored], criteria: ScoredFilterCriteria
 ) -> list[TScored]:
     """Filter any scored entity according to UI criteria."""
     s = (criteria.search or "").strip().lower()

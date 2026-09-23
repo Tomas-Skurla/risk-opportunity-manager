@@ -16,7 +16,7 @@ def _h(token):
 
 
 def test_action_target_type_mismatch_returns_400(tmp_path, isolated_app_factory):
-    """Action create with the wrong target kind (opportunity-as-risk) returns HTTP 400"""
+    """An opportunity passed as a risk target returns HTTP 400."""
     app = isolated_app_factory(f"sqlite+pysqlite:///{tmp_path / 'actions_targets.db'}")
     with TestClient(app) as c:
         token = _register(c, "owner@test.com")

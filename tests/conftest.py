@@ -12,6 +12,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 @pytest.fixture
 def isolated_app_factory(monkeypatch: pytest.MonkeyPatch):
     """Create a FastAPI app with explicit test settings and an isolated database."""
+    created_engines = []
 
     def _make_app(
         db_url: str,
@@ -22,11 +23,15 @@ def isolated_app_factory(monkeypatch: pytest.MonkeyPatch):
         settings = {
             "ENV": "test",
             "SECRET_KEY": "riskapp-test-secret-key-that-is-not-used-in-production",
+            "TOKEN_HASH_KEY": (
+                "riskapp-test-token-hash-key-that-is-not-used-in-production"
+            ),
             "ALLOW_INSECURE_DEFAULT_SECRET": "0",
             "DATABASE_URL": db_url,
             "AUTO_CREATE_SCHEMA": "1",
             "LOGIN_RATE_LIMIT_PER_MINUTE": "2",
             "LOGIN_RATE_LIMIT_WINDOW_SECONDS": "60",
+            "REFRESH_TOKEN_REUSE_GRACE_SECONDS": "30",
             "PASSWORD_RESET_RETURN_TOKEN": "1" if return_reset_token else "0",
             "PBKDF2_ITERS": "100000",
             "MAX_REQUEST_BODY_BYTES": str(max_request_body_bytes),
@@ -38,14 +43,19 @@ def isolated_app_factory(monkeypatch: pytest.MonkeyPatch):
         for name, value in settings.items():
             monkeypatch.setenv(name, value)
 
+        # Imports must follow the settings patch so reloaded modules use this test DB.
+        # pylint: disable=import-outside-toplevel
         import riskapp_server.core.config as cfg
 
         importlib.reload(cfg)
         import riskapp_server.db.session as session
 
+        # Reloading this module replaces its module-level SQLAlchemy engine.
+        # Dispose the previous engine first so its SQLite pool is not orphaned.
+        session.engine.dispose()
         importlib.reload(session)
         import riskapp_server.auth.service as auth_service
-
+        created_engines.append(session.engine)
         importlib.reload(auth_service)
 
         import riskapp_server.core.permissions as permissions
@@ -99,8 +109,14 @@ def isolated_app_factory(monkeypatch: pytest.MonkeyPatch):
 
         import riskapp_server.main.app as main_app
 
+        # pylint: enable=import-outside-toplevel
         importlib.reload(main_app)
 
         return main_app.create_app()
 
-    return _make_app
+    yield _make_app
+
+    # Some unit tests only need modules configured for an isolated database and
+    # never enter TestClient, so the FastAPI lifespan cannot perform cleanup.
+    for engine in reversed(created_engines):
+        engine.dispose()

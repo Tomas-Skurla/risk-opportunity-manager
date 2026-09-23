@@ -1,5 +1,9 @@
 """Alembic environment for the RiskApp server schema."""
 
+# Alembic exposes this context API through a runtime proxy that Pylint cannot
+# inspect statically; all no-member accesses in this module target that proxy.
+# pylint: disable=no-member
+
 from __future__ import annotations
 
 from logging.config import fileConfig

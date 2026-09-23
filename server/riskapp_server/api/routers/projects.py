@@ -5,11 +5,12 @@ from datetime import timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Response
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
+from sqlalchemy.sql.functions import count
 
 from riskapp_server.auth.service import get_current_user
-from riskapp_server.core.config import RETENTION_DAYS
+from riskapp_server.core.config import RETENTION_DAYS, SYNC_RECEIPT_RETENTION_DAYS
 from riskapp_server.core.permissions import ensure_member, require_min_role
 from riskapp_server.db.session import (
     Action,
@@ -43,7 +44,7 @@ def _ensure_not_last_admin(
     if actor and actor.is_superuser:
         return
     n = db.execute(
-        select(func.count()).where(
+        select(count()).where(
             ProjectMember.project_id == project_id,
             ProjectMember.role == Role.admin.value,
         )
@@ -91,12 +92,12 @@ def list_projects(
     db: Session = Depends(get_db), user: User = Depends(get_current_user)
 ) -> list[Project]:
     if user.is_superuser:
-        return (
+        return list(
             db.execute(select(Project).order_by(Project.created_at.desc()))
             .scalars()
             .all()
         )
-    return (
+    return list(
         db.execute(
             select(Project)
             .join(ProjectMember, ProjectMember.project_id == Project.id)
@@ -251,27 +252,33 @@ def prune_project_logs(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Delete old audit/sync receipt rows for a project.
+    """Delete old audit/sync receipt rows for a project as a superuser.
 
-    This keeps long-running projects from accumulating unbounded log tables.
+    Project administrators are part of the activity being audited, so they
+    cannot shorten or erase their own project's audit history.
     """
-    require_min_role(db, project_id, user.id, min_role=Role.admin)
+    _require_superuser(user)
+    if db.get(Project, project_id) is None:
+        raise HTTPException(status_code=404, detail="Project not found")
     d = int(days or RETENTION_DAYS)
     d = max(1, min(d, 3650))
     cutoff = utcnow() - timedelta(days=d)
+    receipt_cutoff = utcnow() - timedelta(days=max(d, SYNC_RECEIPT_RETENTION_DAYS))
 
     r1 = db.execute(
         delete(AuditLog).where(AuditLog.project_id == project_id, AuditLog.ts < cutoff)
     )
     r2 = db.execute(
         delete(SyncReceipt).where(
-            SyncReceipt.project_id == project_id, SyncReceipt.processed_at < cutoff
+            SyncReceipt.project_id == project_id,
+            SyncReceipt.processed_at < receipt_cutoff,
         )
     )
     db.commit()
     return {
         "ok": True,
         "cutoff": cutoff.isoformat(),
+        "receipt_cutoff": receipt_cutoff.isoformat(),
         "audit_deleted": int(getattr(r1, "rowcount", 0) or 0),
         "sync_receipts_deleted": int(getattr(r2, "rowcount", 0) or 0),
     }

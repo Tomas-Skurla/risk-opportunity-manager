@@ -1,11 +1,12 @@
-
 from __future__ import annotations
 
+from PySide6.QtGui import QCloseEvent  # pylint: disable=no-name-in-module
 from PySide6.QtWidgets import QMainWindow  # pylint: disable=no-name-in-module
 
 from riskapp_client.domain.domain_models import Backend
 from riskapp_client.ui_v2.mixins.actions_mixin import ActionsMixin
 from riskapp_client.ui_v2.mixins.assessments_mixin import AssessmentsMixin
+from riskapp_client.ui_v2.mixins.background_jobs_mixin import BackgroundJobsMixin
 from riskapp_client.ui_v2.mixins.global_state_mixin import CoreMixin
 from riskapp_client.ui_v2.mixins.helpdesk_mixin import HelpDeskMixin
 from riskapp_client.ui_v2.mixins.layout_mixin import LayoutMixin
@@ -15,11 +16,16 @@ from riskapp_client.ui_v2.mixins.opportunities_mixin import OpportunitiesMixin
 from riskapp_client.ui_v2.mixins.projects_sync_mixin import ProjectsSyncMixin
 from riskapp_client.ui_v2.mixins.risks_mixin import RisksMixin
 from riskapp_client.ui_v2.mixins.top_history_mixin import TopHistoryMixin
+from riskapp_client.ui_v2.window_state import MainWindowState
 
 
-class MainWindow(  # pylint: disable=too-many-ancestors
+# The sibling mixins only declare these attributes; CoreMixin supplies the
+# state-backed properties at runtime.
+# pylint: disable-next=too-many-ancestors
+class MainWindow(  # pyright: ignore[reportIncompatibleVariableOverride]
     QMainWindow,
     LayoutMixin,
+    BackgroundJobsMixin,
     CoreMixin,
     ProjectsSyncMixin,
     RisksMixin,
@@ -36,9 +42,34 @@ class MainWindow(  # pylint: disable=too-many-ancestors
     Composed of multiple mixins to handle distinct UI components and state.
     """
 
-    def __init__(self, backend: Backend) -> None:
+    def __init__(
+        self,
+        backend: Backend,
+        *,
+        state: MainWindowState | None = None,
+        auto_sync_interval_seconds: int = 0,
+        auto_sync_max_backoff_seconds: int = 300,
+        auto_sync_initial_delay_seconds: int = 5,
+    ) -> None:
         super().__init__()
         self.backend = backend
+        self.state = state if state is not None else MainWindowState()
         self._init_state()
         self._build_ui()
+        self._init_background_jobs(
+            auto_sync_interval_seconds=auto_sync_interval_seconds,
+            auto_sync_max_backoff_seconds=auto_sync_max_backoff_seconds,
+            auto_sync_initial_delay_seconds=auto_sync_initial_delay_seconds,
+        )
         self._load_projects()
+        self._start_automatic_sync_scheduler()
+
+    def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt API
+        """Never destroy the window while its worker thread is still active."""
+        if not self._shutdown_background_jobs():
+            self.sync_status.setText(
+                "Sync: waiting for the current network request to finish…"
+            )
+            event.ignore()
+            return
+        super().closeEvent(event)

@@ -12,11 +12,13 @@ from riskapp_server.auth.service import (
     create_access_token,
     hash_pw,
     issue_refresh_token,
+    password_needs_rehash,
     rotate_refresh_token,
     verify_pw,
 )
 from riskapp_server.core.config import (
     ACCESS_TOKEN_MINUTES,
+    LOGIN_IP_RATE_LIMIT_PER_MINUTE,
     LOGIN_RATE_LIMIT_PER_MINUTE,
     LOGIN_RATE_LIMIT_WINDOW_SECONDS,
     RATE_LIMIT_MAX_KEYS,
@@ -31,6 +33,11 @@ router = APIRouter(tags=["auth"])
 
 _login_limiter = InMemorySlidingWindowLimiter(
     limit=LOGIN_RATE_LIMIT_PER_MINUTE,
+    window_s=LOGIN_RATE_LIMIT_WINDOW_SECONDS,
+    max_keys=RATE_LIMIT_MAX_KEYS,
+)
+_login_ip_limiter = InMemorySlidingWindowLimiter(
+    limit=LOGIN_IP_RATE_LIMIT_PER_MINUTE,
     window_s=LOGIN_RATE_LIMIT_WINDOW_SECONDS,
     max_keys=RATE_LIMIT_MAX_KEYS,
 )
@@ -105,6 +112,14 @@ def login(
     client_ip = (request.client.host if request.client else "") or "unknown"
     email = form.username.lower()
 
+    allowed, retry_after = _login_ip_limiter.check(client_ip)
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many login attempts. Try again later.",
+            headers={"Retry-After": str(retry_after)},
+        )
+
     allowed, retry_after = _login_limiter.check(f"{client_ip}:{email}")
     if not allowed:
         raise HTTPException(
@@ -125,8 +140,14 @@ def login(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials"
         )
 
+    # PBKDF2 hashes and Argon2 hashes with obsolete parameters are upgraded
+    # only after the password has been verified successfully.
+    if password_needs_rehash(user.password_hash):
+        user.password_hash = hash_pw(form.password)
+
     access = create_access_token(str(user.id))
-    refresh = issue_refresh_token(db, user.id)
+    refresh = issue_refresh_token(db, user.id, commit=False)
+    db.commit()
     return {
         "user_id": str(user.id),
         "access_token": access,

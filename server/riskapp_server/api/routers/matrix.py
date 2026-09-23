@@ -3,8 +3,9 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
+from sqlalchemy.sql.functions import count
 
 from riskapp_server.auth.service import get_current_user
 from riskapp_server.core.permissions import ensure_member
@@ -38,11 +39,11 @@ def matrix(
     risks = blank() if k in {"risk", "both"} else None
     opps = blank() if k in {"opportunity", "both"} else None
 
-    def fill(item_type: str, out):
+    def fill(item_type: str, out: list[list[int]] | None) -> None:
         if out is None:
             return
         for p, i, c in db.execute(
-            select(Item.probability, Item.impact, func.count(Item.id))
+            select(Item.probability, Item.impact, count(Item.id))
             .where(
                 Item.project_id == project_id,
                 Item.is_deleted.is_(False),

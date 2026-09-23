@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from collections import Counter
+from collections.abc import Callable
 from typing import Any
 
 from riskapp_client.adapters.local_storage.sqlite_data_store import LocalStore
@@ -32,6 +33,17 @@ from riskapp_client.services.scored_entity_management_service import (
 from riskapp_client.services.synchronization_service import SyncService
 
 
+def _optional_callable(
+    owner: object | None,
+    name: str,
+) -> Callable[..., Any] | None:
+    """Return a dynamically supported method only when it is callable."""
+    candidate = getattr(owner, name, None)
+    if not callable(candidate):
+        return None
+    return candidate
+
+
 class OfflineFirstBackend(Backend):
     """Backend implementation used by the Qt UI in offline-first mode."""
 
@@ -41,9 +53,12 @@ class OfflineFirstBackend(Backend):
         remote: Any | None = None,
         *,
         anonymous_offline: bool = False,
+        remote_factory: Callable[[], Any] | None = None,
+        release_authentication_blocks: bool = True,
     ) -> None:
         self.store = store
         self.remote = remote
+        self._remote_factory = remote_factory
         self.anonymous_offline = anonymous_offline
         self.outbox = OutboxStore(store)
         self._risks = self._make_scored_service(
@@ -76,12 +91,79 @@ class OfflineFirstBackend(Backend):
         self._assessments = AssessmentService(store, self.outbox)
         self._helpdesk = HelpDeskService(store, self.outbox)
         self._members = MembersService(remote)
-        self._sync = SyncService(store, self.outbox, remote)
+        self._sync = SyncService(
+            store,
+            self.outbox,
+            remote,
+            release_authentication_blocks=release_authentication_blocks,
+        )
+
+    def create_background_backend(self) -> OfflineFirstBackend:
+        """Build a worker-owned facade with its own SQLite connection."""
+        remote = self.remote
+        release_authentication_blocks = False
+        fork_remote = _optional_callable(remote, "fork_authenticated")
+        if fork_remote is not None:
+            remote = fork_remote()
+        elif remote is None and self._remote_factory is not None:
+            # Connection recovery belongs in the worker thread. The factory is
+            # retained only while an offline authenticated session is waiting
+            # for its first successful reconnect.
+            remote = self._remote_factory()
+            release_authentication_blocks = True
+        return OfflineFirstBackend(
+            LocalStore(self.store.db_path),
+            remote=remote,
+            anonymous_offline=self.anonymous_offline,
+            remote_factory=self._remote_factory,
+            release_authentication_blocks=release_authentication_blocks,
+        )
+
+    def can_auto_sync(self) -> bool:
+        """Return whether a worker can use or recover an authenticated session."""
+        return self.remote is not None or self._remote_factory is not None
+
+    def export_authenticated_remote(self) -> Any | None:
+        """Return a thread-local authenticated client for the GUI facade."""
+        fork_remote = _optional_callable(self.remote, "fork_authenticated")
+        return fork_remote() if fork_remote is not None else self.remote
+
+    def adopt_authenticated_remote(self, remote: Any) -> None:
+        """Promote a successfully recovered worker session to the GUI facade."""
+        if remote is None:
+            raise ValueError("authenticated remote is required")
+        self.remote = remote
+        self._remote_factory = None
+        self._members = MembersService(remote)
+        self._sync = SyncService(self.store, self.outbox, remote)
+
+    def _remote_for_project(self, project_id: str | None = None) -> Any | None:
+        remote = self.remote
+        if not remote:
+            return None
+        if project_id and str(project_id).startswith("local-"):
+            return None
+        return remote
 
     def _use_remote(self, project_id: str | None = None) -> bool:
-        if not self.remote:
-            return False
-        return not (project_id and str(project_id).startswith("local-"))
+        return self._remote_for_project(project_id) is not None
+
+    def list_sync_projects(self) -> list[Project]:
+        """Refresh the authoritative project list without offline fallback."""
+        if self.remote is None:
+            raise RuntimeError("No authenticated server session is available.")
+        remote_projects = list(self.remote.list_projects() or [])
+        self.store.sync_projects(remote_projects)
+        local_projects = [
+            project
+            for project in self.store.list_projects()
+            if str(project.id).startswith("local-") and project.created_by
+        ]
+        by_id = {
+            str(project.id): project
+            for project in [*remote_projects, *local_projects]
+        }
+        return list(by_id.values())
 
     def _discard_scored_changes(
         self,
@@ -129,7 +211,15 @@ class OfflineFirstBackend(Backend):
                     )
                 ),
                 soft_delete_local_fn=soft_delete_local_fn,
+                write_transaction_fn=self.store.write_transaction,
                 next_code_fn=next_code_fn,
+                remote_create_may_exist_fn=(
+                    lambda project_id, entity_id: self.outbox.remote_create_may_exist(
+                        project_id,
+                        entity=kind,
+                        entity_id=entity_id,
+                    )
+                ),
             )
         )
 
@@ -163,7 +253,9 @@ class OfflineFirstBackend(Backend):
                 for p in list(remote_projects) + local_projects:
                     by_id[str(p.id)] = p
                 return list(by_id.values())
-            except Exception:
+            # Any remote transport or response failure must fall back to the
+            # local cache so this offline-first boundary remains available.
+            except Exception:  # pylint: disable=broad-exception-caught
                 logging.getLogger(__name__).debug(
                     "Remote list_projects failed, using local cache", exc_info=True
                 )
@@ -237,9 +329,10 @@ class OfflineFirstBackend(Backend):
         )
 
     def delete_project(self, project_id: str) -> None:
-        if not self._use_remote(project_id):
+        remote = self._remote_for_project(project_id)
+        if remote is None:
             raise RuntimeError("Sync this project to the server before deleting.")
-        self.remote.delete_project(project_id)
+        remote.delete_project(project_id)
 
     def list_members(self, project_id: str) -> list[Member]:
         if not self._use_remote(project_id):
@@ -313,15 +406,25 @@ class OfflineFirstBackend(Backend):
     def list_risks(self, project_id: str) -> list[Risk]:
         return self._risks.list(project_id)
 
-    def risks_report(self, project_id: str, **filters) -> dict:
-        if self._use_remote(project_id) and getattr(self.remote, "risks_report", None):
-            return dict(self.remote.risks_report(project_id, **filters))
+    def risks_report(self, project_id: str, **filters: Any) -> dict[str, Any]:
+        report = _optional_callable(
+            self._remote_for_project(project_id),
+            "risks_report",
+        )
+        if report is not None:
+            return dict(report(project_id, **filters))
 
         items = self._risks.list(project_id)
         return self._generate_scored_report(items, filters)
 
     def create_risk(
-        self, project_id: str, *, title: str, probability: int, impact: int, **meta
+        self,
+        project_id: str,
+        *,
+        title: str,
+        probability: int,
+        impact: int,
+        **meta: Any,
     ) -> Risk:
         return self._risks.create(
             project_id,
@@ -340,23 +443,25 @@ class OfflineFirstBackend(Backend):
         probability: int,
         impact: int,
         base_version: int | None = None,
-        **meta,
+        **meta: Any,
     ) -> Risk:
-        ent = self._risks.update(
-            risk_id,
-            title=title,
-            probability=probability,
-            impact=impact,
-            meta=meta,
+        with self.store.write_transaction():
+            ent = self._risks.update(
+                risk_id,
+                title=title,
+                probability=probability,
+                impact=impact,
+                meta=meta,
         )
-        if base_version is not None:
-            # Thread through explicit base_version overrides.
-            self.outbox.override_base_version(
-                project_id,
-                entity="risk",
-                entity_id=risk_id,
-                base_version=base_version,
-            )
+            if base_version is not None:
+                # The override belongs to the same unit of work as the local
+                # entity update and outbox replacement.
+                self.outbox.override_base_version(
+                    project_id,
+                    entity="risk",
+                    entity_id=risk_id,
+                    base_version=base_version,
+                )
         return ent
 
     def delete_risk(self, project_id: str, risk_id: str) -> None:
@@ -367,17 +472,27 @@ class OfflineFirstBackend(Backend):
     def list_opportunities(self, project_id: str) -> list[Opportunity]:
         return self._opps.list(project_id)
 
-    def opportunities_report(self, project_id: str, **filters) -> dict:
-        if self._use_remote(project_id) and getattr(
-            self.remote, "opportunities_report", None
-        ):
-            return dict(self.remote.opportunities_report(project_id, **filters))
+    def opportunities_report(
+        self, project_id: str, **filters: Any
+    ) -> dict[str, Any]:
+        report = _optional_callable(
+            self._remote_for_project(project_id),
+            "opportunities_report",
+        )
+        if report is not None:
+            return dict(report(project_id, **filters))
 
         items = self._opps.list(project_id)
         return self._generate_scored_report(items, filters)
 
     def create_opportunity(
-        self, project_id: str, *, title: str, probability: int, impact: int, **meta
+        self,
+        project_id: str,
+        *,
+        title: str,
+        probability: int,
+        impact: int,
+        **meta: Any,
     ) -> Opportunity:
         return self._opps.create(
             project_id,
@@ -396,22 +511,23 @@ class OfflineFirstBackend(Backend):
         probability: int,
         impact: int,
         base_version: int | None = None,
-        **meta,
+        **meta: Any,
     ) -> Opportunity:
-        ent = self._opps.update(
-            opportunity_id,
-            title=title,
-            probability=probability,
-            impact=impact,
-            meta=meta,
-        )
-        if base_version is not None:
-            self.outbox.override_base_version(
-                project_id,
-                entity="opportunity",
-                entity_id=opportunity_id,
-                base_version=base_version,
+        with self.store.write_transaction():
+            ent = self._opps.update(
+                opportunity_id,
+                title=title,
+                probability=probability,
+                impact=impact,
+                meta=meta,
             )
+            if base_version is not None:
+                self.outbox.override_base_version(
+                    project_id,
+                    entity="opportunity",
+                    entity_id=opportunity_id,
+                    base_version=base_version,
+                )
         return ent
 
     def delete_opportunity(self, project_id: str, opportunity_id: str) -> None:
@@ -472,10 +588,13 @@ class OfflineFirstBackend(Backend):
 
     # ---- Snapshots / history ----
 
-    def create_snapshot(self, project_id: str, *, kind: str | None = None):
-        if not self._use_remote(project_id):
+    def create_snapshot(
+        self, project_id: str, *, kind: str | None = None
+    ) -> dict[str, Any]:
+        remote = self._remote_for_project(project_id)
+        if remote is None:
             raise RuntimeError("Snapshots require a synced project.")
-        return self.remote.create_snapshot(project_id, kind=kind)
+        return remote.create_snapshot(project_id, kind=kind)
 
     def top_history(
         self,
@@ -485,10 +604,11 @@ class OfflineFirstBackend(Backend):
         limit: int = 10,
         from_ts: str | None = None,
         to_ts: str | None = None,
-    ):
-        if not self._use_remote(project_id):
+    ) -> list[dict[str, Any]]:
+        remote = self._remote_for_project(project_id)
+        if remote is None:
             return []
-        return self.remote.top_history(
+        return remote.top_history(
             project_id, kind=kind, limit=limit, from_ts=from_ts, to_ts=to_ts
         )
 
@@ -500,14 +620,61 @@ class OfflineFirstBackend(Backend):
     def blocked_count(self, project_id: str | None = None) -> int:
         return self._sync.blocked_count(project_id)
 
+    def deferred_count(self, project_id: str | None = None) -> int:
+        return self._sync.deferred_count(project_id)
+
+    def conflict_count(self, project_id: str | None = None) -> int:
+        return self._sync.conflict_count(project_id)
+
+    def error_count(self, project_id: str | None = None) -> int:
+        return self._sync.error_count(project_id)
+
+    def last_sync_time(self, project_id: str | None = None) -> str | None:
+        return self._sync.last_sync_time(project_id)
+
+    def next_retry_at(self, project_id: str | None = None) -> str | None:
+        return self._sync.next_retry_at(project_id)
+
     def can_sync(self) -> bool:
         return self._sync.can_sync()
 
-    def sync_project(self, project_id: str):
-        return self._sync.sync_project(project_id)
+    def sync_project(
+        self,
+        project_id: str,
+        *,
+        should_cancel: Callable[[], bool] | None = None,
+        progress: Callable[[str], None] | None = None,
+    ) -> dict[str, Any]:
+        if should_cancel is None and progress is None:
+            return self._sync.sync_project(project_id)
+        return self._sync.sync_project(
+            project_id,
+            should_cancel=should_cancel,
+            progress=progress,
+        )
 
     def blocked_details(self, project_id: str | None = None) -> list[dict[str, Any]]:
         return self._sync.blocked_details(project_id)
+
+    def conflict_details(self, project_id: str | None = None) -> list[dict[str, Any]]:
+        return self._sync.conflict_details(project_id)
+
+    def resolve_conflict(
+        self,
+        change_id: str,
+        resolution: str,
+        choices: dict[str, str] | None = None,
+        *,
+        expected_server_version: int | None = None,
+    ) -> dict[str, Any]:
+        if choices is None and expected_server_version is None:
+            return self._sync.resolve_conflict(change_id, resolution)
+        return self._sync.resolve_conflict(
+            change_id,
+            resolution,
+            choices,
+            expected_server_version=expected_server_version,
+        )
 
     # ---- Help Desk ---------------------------------------------------------
 

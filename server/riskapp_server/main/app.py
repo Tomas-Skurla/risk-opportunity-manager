@@ -2,16 +2,19 @@ from __future__ import annotations
 
 import inspect
 import logging
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from typing import cast
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.gzip import GZipMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from riskapp_server import __version__
 from riskapp_server.api.routers.actions import router as actions_router
 from riskapp_server.api.routers.auth_routes import router as auth_router
 from riskapp_server.api.routers.helpdesk import router as helpdesk_router
@@ -21,6 +24,7 @@ from riskapp_server.api.routers.projects import router as projects_router
 from riskapp_server.api.routers.snapshots import router as snapshots_router
 from riskapp_server.api.routers.sync_routes import router as sync_router
 from riskapp_server.api.routers.users import router as users_router
+from riskapp_server.auth.service import hash_pw
 from riskapp_server.core.config import (
     ALLOWED_HOSTS,
     CORS_ORIGINS,
@@ -29,11 +33,17 @@ from riskapp_server.core.config import (
     INITIAL_SUPERUSER_EMAIL,
     INITIAL_SUPERUSER_PASSWORD,
     MAX_REQUEST_BODY_BYTES,
+    RISKAPP_LOG_FORMAT,
+    RISKAPP_LOG_LEVEL,
     validate_runtime_config,
 )
+from riskapp_server.core.logging_config import configure_server_logging
+from riskapp_server.core.password_policy import validate_password
+from riskapp_server.db import session as db_session
 from riskapp_server.db.session import engine, get_db, init_db
 from riskapp_server.main.http_middleware import (
     RequestBodyLimitMiddleware,
+    RequestCorrelationMiddleware,
     SecurityHeadersMiddleware,
 )
 from riskapp_server.main.https_only_middleware import HttpsOnlyMiddleware
@@ -53,20 +63,19 @@ ROUTERS = (
 )
 
 
+async def _run_initializer(initializer: Callable[[], object]) -> None:
+    """Run a synchronous initializer or await an asynchronous one."""
+    result = initializer()
+    if inspect.isawaitable(result):
+        await result
+
+
 @asynccontextmanager
-async def lifespan(_: FastAPI):
+async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     try:
-        result = init_db()
-        if inspect.isawaitable(result):
-            await result
+        await _run_initializer(cast(Callable[[], object], init_db))
 
         if INITIAL_SUPERUSER_EMAIL and INITIAL_SUPERUSER_PASSWORD:
-            from sqlalchemy import select
-
-            from riskapp_server.auth.service import hash_pw
-            from riskapp_server.core.password_policy import validate_password
-            from riskapp_server.db.session import SessionLocal, User
-
             issues = validate_password(INITIAL_SUPERUSER_PASSWORD)
             if issues:
                 raise RuntimeError(
@@ -74,26 +83,24 @@ async def lifespan(_: FastAPI):
                     + "; ".join(issues)
                 )
 
-            with SessionLocal() as db:
+            with db_session.SessionLocal() as db:
                 email = str(INITIAL_SUPERUSER_EMAIL).lower()
                 u = (
-                    db.execute(select(User).where(User.email == email))
+                    db.execute(
+                        select(db_session.User).where(db_session.User.email == email)
+                    )
                     .scalars()
                     .first()
                 )
-                if not u:
-                    u = User(
+                if u is None:
+                    u = db_session.User(
                         email=email,
                         password_hash=hash_pw(INITIAL_SUPERUSER_PASSWORD),
                         is_active=True,
                         is_superuser=True,
                     )
                     db.add(u)
-                else:
-                    u.is_superuser = True
-                    if not u.is_active:
-                        u.is_active = True
-                db.commit()
+                    db.commit()
 
         yield
     except Exception:
@@ -102,50 +109,76 @@ async def lifespan(_: FastAPI):
     finally:
         try:
             engine.dispose()
-        except Exception:
+        # Shutdown cleanup must never hide the original startup/runtime failure.
+        except Exception:  # pylint: disable=broad-exception-caught
             logger.exception("DB engine dispose failed")
 
 
 def create_app() -> FastAPI:
     validate_runtime_config()
-    app = FastAPI(
+    configure_server_logging(
+        level=RISKAPP_LOG_LEVEL,
+        output_format=RISKAPP_LOG_FORMAT,
+    )
+    application = FastAPI(
         title="RiskApp API",
         summary="Offline-first risk and opportunity management API",
-        version="0.1.0",
+        version=__version__,
         lifespan=lifespan,
     )
 
-    app.add_middleware(RequestBodyLimitMiddleware, max_bytes=MAX_REQUEST_BODY_BYTES)
-    app.add_middleware(HttpsOnlyMiddleware)
+    @application.exception_handler(Exception)
+    async def unhandled_error(request: Request, _exc: Exception) -> JSONResponse:
+        """Return a safe error body while preserving the request correlation ID."""
+        correlation_id = getattr(request.state, "request_id", "")
+        headers = {"X-Request-ID": correlation_id} if correlation_id else None
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Internal server error"},
+            headers=headers,
+        )
+
+    application.add_middleware(
+        RequestBodyLimitMiddleware, max_bytes=MAX_REQUEST_BODY_BYTES
+    )
+    application.add_middleware(HttpsOnlyMiddleware)
     if CORS_ORIGINS:
-        app.add_middleware(
+        application.add_middleware(
             CORSMiddleware,
             allow_origins=CORS_ORIGINS,
             allow_credentials=True,
             allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-            allow_headers=["Authorization", "Content-Type"],
+            allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
+            expose_headers=["X-Request-ID"],
         )
     if GZIP_ENABLED:
-        app.add_middleware(GZipMiddleware, minimum_size=GZIP_MINIMUM_SIZE)
+        application.add_middleware(GZipMiddleware, minimum_size=GZIP_MINIMUM_SIZE)
     if ALLOWED_HOSTS:
-        app.add_middleware(TrustedHostMiddleware, allowed_hosts=ALLOWED_HOSTS)
+        application.add_middleware(
+            TrustedHostMiddleware, allowed_hosts=ALLOWED_HOSTS
+        )
     # Added last so rejected requests receive the same defensive headers.
-    app.add_middleware(SecurityHeadersMiddleware)
+    application.add_middleware(SecurityHeadersMiddleware)
+    # Outermost application middleware: early rejections are correlated too.
+    application.add_middleware(RequestCorrelationMiddleware)
     for r in ROUTERS:
-        app.include_router(r)
+        application.include_router(r)
 
-    @app.get("/health", tags=["ops"])
-    def health_check(db: Session = Depends(get_db)):  # noqa: B008
+    @application.get("/health", tags=["ops"], response_model=None)
+    def health_check(
+        db: Session = Depends(get_db),  # noqa: B008
+    ) -> dict[str, str] | JSONResponse:
         try:
             db.execute(text("SELECT 1"))
             return {"status": "ok", "db": "ok"}
-        except Exception:
+        # Any database/driver failure makes the health result degraded.
+        except Exception:  # pylint: disable=broad-exception-caught
             return JSONResponse(
                 status_code=503,
                 content={"status": "degraded", "db": "unreachable"},
             )
 
-    return app
+    return application
 
 
 app = create_app()

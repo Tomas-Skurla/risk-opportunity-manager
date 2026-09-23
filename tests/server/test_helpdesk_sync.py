@@ -62,10 +62,10 @@ def test_helpdesk_rest_crud_and_soft_delete(tmp_path, isolated_app_factory):
         assert r.json() == []
 
 
-def test_helpdesk_sync_round_trip_with_legacy_base_version_zero(
+def test_helpdesk_sync_create_allows_zero_but_update_requires_current_version(
     tmp_path, isolated_app_factory
 ):
-    """Helpdesk sync push/pull round-trip works with legacy base_version=0 clients"""
+    """Zero is create-only; an existing ticket requires its current version."""
     app = isolated_app_factory(f"sqlite+pysqlite:///{tmp_path / 'helpdesk_sync.db'}")
     with TestClient(app) as c:
         h, pid = _setup(c)
@@ -130,6 +130,32 @@ def test_helpdesk_sync_round_trip_with_legacy_base_version_zero(
             headers=h,
         )
         assert r.status_code == 200, r.text
+        rejected = r.json()
+        assert rejected["accepted"] == 0
+        assert rejected["conflicts"][0]["reason"] == "base_version_required"
+        assert rejected["conflicts"][0]["server_version"] == 1
+
+        r = c.post(
+            f"/projects/{pid}/sync/push",
+            json={
+                "project_id": pid,
+                "changes": [
+                    {
+                        "change_id": str(uuid.uuid4()),
+                        "entity": "helpdesk_ticket",
+                        "op": "upsert",
+                        "base_version": 1,
+                        "record": {
+                            "id": ticket_id,
+                            "title": "Sync me v2",
+                            "status": "resolved",
+                        },
+                    }
+                ],
+            },
+            headers=h,
+        )
+        assert r.status_code == 200, r.text
         assert r.json()["accepted"] == 1
 
         r = c.post(
@@ -176,6 +202,28 @@ def test_helpdesk_sync_delete_marks_deleted_and_is_pulled(
             headers=h,
         )
         assert r.status_code == 200, r.text
+        rejected = r.json()
+        assert rejected["accepted"] == 0
+        assert rejected["conflicts"][0]["reason"] == "base_version_required"
+        assert rejected["conflicts"][0]["server_version"] == 1
+
+        r = c.post(
+            f"/projects/{pid}/sync/push",
+            json={
+                "project_id": pid,
+                "changes": [
+                    {
+                        "change_id": str(uuid.uuid4()),
+                        "entity": "helpdesk_ticket",
+                        "op": "delete",
+                        "base_version": 1,
+                        "record": {"id": ticket["id"]},
+                    }
+                ],
+            },
+            headers=h,
+        )
+        assert r.status_code == 200, r.text
         assert r.json()["accepted"] == 1
 
         r = c.post(
@@ -190,7 +238,6 @@ def test_helpdesk_sync_delete_marks_deleted_and_is_pulled(
 
 def test_helpdesk_update_requires_matching_base_version(isolated_app_factory, tmp_path):
     """Helpdesk PATCH with stale base_version returns HTTP 409 with version_mismatch"""
-    from fastapi.testclient import TestClient
 
     app = isolated_app_factory(f"sqlite+pysqlite:///{tmp_path/'helpdesk_version.db'}")
     # client = TestClient(app)

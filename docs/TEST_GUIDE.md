@@ -243,13 +243,15 @@ In server-backed projects, Help Desk tickets participate in sync. In **Work Full
 3. Stop the server with `Ctrl+C`.
 4. Start the client again.
 5. Enter `admin@example.com` and password → **OK**.
-6. In the server-unavailable dialog, click **Work Offline as admin@example.com (will sync later)**.
+6. In the server-unavailable dialog, click **Work Offline as <admin@example.com> (will sync later)**.
 7. Verify the sidebar shows projects with `(offline, will sync)` where applicable.
 8. Create project `Offline Test` and add risks.
 9. Start the server again.
-10. Close the client, start it, and log in online.
-11. Select `Offline Test` and click **Sync Now**.
-12. Verify the project is promoted and the offline suffix disappears.
+10. Leave the client open and wait for the background reconnect (normally within 60 seconds, plus any displayed retry delay).
+11. Verify `Offline Test` is promoted and the offline suffix disappears without restarting the client.
+12. Verify **Sync Now** still performs an immediate manual synchronization.
+
+To verify backoff, stop the server again after a successful login, save another change, and watch the status line. The GUI must remain responsive; retries must not run continuously, and restarting the server must eventually recover without restarting the client.
 
 ---
 
@@ -320,7 +322,7 @@ echo "Risk: $RID, version 1"
 curl -s -X PATCH "$BASE/projects/$PID/risks/$RID" \
   -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
-  -d '{"title":"Changed by B","probability":5}' > /dev/null
+  -d '{"title":"Changed by B","probability":5,"base_version":1}' > /dev/null
 echo "Client B -> version 2"
 
 CID=$(python3 -c "import uuid; print(uuid.uuid4())")
@@ -463,4 +465,4 @@ bash scripts/lint.sh
 python -m pip check
 ```
 
-Coverage includes registration, login, password policy, rate limiting, RBAC, refresh tokens, sync push/pull, conflict detection, assessments, search escaping, password reset, SQLite migrations, outbox queue, and Help Desk sync/version behavior.
+Coverage includes registration, login, password policy, rate limiting, RBAC, refresh-token grace recovery, family reuse detection, concurrent rotation, sync push/pull, conflict detection, assessments, search escaping, password reset, SQLite migrations, outbox queue, and Help Desk sync/version behavior.

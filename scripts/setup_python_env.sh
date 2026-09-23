@@ -4,8 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 PYTHON_BIN="${PYTHON_BIN:-python3}"
-MIN_MINOR=11
-MAX_MINOR=14
+REQUIRED_MINOR=14
 RECREATE=0
 
 case "${1:-}" in
@@ -23,18 +22,17 @@ esac
 echo "Using Python executable: $PYTHON_BIN"
 "$PYTHON_BIN" --version
 
-if ! "$PYTHON_BIN" - "$MIN_MINOR" "$MAX_MINOR" <<'PY'
+if ! "$PYTHON_BIN" - "$REQUIRED_MINOR" <<'PY'
 import sys
 
-min_minor = int(sys.argv[1])
-max_minor = int(sys.argv[2])
+required_minor = int(sys.argv[1])
 
 major = sys.version_info.major
 minor = sys.version_info.minor
 
-if major != 3 or not (min_minor <= minor <= max_minor):
+if major != 3 or minor != required_minor:
     raise SystemExit(
-        f"ERROR: Expected Python 3.{min_minor} through 3.{max_minor}, "
+        f"ERROR: Expected Python 3.{required_minor}, "
         f"got Python {major}.{minor}"
     )
 
@@ -43,9 +41,7 @@ PY
 then
   echo
   echo "Use another interpreter with:"
-  echo "  PYTHON_BIN=/path/to/python3.11 bash scripts/setup_python_env.sh"
-  echo "  PYTHON_BIN=/path/to/python3.12 bash scripts/setup_python_env.sh"
-  echo "  PYTHON_BIN=/path/to/python3.13 bash scripts/setup_python_env.sh"
+  echo "Use the canonical interpreter with:"
   echo "  PYTHON_BIN=/path/to/python3.14 bash scripts/setup_python_env.sh"
   exit 1
 fi

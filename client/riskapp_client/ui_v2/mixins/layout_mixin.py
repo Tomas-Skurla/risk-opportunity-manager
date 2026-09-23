@@ -2,11 +2,22 @@
 
 from __future__ import annotations
 
+import ctypes
 import logging
 import sys
+from collections.abc import Callable
+from typing import Any, cast
 
-import qdarktheme
-from PySide6.QtWidgets import QApplication, QLabel
+import qdarktheme  # type: ignore[import-untyped]
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import (
+    QApplication,
+    QLabel,
+    QMainWindow,
+    QProgressBar,
+    QPushButton,
+)
+from riskapp_client import __version__
 from riskapp_client.ui_v2.tabs.actions_tab import ActionsTab
 from riskapp_client.ui_v2.tabs.assessments_tab import AssessmentsTab
 from riskapp_client.ui_v2.tabs.helpdesk_tab import HelpDeskTab
@@ -15,7 +26,7 @@ from riskapp_client.ui_v2.tabs.members_tab import MembersTab
 from riskapp_client.ui_v2.tabs.opportunities_tab import OpportunitiesTab
 from riskapp_client.ui_v2.tabs.risks_tab import RisksTab
 from riskapp_client.ui_v2.tabs.top_history_tab import TopHistoryTab
-from riskapp_client.ui_v2.ui_main_window_design import Ui_MainWindow
+from riskapp_client.ui_v2.ui.ui_main_window_design import Ui_MainWindow
 
 logger = logging.getLogger(__name__)
 
@@ -44,17 +55,15 @@ _OPPS_ALIASES = (
 )
 
 
-def _set_titlebar_dark(window, dark: bool) -> None:
+def _set_titlebar_dark(window: QMainWindow, dark: bool) -> None:
     """Set the title bar to dark or light mode."""
     # Qt 6.5+ color scheme API
     try:
-        from PySide6.QtCore import Qt as QtCore_Qt
-        from PySide6.QtWidgets import QApplication
-        app = QApplication.instance()
+        app = cast(QApplication | None, QApplication.instance())
         if app and hasattr(app, "styleHints"):
             hints = app.styleHints()
             if hasattr(hints, "setColorScheme"):
-                scheme = QtCore_Qt.ColorScheme.Dark if dark else QtCore_Qt.ColorScheme.Light
+                scheme = Qt.ColorScheme.Dark if dark else Qt.ColorScheme.Light
                 hints.setColorScheme(scheme)
                 return
     except (AttributeError, ImportError, RuntimeError):
@@ -63,12 +72,11 @@ def _set_titlebar_dark(window, dark: bool) -> None:
     # Windows DWM API
     try:
         if sys.platform == "win32":
-            import ctypes
             hwnd = int(window.winId())
-            DWMWA_USE_IMMERSIVE_DARK_MODE = 20
+            dark_mode_attribute = 20
             value = ctypes.c_int(1 if dark else 0)
             ctypes.windll.dwmapi.DwmSetWindowAttribute(
-                hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE,
+                hwnd, dark_mode_attribute,
                 ctypes.byref(value), ctypes.sizeof(value),
             )
             return
@@ -79,30 +87,97 @@ def _set_titlebar_dark(window, dark: bool) -> None:
 class LayoutMixin:
     """Build the main window UI."""
 
+    backend: Any
+    current_opportunity_id: str | None
+    current_risk_id: str | None
+
+    _add_or_update_member: Callable[..., Any]
+    _apply_helpdesk_filters: Callable[..., Any]
+    _cancel_background_job: Callable[..., Any]
+    _create_new_project: Callable[..., Any]
+    _delete_current_project: Callable[..., Any]
+    _delete_entity: Callable[..., Any]
+    _delete_helpdesk_ticket: Callable[..., Any]
+    _export_opportunities_csv: Callable[..., Any]
+    _export_risks_csv: Callable[..., Any]
+    _fit_table_card: Callable[..., Any]
+    _mark_editor_dirty: Callable[..., Any]
+    _mark_opp_editor_dirty: Callable[..., Any]
+    _maybe_auto_snapshot: Callable[..., Any]
+    _on_action_clicked: Callable[..., Any]
+    _on_helpdesk_ticket_clicked: Callable[..., Any]
+    _on_matrix_kind_changed: Callable[..., Any]
+    _on_member_selected: Callable[..., Any]
+    _on_opportunity_clicked: Callable[..., Any]
+    _on_project_selected: Callable[..., Any]
+    _on_risk_clicked: Callable[..., Any]
+    _on_top_period_changed: Callable[..., Any]
+    _open_conflict_center: Callable[..., Any]
+    _refresh_helpdesk: Callable[..., Any]
+    _refresh_members: Callable[..., Any]
+    _refresh_opportunities: Callable[..., Any]
+    _refresh_risks: Callable[..., Any]
+    _refresh_top_history: Callable[..., Any]
+    _remove_selected_member: Callable[..., Any]
+    _save_action: Callable[..., Any]
+    _save_assessment: Callable[..., Any]
+    _save_helpdesk_ticket: Callable[..., Any]
+    _save_opportunity: Callable[..., Any]
+    _save_risk: Callable[..., Any]
+    _snapshot_now: Callable[..., Any]
+    _start_new_action: Callable[..., Any]
+    _start_new_helpdesk_ticket: Callable[..., Any]
+    _start_new_opportunity: Callable[..., Any]
+    _start_new_risk: Callable[..., Any]
+    _sync_now: Callable[..., Any]
+    _toggle_action_target_inputs: Callable[..., Any]
+
     def _build_ui(self) -> None:
+        window = cast(QMainWindow, self)
         self.ui = Ui_MainWindow()
-        self.ui.setupUi(self)
-        self.setWindowTitle("RiskApp")
+        self.ui.setupUi(window)
+        window.setWindowTitle(f"RiskApp {__version__}")
         self.project_list = self.ui.project_list
         self.sync_btn = self.ui.sync_btn
         self.new_project_btn = self.ui.new_project_btn
         self.delete_project_btn = self.ui.delete_project_btn
         self.role_status = QLabel("Role: Initializing...")
         self.sync_status = QLabel("Sync: Initializing...")
+        self.background_progress = QProgressBar()
+        self.background_progress.setObjectName("background_progress")
+        self.background_progress.setRange(0, 0)
+        self.background_progress.setTextVisible(False)
+        self.background_progress.setMaximumWidth(120)
+        self.background_progress.setVisible(False)
+        self.cancel_background_btn = QPushButton("Cancel")
+        self.cancel_background_btn.setObjectName("cancel_background_btn")
+        self.cancel_background_btn.setToolTip(
+            "Cancel after the current network request or local write finishes"
+        )
+        self.cancel_background_btn.setVisible(False)
+        self.conflicts_btn = QPushButton("Conflicts (0)")
+        self.conflicts_btn.setObjectName("conflicts_btn")
+        self.conflicts_btn.setEnabled(False)
+        self.conflicts_btn.setToolTip("Review synchronization conflicts")
         self.ui.statusbar.addPermanentWidget(self.role_status)
         self.ui.statusbar.addPermanentWidget(self.sync_status)
+        self.ui.statusbar.addPermanentWidget(self.background_progress)
+        self.ui.statusbar.addPermanentWidget(self.cancel_background_btn)
+        self.ui.statusbar.addPermanentWidget(self.conflicts_btn)
         self.project_list.setToolTip("Select a project to load its data")
         self.sync_btn.setToolTip(
             "Manually synchronize local offline changes with the server"
         )
         self.new_project_btn.setToolTip("Create a new project")
-        self.delete_project_btn.setToolTip("Permanently delete the selected project (superadmin only)")
+        self.delete_project_btn.setToolTip(
+            "Permanently delete the selected project (superadmin only)"
+        )
         self.ui.theme_toggle.setToolTip("Toggle between Dark Mode and Light Mode")
         self.ui.sidebar_list.setToolTip(
             "Navigate between different views and tools for the current project"
         )
 
-        def apply_theme(is_dark: bool):
+        def apply_theme(is_dark: bool) -> None:
             theme = "dark" if is_dark else "light"
             bg_color = "#1e1e1e" if is_dark else "#ffffff"
             text_color = "#e0e0e0" if is_dark else "#000000"
@@ -124,12 +199,16 @@ class LayoutMixin:
             try:
                 qdarktheme.setup_theme(theme, additional_qss=extra_css)
             except AttributeError:
-                app = QApplication.instance()
+                app = cast(QApplication | None, QApplication.instance())
                 if app:
                     app.setStyleSheet(qdarktheme.load_stylesheet(theme) + extra_css)
-            _set_titlebar_dark(self, is_dark)
+            _set_titlebar_dark(window, is_dark)
 
+        # PySide exposes bound signals dynamically; Pylint cannot infer their
+        # ``connect`` member from the generated UI class.
+        # pylint: disable=no-member
         self.ui.theme_toggle.toggled.connect(apply_theme)
+        # pylint: enable=no-member
         apply_theme(self.ui.theme_toggle.isChecked())
 
         def bind(src: object, names: tuple[str, ...], **renamed: str) -> None:
@@ -141,6 +220,8 @@ class LayoutMixin:
 
         while self.ui.main_stacked_widget.count() > 0:
             widget = self.ui.main_stacked_widget.widget(0)
+            if widget is None:
+                break
             self.ui.main_stacked_widget.removeWidget(widget)
             widget.deleteLater()
         self.risks_tab = RisksTab(
@@ -156,7 +237,7 @@ class LayoutMixin:
                 self._start_new_risk,
             ),
             on_mark_dirty=self._mark_editor_dirty,
-            on_fit_table_card=lambda: self._fit_table_card(),
+            on_fit_table_card=self._fit_table_card,
         )
         self.ui.main_stacked_widget.addWidget(self.risks_tab)
         bind(
@@ -244,16 +325,21 @@ class LayoutMixin:
                 "Help Desk",
             ]
         )
+        # PySide signals are runtime descriptors and are invisible to Pylint.
+        # pylint: disable=no-member
         self.project_list.itemSelectionChanged.connect(self._on_project_selected)
         self.ui.sidebar_list.currentRowChanged.connect(
             self.ui.main_stacked_widget.setCurrentIndex
         )
         self.sync_btn.clicked.connect(self._sync_now)
+        self.cancel_background_btn.clicked.connect(self._cancel_background_job)
+        self.conflicts_btn.clicked.connect(self._open_conflict_center)
         self.new_project_btn.clicked.connect(self._create_new_project)
         self.delete_project_btn.clicked.connect(self._delete_current_project)
+        # pylint: enable=no-member
         if hasattr(self.top_tab, "top_period"):
             self._on_top_period_changed(self.top_tab.top_period.currentText())
         self.ui.sidebar_list.setCurrentRow(0)
-        app = QApplication.instance()
+        app = cast(QApplication | None, QApplication.instance())
         if app:
-            app.installEventFilter(self)
+            app.installEventFilter(window)

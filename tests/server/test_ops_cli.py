@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+# This module intentionally exercises private CLI helpers as unit-test seams.
+# pylint: disable=protected-access
 import io
 import json
 import urllib.error
+import urllib.request
+from http.client import HTTPMessage
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import Mock
 
 import pytest
@@ -14,6 +19,8 @@ from riskapp_server import __main__ as server_main
 from riskapp_server.main import https_only_middleware
 from riskapp_server.ops import apply_sql, prune_job
 from sqlalchemy import create_engine, text
+from starlette.requests import Request
+from starlette.responses import Response
 
 
 def test_sql_splitter_handles_quotes_comments_and_dollar_blocks() -> None:
@@ -31,7 +38,7 @@ def test_sql_splitter_handles_quotes_comments_and_dollar_blocks() -> None:
     assert "semi;colon" in statements[1]
     assert statements[2].endswith("$body$")
     assert statements[3] == "SELECT 3"
-    assert list(apply_sql._split_sql(" ; ; ")) == []
+    assert not list(apply_sql._split_sql(" ; ; "))
 
 
 def test_sql_file_resolution_deduplicates_and_validates(tmp_path: Path) -> None:
@@ -51,6 +58,8 @@ def test_sql_file_resolution_deduplicates_and_validates(tmp_path: Path) -> None:
 def test_database_url_resolution_prefers_config_then_environment(
     monkeypatch,
 ) -> None:
+    # Use the config module currently loaded by the isolated test environment.
+    # pylint: disable-next=import-outside-toplevel
     import riskapp_server.core.config as config
 
     monkeypatch.setattr(config, "DATABASE_URL", " sqlite:///config.db ")
@@ -115,15 +124,15 @@ class FakeResponse:
 def test_prune_request_json_success_and_errors(monkeypatch) -> None:
     request = prune_job.urllib.request.Request("https://api.example.test")
     monkeypatch.setattr(
-        prune_job.urllib.request,
-        "urlopen",
+        prune_job,
+        "_open_http_request",
         lambda *_args, **_kwargs: FakeResponse(b'{"ok": true}'),
     )
     assert prune_job._request_json(request, 5) == {"ok": True}
 
     monkeypatch.setattr(
-        prune_job.urllib.request,
-        "urlopen",
+        prune_job,
+        "_open_http_request",
         lambda *_args, **_kwargs: FakeResponse(b"not json"),
     )
     with pytest.raises(SystemExit, match="Non-JSON response"):
@@ -133,24 +142,78 @@ def test_prune_request_json_success_and_errors(monkeypatch) -> None:
         request.full_url,
         403,
         "Forbidden",
-        None,
+        HTTPMessage(),
         io.BytesIO(b"denied"),
     )
     monkeypatch.setattr(
-        prune_job.urllib.request,
-        "urlopen",
+        prune_job,
+        "_open_http_request",
         Mock(side_effect=http_error),
     )
     with pytest.raises(SystemExit, match="HTTP 403 Forbidden: denied"):
         prune_job._request_json(request, 5)
 
     monkeypatch.setattr(
-        prune_job.urllib.request,
-        "urlopen",
+        prune_job,
+        "_open_http_request",
         Mock(side_effect=urllib.error.URLError("offline")),
     )
     with pytest.raises(SystemExit, match="Network error"):
         prune_job._request_json(request, 5)
+
+
+def test_prune_redirect_handler_allows_only_same_origin() -> None:
+    handler = prune_job._SameOriginRedirectHandler(
+        allowed_scheme="https", allowed_netloc="api.example.test"
+    )
+    request = urllib.request.Request(
+        "https://api.example.test/start",
+        headers={"Authorization": "Bearer fixture-token"},
+    )
+    redirect_headers = HTTPMessage()
+
+    redirected = handler.redirect_request(
+        request,
+        io.BytesIO(),
+        302,
+        "Found",
+        redirect_headers,
+        "https://api.example.test/next",
+    )
+    assert redirected is not None
+    assert redirected.full_url == "https://api.example.test/next"
+
+    with pytest.raises(urllib.error.HTTPError, match="Cross-origin"):
+        handler.redirect_request(
+            request,
+            io.BytesIO(),
+            302,
+            "Found",
+            redirect_headers,
+            "https://evil.example/next",
+        )
+    with pytest.raises(urllib.error.HTTPError, match="Cross-scheme"):
+        handler.redirect_request(
+            request,
+            io.BytesIO(),
+            302,
+            "Found",
+            redirect_headers,
+            "http://api.example.test/next",
+        )
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "file:///tmp/riskapp",
+        "https://user:password@api.example.test",
+        "https://api.example.test/#fragment",
+    ],
+)
+def test_prune_job_rejects_unsafe_base_urls(base_url: str) -> None:
+    with pytest.raises(SystemExit, match="RISKAPP_BASE_URL"):
+        prune_job.login(base_url, "admin@example.test", "fixture-password")
 
 
 def test_login_supports_form_json_paths_and_requires_token(monkeypatch) -> None:
@@ -250,17 +313,19 @@ async def test_https_middleware_allows_rejects_and_honors_forwarded_proto(
     monkeypatch,
 ) -> None:
     middleware = object.__new__(https_only_middleware.HttpsOnlyMiddleware)
+    next_response = Response("next")
 
-    async def call_next(_request):
-        return "next"
+    async def call_next(_request: Request) -> Response:
+        return next_response
 
-    request = SimpleNamespace(
+    request_double = SimpleNamespace(
         url=SimpleNamespace(scheme="http"),
         headers={},
     )
+    request = cast(Request, request_double)
 
     monkeypatch.setattr(https_only_middleware, "ENFORCE_HTTPS", False)
-    assert await middleware.dispatch(request, call_next) == "next"
+    assert await middleware.dispatch(request, call_next) is next_response
 
     monkeypatch.setattr(https_only_middleware, "ENFORCE_HTTPS", True)
     monkeypatch.setattr(https_only_middleware, "TRUST_X_FORWARDED_PROTO", False)
@@ -268,5 +333,5 @@ async def test_https_middleware_allows_rejects_and_honors_forwarded_proto(
     assert response.status_code == 400
 
     monkeypatch.setattr(https_only_middleware, "TRUST_X_FORWARDED_PROTO", True)
-    request.headers = {"x-forwarded-proto": "HTTPS, http"}
-    assert await middleware.dispatch(request, call_next) == "next"
+    request_double.headers = {"x-forwarded-proto": "HTTPS, http"}
+    assert await middleware.dispatch(request, call_next) is next_response

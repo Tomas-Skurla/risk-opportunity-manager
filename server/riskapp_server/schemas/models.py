@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Self
 
 from pydantic import (
     BaseModel,
@@ -49,7 +49,7 @@ class TokenOut(BaseModel):
 
     user_id: uuid.UUID | None = None
     access_token: str
-    token_type: str = "bearer"
+    token_type: str = "bearer"  # noqa: S105 -- OAuth token type, not a secret
     expires_in: int | None = None
     refresh_token: str | None = None
 
@@ -141,27 +141,31 @@ class ItemShared(BaseModel):
     occurred_at: datetime | None = None
 
 
-class ItemCreate(ItemShared):
+class _ItemCreateFields(ItemShared):
 
-    type: Literal["risk", "opportunity"]
     title: NonEmptyStr
     probability: Probability
     impact: Impact
 
 
-class RiskCreate(ItemCreate):
+class ItemCreate(_ItemCreateFields):
+
+    type: Literal["risk", "opportunity"]
+
+
+class RiskCreate(_ItemCreateFields):
 
     type: Literal["risk"] = "risk"
 
 
-class OpportunityCreate(ItemCreate):
+class OpportunityCreate(_ItemCreateFields):
 
     type: Literal["opportunity"] = "opportunity"
 
 
 class ItemUpdate(ItemShared):
 
-    base_version: int | None = None
+    base_version: int = Field(ge=1)
     title: str | None = Field(default=None, max_length=300)
     probability: Probability | None = None
     impact: Impact | None = None
@@ -177,10 +181,9 @@ class OpportunityUpdate(ItemUpdate):
     pass
 
 
-class ItemOut(ItemShared, ORMModel):
+class _ItemOutFields(ItemShared, ORMModel):
 
     id: uuid.UUID
-    type: Literal["risk", "opportunity"]
     project_id: uuid.UUID
     title: str
     probability: int
@@ -194,12 +197,17 @@ class ItemOut(ItemShared, ORMModel):
     is_deleted: bool
 
 
-class RiskOut(ItemOut):
+class ItemOut(_ItemOutFields):
+
+    type: Literal["risk", "opportunity"]
+
+
+class RiskOut(_ItemOutFields):
 
     type: Literal["risk"]
 
 
-class OpportunityOut(ItemOut):
+class OpportunityOut(_ItemOutFields):
 
     type: Literal["opportunity"]
 
@@ -219,7 +227,9 @@ class ScoreReportOut(BaseModel):
 
 class AssessmentIn(BaseModel):
 
-    base_version: int | None = None
+    # Zero creates the caller's assessment; subsequent upserts must send the
+    # version returned by the previous response.
+    base_version: int = Field(ge=0)
     probability: Probability
     impact: Impact
     notes: str | None = None
@@ -292,8 +302,9 @@ class ActionCreate(BaseModel):
     owner_user_id: uuid.UUID | None = None
 
     @model_validator(mode="after")
-    def _validate_target(self):
-        # Avoid ambiguous linking; if you support global/project-level actions, allowing neither is OK.
+    def _validate_target(self) -> Self:
+        # Avoid ambiguous linking. If global/project-level actions are supported,
+        # allowing neither target is valid.
         if self.risk_id and self.opportunity_id:
             raise ValueError("Provide only one of risk_id or opportunity_id.")
         return self
@@ -301,6 +312,7 @@ class ActionCreate(BaseModel):
 
 class ActionUpdate(BaseModel):
 
+    base_version: int = Field(ge=1)
     risk_id: uuid.UUID | None = None
     opportunity_id: uuid.UUID | None = None
     kind: ActionKind | None = None
@@ -310,7 +322,7 @@ class ActionUpdate(BaseModel):
     owner_user_id: uuid.UUID | None = None
 
     @model_validator(mode="after")
-    def _validate_target(self):
+    def _validate_target(self) -> Self:
         if self.risk_id and self.opportunity_id:
             raise ValueError("Provide only one of risk_id or opportunity_id.")
         return self
@@ -343,7 +355,7 @@ class HelpDeskTicketCreate(BaseModel):
 
 class HelpDeskTicketUpdate(BaseModel):
 
-    base_version: int | None = None
+    base_version: int = Field(ge=1)
     title: str | None = Field(default=None, max_length=300)
     description: BoundedText | None = None
     category: HelpDeskCategory | None = None
@@ -404,14 +416,35 @@ class SyncPullRequest(BaseModel):
 
     project_id: uuid.UUID
     since: datetime
+    # Sequence fields are additive so older clients can continue using time-based pulls.
+    since_sequence: int | None = Field(default=None, ge=0)
     # Optional per-entity pagination.
     limit_per_entity: int | None = Field(default=None, ge=1, le=50000)
     cursors: dict[str, str] | None = None
+    snapshot_time: datetime | None = None
+    snapshot_sequence: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def _validate_pagination_snapshot(self) -> Self:
+        if self.cursors and self.limit_per_entity is None:
+            raise ValueError("cursors require limit_per_entity")
+        if self.cursors and self.snapshot_time is None:
+            raise ValueError("cursors require snapshot_time")
+        if self.snapshot_sequence is not None and self.since_sequence is None:
+            raise ValueError("snapshot_sequence requires since_sequence")
+        if (
+            self.cursors
+            and self.since_sequence is not None
+            and self.snapshot_sequence is None
+        ):
+            raise ValueError("sequence cursors require snapshot_sequence")
+        return self
 
 
 class SyncPullResponse(BaseModel):
 
     server_time: datetime
+    server_sequence: int = Field(ge=0)
     risks: list[RiskOut]
     opportunities: list[OpportunityOut]
     actions: list[ActionOut]
@@ -437,6 +470,31 @@ class SyncPushRequest(BaseModel):
     changes: list[SyncChange] = Field(max_length=1000)
 
 
+class SyncChangeResult(BaseModel):
+
+    change_id: uuid.UUID
+    status: Literal["accepted", "conflict", "error"]
+    replayed: bool = False
+    entity: str
+    op: str
+    entity_id: uuid.UUID | None = None
+    reason: str | None = None
+    detail: str | None = None
+    server_version: int | None = None
+    receipt_server_version: int | None = None
+    server_record: dict[str, object] | None = None
+    server_updated_at: str | None = None
+    failure_kind: Literal[
+        "conflict",
+        "validation",
+        "permission",
+        "authentication",
+        "transient",
+        "error",
+    ] | None = None
+    retryable: bool = False
+
+
 class SyncPushResponse(BaseModel):
 
     accepted: int
@@ -444,6 +502,7 @@ class SyncPushResponse(BaseModel):
     duplicate_change_ids: list[str] = Field(default_factory=list)
     conflicts: list[dict] = Field(default_factory=list)
     errors: list[dict] = Field(default_factory=list)
+    results: list[SyncChangeResult] = Field(default_factory=list)
     server_time: datetime
 
 

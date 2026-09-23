@@ -4,7 +4,7 @@ This guide describes the recommended local setup using the repository scripts. T
 
 ## Prerequisites
 
-- Python 3.11 through 3.14. Python 3.14 is supported by the current lock files.
+- Python 3.14. Docker, CI, Black, Ruff, mypy, and dependency relocking all use this same minor version.
 - A shell capable of running Bash scripts.
 - Two terminal windows for running the server and client.
 - For the desktop GUI, install OS-level Qt/X11 runtime libraries through `scripts/setup_os_prereqs.sh`.
@@ -75,7 +75,7 @@ If your default `python3` is not the version you want, provide an interpreter ex
 PYTHON_BIN=python3.14 bash scripts/setup_python_env.sh
 ```
 
-The script accepts Python 3.11 through 3.14. It creates `.venv`, installs:
+The script requires Python 3.14. It creates `.venv`, installs:
 
 ```text
 server/requirements.lock
@@ -118,6 +118,7 @@ This runs:
 ```text
 scripts/check_migrations.py
 scripts/test.sh
+scripts/typecheck.sh
 scripts/lint.sh
 python -m pip check
 ```
@@ -249,7 +250,7 @@ The login dialog has four options:
 
 If the server is unreachable after clicking **OK**, a **Server Unavailable** dialog appears with:
 
-- **Work Offline as user@example.com (will sync later)** — offline mode associated with that identity. Data can sync after the server is available and you click **Sync Now**.
+- **Work Offline as <user@example.com> (will sync later)** — offline mode associated with that identity. The client retries in the background after the server becomes available; **Sync Now** remains available for an immediate attempt.
 - **Work Fully Local (no account, no sync)** — anonymous local mode; data never syncs.
 - **Quit** — exit.
 
@@ -313,12 +314,12 @@ This permanently deletes the project and its server-side data.
 - Projects show `(local only)`.
 - Data never syncs to the server.
 
-### Work Offline as user@example.com
+### Work Offline as <user@example.com>
 
 - Intended for a known identity when the server is unavailable.
 - Data is stored locally with that identity.
 - Projects show `(offline, will sync)`.
-- After the server is available, log in online and click **Sync Now**.
+- The client reconnects and syncs automatically after the server becomes available. **Sync Now** forces an immediate attempt.
 - If a project name already exists on the server, a numeric suffix is added, for example `Test Project (2)`.
 
 ### Online with offline fallback
@@ -326,28 +327,28 @@ This permanently deletes the project and its server-side data.
 - Normal online login.
 - Changes are written locally and queued in the outbox.
 - If the server goes down mid-session, local work can continue.
-- Use **Sync Now** after reconnecting.
+- Background sync recovers automatically with bounded backoff; **Sync Now** remains available.
 
 ---
 
 ## 14. Role hierarchy
 
 | Role | Scope | Typical permissions |
-|---|---|---|
+| --- | --- | --- |
 | **superadmin** | global | Full access, project deletion, all projects, global admin operations |
 | **admin** | per project | Manage project members, edit/delete project data, snapshots |
 | **manager** | per project | Manage project content and snapshots |
 | **member** | per project | Create/edit risks, opportunities, actions, assessments, and Help Desk tickets |
 | **viewer** | per project | Read-only access |
 
-Superadmin is set at server startup through `INITIAL_SUPERUSER_EMAIL` and `INITIAL_SUPERUSER_PASSWORD`. Project roles are assigned in the **Members** tab.
+A new superadmin can be created at server startup through `INITIAL_SUPERUSER_EMAIL` and `INITIAL_SUPERUSER_PASSWORD`. Bootstrap is create-only: if that email already exists, startup never changes its password, active state, or superuser flag. Project roles are assigned in the **Members** tab.
 
 ---
 
 ## 15. Available tabs
 
 | Tab | Description |
-|---|---|
+| --- | --- |
 | Risks | Risk register with qualitative probability × impact scoring |
 | Opportunities | Opportunity register with qualitative probability × impact scoring |
 | Matrix | Probability × impact matrix view |
@@ -362,7 +363,7 @@ Superadmin is set at server startup through `INITIAL_SUPERUSER_EMAIL` and `INITI
 ## 16. Sidebar project labels
 
 | Label | Meaning |
-|---|---|
+| --- | --- |
 | `Project Name  (admin@example.com)` | Server project with owner email |
 | `Project Name  (offline, will sync)` | Local project associated with an identity; can sync later |
 | `Project Name  (local only)` | Anonymous local project; never syncs |
@@ -398,15 +399,17 @@ server/riskapp.db
 ### Server
 
 | Variable | Default / example | Notes |
-|---|---|---|
+| --- | --- | --- |
 | `DATABASE_URL` | `sqlite+pysqlite:///./riskapp.db` | Server database URL |
-| `ENV` | `development` | Use `production` in deployments |
+| `ENV` | `development` | One of `development`, `test`, or `production`; invalid values stop startup |
 | `SECRET_KEY` | `change-me` | Set a real secret outside local development |
+| `TOKEN_HASH_KEY` | unset | Separate HMAC key for refresh/password-reset token hashes; required in production |
 | `ALLOW_INSECURE_DEFAULT_SECRET` | unset | Use `1` only for local development |
-| `INITIAL_SUPERUSER_EMAIL` | unset | Optional startup superadmin email |
-| `INITIAL_SUPERUSER_PASSWORD` | unset | Optional startup superadmin password |
+| `INITIAL_SUPERUSER_EMAIL` | unset | Optional create-only startup superadmin email; existing accounts are never modified |
+| `INITIAL_SUPERUSER_PASSWORD` | unset | Password used only when creating the bootstrap account |
 | `ACCESS_TOKEN_MINUTES` | `15` | Access-token lifetime |
 | `REFRESH_TOKEN_DAYS` | `30` | Refresh-token lifetime |
+| `REFRESH_TOKEN_REUSE_GRACE_SECONDS` | `30` | One-time recovery window for a rotated token whose response was lost; `0` disables recovery |
 | `AUTO_CREATE_SCHEMA` | dev `1`, production `0` | Use explicit migrations in production |
 | `ALLOWED_HOSTS` | dev `*`, production required | Comma-separated accepted Host values |
 | `CORS_ORIGINS` | unset | Comma-separated allowed origins |
@@ -414,14 +417,21 @@ server/riskapp.db
 | `TRUST_X_FORWARDED_PROTO` | `0` | Enable only behind a configured trusted proxy |
 | `MAX_REQUEST_BODY_BYTES` | `2097152` | Maximum declared or streamed request body |
 | `PASSWORD_RESET_RETURN_TOKEN` | `0` | Development/test only; forbidden in production |
+| `SYNC_PUSH_EXPUNGE_EVERY` | `200` | Sync push housekeeping interval; legacy `SYNC_PUSH_EXUNGE_EVERY` is deprecated |
+
+For a new production deployment, generate `SECRET_KEY` and `TOKEN_HASH_KEY` independently and keep both in the deployment's secret manager. When upgrading an existing deployment, initially set `TOKEN_HASH_KEY` to its current `SECRET_KEY`; after deploying, `SECRET_KEY` can be rotated independently without logging out refresh-token holders. Rotating `TOKEN_HASH_KEY` deliberately invalidates existing refresh and password-reset tokens.
+
+No password-table migration is required when upgrading. New and changed passwords use Argon2id; a valid login with an older `pbkdf2_sha256` password hash rewrites that one hash to Argon2id in the successful login transaction.
 
 ### Client
 
 | Variable | Default / example | Notes |
-|---|---|---|
+| --- | --- | --- |
 | `RISKAPP_URL` | `http://127.0.0.1:8000` | Server URL used by the client |
 | `RISKAPP_API_BASE_URL` | same as `RISKAPP_URL` | API base URL override |
 | `RISKAPP_ALLOW_HTTP` | unset | Set to `1` for local plain HTTP |
 | `RISKAPP_LOCAL_DB` | `~/.riskapp/client.sqlite3` | Local SQLite cache |
 | `RISKAPP_EMAIL` | unset | Optional login prefill/automation |
 | `RISKAPP_PASSWORD` | unset | Optional login prefill/automation |
+| `RISKAPP_AUTO_SYNC_INTERVAL_SECONDS` | `60` | Periodic background-sync interval; `0` disables it |
+| `RISKAPP_AUTO_SYNC_MAX_BACKOFF_SECONDS` | `300` | Maximum retry delay after transient sync/reconnect failures |

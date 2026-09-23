@@ -5,8 +5,9 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import Callable, Mapping, MutableMapping
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
-from typing import Any, TypeVar
+from typing import Any
 
 from riskapp_client.adapters.local_storage.sqlite_data_store import utc_iso
 from riskapp_client.domain.scored_entity_fields import (
@@ -14,17 +15,15 @@ from riskapp_client.domain.scored_entity_fields import (
     SCORED_ENTITY_META_KEYS,
 )
 
-ModelT = TypeVar("ModelT")
-
 
 @dataclass(frozen=True)
-class ScoredEntityWiring:
+class ScoredEntityWiring[ModelT]:
     """Bind entity-specific store/outbox callables."""
 
     kind: str  # "risk" | "opportunity"
     id_kw: str  # "risk_id" | "opportunity_id"
 
-    model_cls: type[ModelT]
+    model_cls: Callable[..., ModelT]
 
     list_fn: Callable[[str], list[ModelT]]
     get_project_and_version_fn: Callable[[str], tuple[str, int]]
@@ -37,14 +36,16 @@ class ScoredEntityWiring:
     discard_pending_changes_fn: Callable[[str, str], None]
 
     soft_delete_local_fn: Callable[[str], tuple[str, int]]
+    write_transaction_fn: Callable[[], AbstractContextManager[Any]]
 
     next_code_fn: Callable[[str], str] | None = None
+    remote_create_may_exist_fn: Callable[[str, str], bool] | None = None
 
 
-class ScoredEntityService:
+class ScoredEntityService[ModelT]:
     """Create/update scored entities locally and queue sync."""
 
-    def __init__(self, wiring: ScoredEntityWiring) -> None:
+    def __init__(self, wiring: ScoredEntityWiring[ModelT]) -> None:
         self._w = wiring
 
     def list(self, project_id: str) -> list[ModelT]:
@@ -83,10 +84,11 @@ class ScoredEntityService:
             project_id, record.get("code"), existing=None
         )
 
-        self._upsert_local(
-            project_id=project_id, entity_id=entity_id, record=record, version=0
-        )
-        self._w.queue_upsert_fn(project_id, record)
+        with self._w.write_transaction_fn():
+            self._upsert_local(
+                project_id=project_id, entity_id=entity_id, record=record, version=0
+            )
+            self._w.queue_upsert_fn(project_id, record)
         return self._w.model_cls(project_id=project_id, version=0, **record)
 
     def update(
@@ -117,7 +119,7 @@ class ScoredEntityService:
                 return existing[key]  # sqlite3.Row
             except (RuntimeError, ValueError, KeyError):
                 # Mapping[str, Any]
-                return existing.get(key)  # type: ignore[return-value]
+                return existing.get(key)
 
         prev_status = _existing("status") or DEFAULT_STATUS
         new_status = meta.get("status") if "status" in meta else prev_status
@@ -151,24 +153,33 @@ class ScoredEntityService:
             project_id, record.get("code"), existing=_existing("code")
         )
 
-        self._upsert_local(
-            project_id=project_id, entity_id=entity_id, record=record, version=version
-        )
-        self._w.queue_upsert_fn(project_id, record)
+        with self._w.write_transaction_fn():
+            self._upsert_local(
+                project_id=project_id,
+                entity_id=entity_id,
+                record=record,
+                version=version,
+            )
+            self._w.queue_upsert_fn(project_id, record)
         return self._w.model_cls(project_id=project_id, version=version, **record)
 
     def delete(self, entity_id: str) -> None:
         """Delete item."""
-        project_id, version = self._w.soft_delete_local_fn(entity_id)
+        with self._w.write_transaction_fn():
+            project_id, version = self._w.soft_delete_local_fn(entity_id)
 
-        # Entity was never synced to the server. Remote net effect should be
-        # no-op, so remove any queued local upsert/delete instead of sending a
-        # delete for an unknown remote entity.
-        if int(version) < 1:
-            self._w.discard_pending_changes_fn(project_id, entity_id)
-            return
+            # Entity was never synced to the server. Remote net effect should be
+            # no-op, so remove any queued local upsert/delete instead of sending a
+            # delete for an unknown remote entity.
+            remote_create_may_exist = bool(
+                self._w.remote_create_may_exist_fn
+                and self._w.remote_create_may_exist_fn(project_id, entity_id)
+            )
+            if int(version) < 1 and not remote_create_may_exist:
+                self._w.discard_pending_changes_fn(project_id, entity_id)
+                return
 
-        self._w.queue_delete_fn(project_id, entity_id)
+            self._w.queue_delete_fn(project_id, entity_id)
 
     def _ensure_code(self, project_id: str, code: Any, *, existing: Any) -> str | None:
         c = None

@@ -58,8 +58,41 @@ def test_sync_pull_cursor_paginates_and_rejects_malformed_requests(
         page = first_page.json()
         assert page["has_more"]["risks"] is True
         assert len(page["risks"]) == 1
+        snapshot_time = page["server_time"]
+
+        # A row created after page one belongs to the next pull, not to a later
+        # page in this already-open snapshot.
+        third_risk = _create_risk(client, headers, project_id, "Third")
 
         second_page = client.post(
+            f"/projects/{project_id}/sync/pull",
+            json={
+                "project_id": project_id,
+                "since": "2000-01-01T00:00:00",
+                "limit_per_entity": 1,
+                "cursors": page["cursors"],
+                "snapshot_time": snapshot_time,
+            },
+            headers=headers,
+        )
+        assert second_page.status_code == 200, second_page.text
+        second = second_page.json()
+        assert second["server_time"] == snapshot_time
+        assert second["has_more"]["risks"] is False
+        assert {page["risks"][0]["id"], second["risks"][0]["id"]} == {
+            first_risk["id"],
+            second_risk["id"],
+        }
+
+        next_pull = client.post(
+            f"/projects/{project_id}/sync/pull",
+            json={"project_id": project_id, "since": snapshot_time},
+            headers=headers,
+        )
+        assert next_pull.status_code == 200, next_pull.text
+        assert [row["id"] for row in next_pull.json()["risks"]] == [third_risk["id"]]
+
+        missing_snapshot = client.post(
             f"/projects/{project_id}/sync/pull",
             json={
                 "project_id": project_id,
@@ -69,13 +102,7 @@ def test_sync_pull_cursor_paginates_and_rejects_malformed_requests(
             },
             headers=headers,
         )
-        assert second_page.status_code == 200, second_page.text
-        second = second_page.json()
-        assert second["has_more"]["risks"] is False
-        assert {page["risks"][0]["id"], second["risks"][0]["id"]} == {
-            first_risk["id"],
-            second_risk["id"],
-        }
+        assert missing_snapshot.status_code == 422
 
         malformed_cursor = client.post(
             f"/projects/{project_id}/sync/pull",
@@ -84,11 +111,24 @@ def test_sync_pull_cursor_paginates_and_rejects_malformed_requests(
                 "since": "2000-01-01T00:00:00",
                 "limit_per_entity": 1,
                 "cursors": {"risks": "not-a-cursor"},
+                "snapshot_time": snapshot_time,
             },
             headers=headers,
         )
         assert malformed_cursor.status_code == 400
         assert malformed_cursor.json()["detail"] == "Invalid cursor"
+
+        future_snapshot = client.post(
+            f"/projects/{project_id}/sync/pull",
+            json={
+                "project_id": project_id,
+                "since": "2000-01-01T00:00:00",
+                "snapshot_time": "2999-01-01T00:00:00Z",
+            },
+            headers=headers,
+        )
+        assert future_snapshot.status_code == 400
+        assert future_snapshot.json()["detail"] == "snapshot_time is in the future"
 
         another_project = str(uuid.uuid4())
         pull_mismatch = client.post(
@@ -153,10 +193,13 @@ def test_sync_engine_records_invalid_changes_and_member_delete_denials(
             "insufficient_permissions",
         ]
 
+        # These imports follow isolated_app_factory's module reloads.
+        # pylint: disable=import-outside-toplevel
         import riskapp_server.db.session as session
         import riskapp_server.sync.engine as engine
         from riskapp_server.schemas.models import SyncChange
         from sqlalchemy.orm import Session
+        # pylint: enable=import-outside-toplevel
 
         def constructed(*, entity: str, op: str, record: dict) -> SyncChange:
             return SyncChange.model_construct(
@@ -203,3 +246,163 @@ def test_sync_engine_records_invalid_changes_and_member_delete_denials(
         assert empty["accepted"] == 0
         assert empty["errors"] == []
         assert member["user_id"] != admin["user_id"]
+
+
+def test_sync_soft_delete_transitions_require_manager(
+    tmp_path, isolated_app_factory
+) -> None:
+    app = isolated_app_factory(f"sqlite+pysqlite:///{tmp_path / 'soft-delete.db'}")
+    with TestClient(app) as client:
+        _admin, admin_headers = _register(client, "delete-admin@test.com")
+        _member, member_headers = _register(client, "delete-member@test.com")
+        project_id = client.post(
+            "/projects", json={"name": "Protected"}, headers=admin_headers
+        ).json()["id"]
+        added = client.post(
+            f"/projects/{project_id}/members",
+            json={"user_email": "delete-member@test.com", "role": "member"},
+            headers=admin_headers,
+        )
+        assert added.status_code == 201, added.text
+        risk = _create_risk(client, admin_headers, project_id, "Protected risk")
+        action_response = client.post(
+            f"/projects/{project_id}/actions",
+            json={
+                "risk_id": risk["id"],
+                "kind": "mitigation",
+                "title": "Protected action",
+                "description": "",
+                "status": "open",
+            },
+            headers=admin_headers,
+        )
+        assert action_response.status_code == 201, action_response.text
+        action = action_response.json()
+
+        action_delete = client.post(
+            f"/projects/{project_id}/sync/push",
+            json={
+                "project_id": project_id,
+                "changes": [
+                    {
+                        "change_id": str(uuid.uuid4()),
+                        "entity": "action",
+                        "op": "upsert",
+                        "base_version": action["version"],
+                        "record": {
+                            "id": action["id"],
+                            "is_deleted": True,
+                        },
+                    }
+                ],
+            },
+            headers=member_headers,
+        )
+        assert action_delete.status_code == 200, action_delete.text
+        assert action_delete.json()["accepted"] == 0
+        assert action_delete.json()["results"][0]["reason"] == (
+            "insufficient_permissions"
+        )
+
+        admin_delete = client.post(
+            f"/projects/{project_id}/sync/push",
+            json={
+                "project_id": project_id,
+                "changes": [
+                    {
+                        "change_id": str(uuid.uuid4()),
+                        "entity": "risk",
+                        "op": "upsert",
+                        "base_version": risk["version"],
+                        "record": {"id": risk["id"], "is_deleted": True},
+                    }
+                ],
+            },
+            headers=admin_headers,
+        )
+        assert admin_delete.status_code == 200, admin_delete.text
+        deleted_result = admin_delete.json()["results"][0]
+        assert deleted_result["status"] == "accepted"
+        assert deleted_result["server_record"]["is_deleted"] is True
+
+        member_undelete = client.post(
+            f"/projects/{project_id}/sync/push",
+            json={
+                "project_id": project_id,
+                "changes": [
+                    {
+                        "change_id": str(uuid.uuid4()),
+                        "entity": "risk",
+                        "op": "upsert",
+                        "base_version": deleted_result["server_version"],
+                        "record": {"id": risk["id"], "is_deleted": False},
+                    }
+                ],
+            },
+            headers=member_headers,
+        )
+        assert member_undelete.status_code == 200, member_undelete.text
+        assert member_undelete.json()["accepted"] == 0
+        assert member_undelete.json()["results"][0]["reason"] == (
+            "insufficient_permissions"
+        )
+
+
+def test_database_constraint_failure_is_permanent_and_receipted(
+    tmp_path, isolated_app_factory
+) -> None:
+    app = isolated_app_factory(f"sqlite+pysqlite:///{tmp_path / 'constraint.db'}")
+    with TestClient(app) as client:
+        _user, headers = _register(client, "constraint@test.com")
+        project_id = client.post(
+            "/projects", json={"name": "Constraints"}, headers=headers
+        ).json()["id"]
+        risk = _create_risk(client, headers, project_id, "Assessed risk")
+
+        def assessment_change(change_id: str, assessment_id: str) -> dict:
+            return {
+                "change_id": change_id,
+                "entity": "assessment",
+                "op": "upsert",
+                "base_version": None,
+                "record": {
+                    "id": assessment_id,
+                    "risk_id": risk["id"],
+                    "probability": 2,
+                    "impact": 3,
+                    "notes": "Assessment",
+                },
+            }
+
+        first = assessment_change(str(uuid.uuid4()), str(uuid.uuid4()))
+        accepted = client.post(
+            f"/projects/{project_id}/sync/push",
+            json={"project_id": project_id, "changes": [first]},
+            headers=headers,
+        )
+        assert accepted.status_code == 200, accepted.text
+        assert accepted.json()["accepted"] == 1
+
+        duplicate = assessment_change(str(uuid.uuid4()), str(uuid.uuid4()))
+        rejected = client.post(
+            f"/projects/{project_id}/sync/push",
+            json={"project_id": project_id, "changes": [duplicate]},
+            headers=headers,
+        )
+        assert rejected.status_code == 200, rejected.text
+        result = rejected.json()["results"][0]
+        assert result["status"] == "error"
+        assert result["reason"] == "constraint_violation"
+        assert result["failure_kind"] == "validation"
+        assert result["retryable"] is False
+
+        replayed = client.post(
+            f"/projects/{project_id}/sync/push",
+            json={"project_id": project_id, "changes": [duplicate]},
+            headers=headers,
+        )
+        assert replayed.status_code == 200, replayed.text
+        replayed_result = replayed.json()["results"][0]
+        assert replayed.json()["duplicates"] == 1
+        assert replayed_result["reason"] == "constraint_violation"
+        assert replayed_result["replayed"] is True

@@ -8,6 +8,8 @@ import json
 import urllib.error
 import urllib.parse
 import urllib.request
+from http.client import HTTPMessage
+from typing import cast
 from unittest.mock import Mock
 
 import pytest
@@ -15,6 +17,9 @@ import riskapp_client.adapters.remote_api.rest_api_client as api
 from riskapp_client.adapters.remote_api.rest_api_client import ApiBackend, ApiError
 from riskapp_client.domain.domain_models import Opportunity, Risk
 from riskapp_client.utils.urls import UrlPolicy
+
+# HTTP boundary tests intentionally call private parsing and transport helpers.
+# pylint: disable=protected-access
 
 
 class FakeResponse:
@@ -50,7 +55,7 @@ def _http_error(status: int, body: bytes = b'{"detail":"failed"}'):
         "https://api.example.test/resource",
         status,
         "failure",
-        {},
+        HTTPMessage(),
         io.BytesIO(body),
     )
 
@@ -62,7 +67,13 @@ def _token(subject: str) -> str:
     return f"header.{payload.decode()}.signature"
 
 
-def _bare_backend(opener=None) -> ApiBackend:
+def _install_fake_opener(backend: ApiBackend, opener: FakeOpener) -> FakeOpener:
+    # The fake has the open() behavior the transport uses, without Qt/network I/O.
+    backend._opener = cast(urllib.request.OpenerDirector, opener)
+    return opener
+
+
+def _bare_backend(opener: FakeOpener | None = None) -> ApiBackend:
     backend = ApiBackend.__new__(ApiBackend)
     backend.base_url = "https://api.example.test"
     backend.email = "user@example.test"
@@ -71,8 +82,28 @@ def _bare_backend(opener=None) -> ApiBackend:
     backend.token = "access-old"
     backend.refresh_token = "refresh-old"
     backend.is_superuser = False
-    backend._opener = opener or FakeOpener([])
+    _install_fake_opener(backend, opener or FakeOpener([]))
     return backend
+
+
+def test_authenticated_fork_has_its_own_opener_and_shared_auth_state(
+    monkeypatch,
+) -> None:
+    backend = _bare_backend()
+    fork_opener = FakeOpener([])
+    monkeypatch.setattr(api, "_build_api_opener", lambda _base_url: fork_opener)
+
+    clone = backend.fork_authenticated()
+
+    assert clone is not backend
+    assert clone._opener is fork_opener
+    assert clone._opener is not backend._opener
+    assert clone.token == "access-old"
+    assert clone.refresh_token == "refresh-old"
+    clone.token = "access-new"
+    clone.refresh_token = "refresh-new"
+    assert backend.token == "access-new"
+    assert backend.refresh_token == "refresh-new"
 
 
 SCORED = {
@@ -156,18 +187,29 @@ def test_redirect_handler_allows_only_same_origin() -> None:
         io.BytesIO(),
         302,
         "Found",
-        {},
+        HTTPMessage(),
         "https://api.example.test/next",
     )
+    assert redirected is not None
     assert redirected.full_url == "https://api.example.test/next"
 
     with pytest.raises(urllib.error.HTTPError, match="Cross-origin"):
         handler.redirect_request(
-            request, io.BytesIO(), 302, "Found", {}, "https://evil.example/next"
+            request,
+            io.BytesIO(),
+            302,
+            "Found",
+            HTTPMessage(),
+            "https://evil.example/next",
         )
     with pytest.raises(urllib.error.HTTPError, match="Cross-scheme"):
         handler.redirect_request(
-            request, io.BytesIO(), 302, "Found", {}, "http://api.example.test/next"
+            request,
+            io.BytesIO(),
+            302,
+            "Found",
+            HTTPMessage(),
+            "http://api.example.test/next",
         )
 
 
@@ -188,7 +230,9 @@ def test_register_account_sends_json_and_returns_mapping(monkeypatch) -> None:
     assert request.full_url == "https://api.example.test/register"
     assert request.get_method() == "POST"
     assert timeout == 9
-    assert json.loads(request.data) == {
+    request_body = request.data
+    assert isinstance(request_body, bytes)
+    assert json.loads(request_body) == {
         "email": "new@example.test",
         "password": "StrongPassword1!",
     }
@@ -255,58 +299,64 @@ def test_request_validates_method_path_auth_and_response_type() -> None:
         backend._req("GET", "/projects")
 
     backend.token = "token"
-    backend._opener = FakeOpener([FakeResponse(b"", "")])
+    _install_fake_opener(backend, FakeOpener([FakeResponse(b"", "")]))
     assert backend._req("DELETE", "/projects/project-1") is None
 
-    backend._opener = FakeOpener([FakeResponse("plain", "text/plain")])
+    _install_fake_opener(backend, FakeOpener([FakeResponse("plain", "text/plain")]))
     with pytest.raises(ApiError, match="Unexpected Content-Type"):
         backend._req("GET", "/projects")
 
 
 def test_request_encodes_json_form_and_network_errors() -> None:
-    backend = _bare_backend(FakeOpener([FakeResponse('{"ok":true}', "")]))
+    opener = FakeOpener([FakeResponse('{"ok":true}', "")])
+    backend = _bare_backend(opener)
     assert backend._req("POST", "/items", json_body={"name": "A"}) == {"ok": True}
-    request = backend._opener.calls[0][0]
-    assert json.loads(request.data) == {"name": "A"}
+    request = opener.calls[0][0]
+    request_body = request.data
+    assert isinstance(request_body, bytes)
+    assert json.loads(request_body) == {"name": "A"}
     assert request.get_header("Authorization") == "Bearer access-old"
     assert request.get_header("Content-type") == "application/json"
 
-    backend._opener = FakeOpener([FakeResponse('{"ok":true}')])
+    form_opener = _install_fake_opener(
+        backend, FakeOpener([FakeResponse('{"ok":true}')])
+    )
     backend._req(
         "POST", "/login", form_body={"username": "a+b@example.test"}, auth=False
     )
-    request = backend._opener.calls[0][0]
-    assert urllib.parse.parse_qs(request.data.decode()) == {
+    request = form_opener.calls[0][0]
+    request_body = request.data
+    assert isinstance(request_body, bytes)
+    assert urllib.parse.parse_qs(request_body.decode()) == {
         "username": ["a+b@example.test"]
     }
 
-    backend._opener = FakeOpener([urllib.error.URLError("offline")])
+    _install_fake_opener(backend, FakeOpener([urllib.error.URLError("offline")]))
     with pytest.raises(ApiError, match="Cannot reach server"):
         backend._req("GET", "/projects")
 
 
 def test_request_refreshes_once_after_unauthorized_response() -> None:
-    backend = _bare_backend(
-        FakeOpener(
-            [
-                _http_error(401, b'{"detail":"expired"}'),
-                FakeResponse(
-                    json.dumps(
-                        {
-                            "access_token": _token("user-2"),
-                            "refresh_token": "refresh-new",
-                        }
-                    )
-                ),
-                FakeResponse('{"ok":true}'),
-            ]
-        )
+    opener = FakeOpener(
+        [
+            _http_error(401, b'{"detail":"expired"}'),
+            FakeResponse(
+                json.dumps(
+                    {
+                        "access_token": _token("user-2"),
+                        "refresh_token": "refresh-new",
+                    }
+                )
+            ),
+            FakeResponse('{"ok":true}'),
+        ]
     )
+    backend = _bare_backend(opener)
 
     assert backend._req("GET", "/projects") == {"ok": True}
     assert backend.user_id == "user-2"
     assert backend.refresh_token == "refresh-new"
-    assert len(backend._opener.calls) == 3
+    assert len(opener.calls) == 3
 
 
 def test_request_preserves_original_http_error_if_refresh_is_invalid() -> None:
@@ -442,16 +492,18 @@ def test_opportunity_and_assessment_routes_map_models_and_targets() -> None:
         title="Upside",
         probability=3,
         impact=5,
-        base_version=None,
+        base_version=4,
     )
-    assert "base_version" not in backend._req.call_args.kwargs["json_body"]
+    assert backend._req.call_args.kwargs["json_body"]["base_version"] == 4
     backend.delete_opportunity("project-1", "opp-1")
 
     backend._req = Mock(return_value=[ASSESSMENT])
     assert backend.list_assessments("project-1", "risk", "risk-1")[0].score == 10
     assert "/risks/risk-1/assessments" in backend._req.call_args.args[1]
     backend._req = Mock(return_value=ASSESSMENT)
-    backend.upsert_my_assessment("project-1", "opportunity", "opp-1", 4, 2, None)
+    backend.upsert_my_assessment(
+        "project-1", "opportunity", "opp-1", 4, 2, None, base_version=0
+    )
     assert "/opportunities/opp-1/assessment" in backend._req.call_args.args[1]
     assert backend._req.call_args.kwargs["json_body"]["notes"] == ""
     assert backend.current_user_id() == "user-1"
@@ -467,9 +519,20 @@ def test_sync_snapshot_and_history_routes_shape_requests() -> None:
         "since": "2026-01-01",
     }
     backend.sync_pull(
-        "project-1", "2026-01-01", limit_per_entity=25, cursors={"risks": "x"}
+        "project-1",
+        "2026-01-01",
+        since_sequence=7,
+        limit_per_entity=25,
+        cursors={"risks": "x"},
+        snapshot_time="2026-01-02T00:00:00Z",
+        snapshot_sequence=9,
     )
     assert backend._req.call_args.kwargs["json_body"]["cursors"] == {"risks": "x"}
+    assert backend._req.call_args.kwargs["json_body"]["snapshot_time"] == (
+        "2026-01-02T00:00:00Z"
+    )
+    assert backend._req.call_args.kwargs["json_body"]["since_sequence"] == 7
+    assert backend._req.call_args.kwargs["json_body"]["snapshot_sequence"] == 9
     backend.sync_push("project-1", [{"op": "create"}])
     assert backend._req.call_args.kwargs["json_body"]["changes"] == [{"op": "create"}]
 
@@ -479,7 +542,10 @@ def test_sync_snapshot_and_history_routes_shape_requests() -> None:
     assert "kind=opportunities" in backend._req.call_args.args[1]
     backend.latest_snapshot("project-1", kind="risks")
     assert "snapshots/latest?kind=risks" in backend._req.call_args.args[1]
-    backend.top_history("project-1", kind="risks", limit=5, from_ts="from", to_ts="to")
+    backend._req = Mock(return_value=[])
+    assert not backend.top_history(
+        "project-1", kind="risks", limit=5, from_ts="from", to_ts="to"
+    )
     query = urllib.parse.parse_qs(
         urllib.parse.urlparse(backend._req.call_args.args[1]).query
     )
@@ -528,6 +594,7 @@ def test_action_routes_cover_risk_and_opportunity_targets() -> None:
     backend.update_action(
         "project-1",
         "action-1",
+        base_version=1,
         target_type="risk",
         target_id="risk-2",
         kind="mitigation",
@@ -536,10 +603,11 @@ def test_action_routes_cover_risk_and_opportunity_targets() -> None:
         status="done",
         owner_user_id=None,
     )
-    assert backend._req.call_args.kwargs["json_body"]["opportunity_id"] is None
+    assert backend._req.call_args.kwargs["json_body"]["base_version"] == 1
     backend.update_action(
         "project-1",
         "action-1",
+        base_version=2,
         target_type="opportunity",
         target_id="opp-2",
         kind="exploit",
@@ -584,22 +652,26 @@ def test_member_and_helpdesk_routes_map_defaults_and_partial_updates() -> None:
     backend.update_helpdesk_ticket(
         "project-1",
         "ticket-1",
+        base_version=1,
         title="Updated",
         priority=None,
         status="resolved",
     )
     assert backend._req.call_args.kwargs["json_body"] == {
+        "base_version": 1,
         "title": "Updated",
         "status": "resolved",
     }
     backend.update_helpdesk_ticket(
         "project-1",
         "ticket-1",
+        base_version=2,
         description="D",
         category="bug",
         priority="high",
     )
     assert backend._req.call_args.kwargs["json_body"] == {
+        "base_version": 2,
         "description": "D",
         "category": "bug",
         "priority": "high",

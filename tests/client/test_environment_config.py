@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from riskapp_client.app.environment_config import AppConfig
 
 
@@ -14,6 +15,8 @@ def test_app_config_reads_and_normalizes_environment(monkeypatch, tmp_path) -> N
     monkeypatch.setenv("RISKAPP_PASSWORD", "  keep password whitespace  ")
     monkeypatch.setenv("RISKAPP_LOCAL_DB", str(local_db))
     monkeypatch.setenv("RISKAPP_ALLOW_HTTP", "1")
+    monkeypatch.setenv("RISKAPP_AUTO_SYNC_INTERVAL_SECONDS", "90")
+    monkeypatch.setenv("RISKAPP_AUTO_SYNC_MAX_BACKOFF_SECONDS", "600")
 
     config = AppConfig.from_env()
 
@@ -22,6 +25,8 @@ def test_app_config_reads_and_normalizes_environment(monkeypatch, tmp_path) -> N
     assert config.password == "keep password whitespace"
     assert config.local_db_path == local_db
     assert config.allow_http_anywhere is True
+    assert config.auto_sync_interval_seconds == 90
+    assert config.auto_sync_max_backoff_seconds == 600
 
 
 def test_app_config_uses_safe_defaults(monkeypatch, tmp_path) -> None:
@@ -31,6 +36,8 @@ def test_app_config_uses_safe_defaults(monkeypatch, tmp_path) -> None:
         "RISKAPP_PASSWORD",
         "RISKAPP_LOCAL_DB",
         "RISKAPP_ALLOW_HTTP",
+        "RISKAPP_AUTO_SYNC_INTERVAL_SECONDS",
+        "RISKAPP_AUTO_SYNC_MAX_BACKOFF_SECONDS",
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -42,3 +49,24 @@ def test_app_config_uses_safe_defaults(monkeypatch, tmp_path) -> None:
     assert config.password == ""
     assert config.local_db_path == tmp_path / ".riskapp" / "client.sqlite3"
     assert config.allow_http_anywhere is False
+    assert config.auto_sync_interval_seconds == 60
+    assert config.auto_sync_max_backoff_seconds == 300
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("RISKAPP_AUTO_SYNC_INTERVAL_SECONDS", "not-a-number"),
+        ("RISKAPP_AUTO_SYNC_INTERVAL_SECONDS", "-1"),
+        ("RISKAPP_AUTO_SYNC_MAX_BACKOFF_SECONDS", "4"),
+    ],
+)
+def test_app_config_rejects_invalid_sync_intervals(
+    monkeypatch,
+    name: str,
+    value: str,
+) -> None:
+    monkeypatch.setenv(name, value)
+
+    with pytest.raises(ValueError, match=name):
+        AppConfig.from_env()

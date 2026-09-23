@@ -3,12 +3,15 @@ from __future__ import annotations
 import sqlite3
 
 import pytest
+from riskapp_client.adapters.local_storage.sqlite_data_store import LocalStore
+from riskapp_client.adapters.local_storage.sync_outbox_queue import OutboxStore
+from riskapp_client.services.helpdesk_service import HelpDeskService
 
 
-def test_outbox_squashes_multiple_changes_for_same_entity_id(tmp_path) -> None:
-    """Outbox squashes successive upserts for the same risk into a single pending change"""
-    from riskapp_client.adapters.local_storage.sqlite_data_store import LocalStore
-    from riskapp_client.adapters.local_storage.sync_outbox_queue import OutboxStore
+def test_outbox_squashes_changes_without_rebasing_an_unacknowledged_write(
+    tmp_path,
+) -> None:
+    """A later local edit must retain the first write's server base version."""
 
     db_file = tmp_path / "client_outbox.db"
     store = LocalStore(str(db_file))
@@ -32,7 +35,9 @@ def test_outbox_squashes_multiple_changes_for_same_entity_id(tmp_path) -> None:
             "p1", {"id": "r1", "title": "R1", "probability": 3, "impact": 4}
         )
         assert outbox.pending_count("p1") == 1
-        # Mark risk as already synced (version 2), then queue again.
+        # Simulate a newer server version becoming visible locally before the
+        # queued write has been acknowledged. The queued write must not silently
+        # adopt that version or it could overwrite the intervening server edit.
         store.conn.execute("UPDATE risks SET version=2 WHERE id='r1';")
         store.conn.commit()
         outbox.queue_risk_upsert(
@@ -44,7 +49,7 @@ def test_outbox_squashes_multiple_changes_for_same_entity_id(tmp_path) -> None:
         assert len(changes) == 1
         assert changes[0]["entity"] == "risk"
         assert changes[0]["op"] == "upsert"
-        assert changes[0]["base_version"] == 2
+        assert changes[0]["base_version"] is None
         assert changes[0]["record"]["title"] == "R2"
     finally:
         store.close()
@@ -53,9 +58,7 @@ def test_outbox_squashes_multiple_changes_for_same_entity_id(tmp_path) -> None:
 def test_requeue_conflict_creates_new_change_id_and_updates_base_version(
     tmp_path,
 ) -> None:
-    """Requeueing a conflicted change assigns a new change_id and the server's base_version"""
-    from riskapp_client.adapters.local_storage.sqlite_data_store import LocalStore
-    from riskapp_client.adapters.local_storage.sync_outbox_queue import OutboxStore
+    """Requeue a conflict with a new ID and the server's base version."""
 
     db_file = tmp_path / "client_outbox_conflict.db"
     store = LocalStore(str(db_file))
@@ -91,9 +94,7 @@ def test_requeue_conflict_creates_new_change_id_and_updates_base_version(
 
 
 def test_get_blocked_changes_exposes_conflict_reason_and_title(tmp_path) -> None:
-    """Blocked outbox entries expose the conflict reason, server_version, and entity title"""
-    from riskapp_client.adapters.local_storage.sqlite_data_store import LocalStore
-    from riskapp_client.adapters.local_storage.sync_outbox_queue import OutboxStore
+    """Expose a blocked change's reason, version, and entity title."""
 
     db_file = tmp_path / "client_outbox_blocked.db"
     store = LocalStore(str(db_file))
@@ -123,21 +124,81 @@ def test_get_blocked_changes_exposes_conflict_reason_and_title(tmp_path) -> None
                 f'{{"change_id": "{change_id}", "reason": "Server version changed", '
                 '"server_version": 9}'
             ),
+            failure_kind="conflict",
         )
+        assert outbox.blocked_count("p1") == 1
+        assert outbox.conflict_count("p1") == 1
+        assert outbox.error_count("p1") == 0
         blocked = outbox.get_blocked_changes("p1")
         assert len(blocked) == 1
         assert blocked[0]["entity"] == "risk"
         assert blocked[0]["title"] == "Server race"
         assert blocked[0]["reason"] == "Server version changed"
         assert blocked[0]["server_version"] == 9
+        assert blocked[0]["failure_kind"] == "conflict"
     finally:
         store.close()
 
 
+def test_complete_conflict_payload_survives_database_restart(tmp_path) -> None:
+    """Conflict records are stored losslessly instead of in the 500-char summary."""
+
+    db_file = tmp_path / "persistent-conflict.db"
+    store = LocalStore(str(db_file))
+    try:
+        project = store.create_local_project(name="P", project_id="p1")
+        store.upsert_local_risk(
+            risk_id="r1",
+            project_id=project.id,
+            title="Local value",
+            probability=5,
+            impact=4,
+            version=2,
+        )
+        outbox = OutboxStore(store)
+        outbox.queue_risk_upsert(
+            project.id,
+            {"id": "r1", "title": "Local value", "probability": 5, "impact": 4},
+        )
+        change_id = outbox.get_pending_changes(project.id)[0]["change_id"]
+        server_record = {
+            "id": "r1",
+            "project_id": project.id,
+            "title": "Server value",
+            "description": "full server description " * 80,
+            "probability": 2,
+            "impact": 3,
+            "version": 7,
+            "updated_at": "2026-09-04T12:00:00",
+        }
+        outbox.block_outbox_id(
+            change_id,
+            {
+                "change_id": change_id,
+                "status": "conflict",
+                "reason": "version_mismatch",
+                "server_version": 7,
+                "server_record": server_record,
+                "server_updated_at": "2026-09-04T12:00:00",
+            },
+            failure_kind="conflict",
+        )
+    finally:
+        store.close()
+
+    with LocalStore(str(db_file)) as reopened:
+        blocked = OutboxStore(reopened).get_blocked_changes("p1")
+        assert len(blocked) == 1
+        assert blocked[0]["change_id"] == change_id
+        assert blocked[0]["project_id"] == "p1"
+        assert blocked[0]["server_version"] == 7
+        assert blocked[0]["server_updated_at"] == "2026-09-04T12:00:00"
+        assert blocked[0]["server_record"] == server_record
+        assert len(blocked[0]["server_record"]["description"]) > 500
+
+
 def test_helpdesk_outbox_uses_ticket_version_for_base_version(tmp_path) -> None:
     """Helpdesk outbox upsert records the ticket's local version as the base_version"""
-    from riskapp_client.adapters.local_storage.sqlite_data_store import LocalStore
-    from riskapp_client.adapters.local_storage.sync_outbox_queue import OutboxStore
 
     db_file = tmp_path / "client_helpdesk_outbox.db"
     store = LocalStore(str(db_file))
@@ -183,9 +244,6 @@ def test_helpdesk_outbox_uses_ticket_version_for_base_version(tmp_path) -> None:
 
 def test_helpdesk_delete_unsynced_ticket_discards_pending_change(tmp_path) -> None:
     """Deleting an unsynced helpdesk ticket discards its pending outbox change"""
-    from riskapp_client.adapters.local_storage.sqlite_data_store import LocalStore
-    from riskapp_client.adapters.local_storage.sync_outbox_queue import OutboxStore
-    from riskapp_client.services.helpdesk_service import HelpDeskService
 
     db_file = tmp_path / "client_helpdesk_delete.db"
     store = LocalStore(str(db_file))
@@ -194,6 +252,7 @@ def test_helpdesk_delete_unsynced_ticket_discards_pending_change(tmp_path) -> No
             "INSERT INTO projects (id, name, description) VALUES (?,?,?);",
             ("p1", "P", ""),
         )
+        store.conn.commit()
         outbox = OutboxStore(store)
         service = HelpDeskService(store, outbox)
 
@@ -217,8 +276,6 @@ def test_helpdesk_delete_unsynced_ticket_discards_pending_change(tmp_path) -> No
 
 def test_requeue_rolls_back_if_replacement_insert_fails(tmp_path) -> None:
     """A failed conflict requeue cannot delete the existing offline change."""
-    from riskapp_client.adapters.local_storage.sqlite_data_store import LocalStore
-    from riskapp_client.adapters.local_storage.sync_outbox_queue import OutboxStore
 
     store = LocalStore(str(tmp_path / "outbox_atomic.db"))
     try:

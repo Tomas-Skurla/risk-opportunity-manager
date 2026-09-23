@@ -2,10 +2,28 @@
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from collections.abc import Iterable, Sequence
+from typing import Any
 
 from riskapp_client.domain.scored_entity_fields import SCORED_ENTITY_META_SQLITE_COLUMNS
+
+_SQL_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+_ALLOWED_COLUMN_TYPES = {
+    "INTEGER",
+    "INTEGER NOT NULL DEFAULT 0",
+    "TEXT",
+    "TEXT NOT NULL DEFAULT ''",
+    "TEXT NOT NULL DEFAULT 'risk'",
+}
+
+
+def _checked_identifier(value: str) -> str:
+    """Reject unsafe SQL identifiers before SQLite string interpolation."""
+    if not _SQL_IDENTIFIER.fullmatch(value):
+        raise ValueError(f"Unsafe SQLite identifier: {value!r}")
+    return value
 
 
 def _exec(conn: sqlite3.Connection, sql: str) -> None:
@@ -19,6 +37,7 @@ def _exec_many(conn: sqlite3.Connection, ddls: Iterable[str]) -> None:
 
 def _existing_columns(conn: sqlite3.Connection, table: str) -> set[str]:
     # PRAGMA table_info returns rows: (cid, name, type, notnull, dflt_value, pk)
+    table = _checked_identifier(table)
     rows = conn.execute(f"PRAGMA table_info({table});").fetchall()
     return {str(r[1]) for r in rows}
 
@@ -31,6 +50,7 @@ def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
 
 
 def _has_fk_to_table(conn: sqlite3.Connection, table: str, *, ref_table: str) -> bool:
+    table = _checked_identifier(table)
     try:
         rows = conn.execute(f"PRAGMA foreign_key_list({table});").fetchall()
     except sqlite3.Error:
@@ -96,13 +116,14 @@ def _migrate_assessments_table(conn: sqlite3.Connection) -> None:
         if c in old_cols
     ]
     if select_cols:
+        # Every selected name comes from the fixed identifier tuple above.
         rows = conn.execute(
-            f"SELECT {', '.join(select_cols)} FROM assessments_old;"
+            f"SELECT {', '.join(select_cols)} FROM assessments_old;"  # noqa: S608
         ).fetchall()
     else:
         rows = []
 
-    def _row_get(row: sqlite3.Row, key: str, default=None):
+    def _row_get(row: sqlite3.Row, key: str, default: Any = None) -> Any:
         """Best-effort sqlite3.Row getter.
 
         sqlite3.Row is indexable by column name but doesn't implement .get.
@@ -156,8 +177,12 @@ def ensure_columns(
     conn: sqlite3.Connection, table: str, columns: Sequence[tuple[str, str]]
 ) -> None:
     """Add any missing columns to a table."""
+    table = _checked_identifier(table)
     existing = _existing_columns(conn, table)
     for name, col_type in columns:
+        name = _checked_identifier(name)
+        if col_type not in _ALLOWED_COLUMN_TYPES:
+            raise ValueError(f"Unsafe SQLite column type: {col_type!r}")
         if name in existing:
             continue
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {col_type};")
@@ -265,7 +290,8 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             """
             CREATE TABLE IF NOT EXISTS sync_state (
                 project_id TEXT PRIMARY KEY,
-                last_server_time TEXT NOT NULL
+                last_server_time TEXT NOT NULL,
+                last_server_sequence INTEGER NOT NULL DEFAULT 0
             );
             """,
             """
@@ -277,8 +303,13 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
                 entity_id TEXT NOT NULL,
                 base_version INTEGER,
                 record_json TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'pending', -- pending|blocked
+                status TEXT NOT NULL DEFAULT 'pending', -- pending|retry|blocked
                 last_error TEXT NOT NULL DEFAULT '',
+                failure_kind TEXT NOT NULL DEFAULT '',
+                result_json TEXT NOT NULL DEFAULT '',
+                retry_count INTEGER NOT NULL DEFAULT 0,
+                next_retry_at TEXT NOT NULL DEFAULT '',
+                last_attempt_at TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL
             );
             """,
@@ -328,6 +359,22 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             ("opportunity_id", "TEXT"),
         ],
     )
+    ensure_columns(
+        conn,
+        "sync_state",
+        [("last_server_sequence", "INTEGER NOT NULL DEFAULT 0")],
+    )
+    ensure_columns(
+        conn,
+        "outbox",
+        [
+            ("failure_kind", "TEXT NOT NULL DEFAULT ''"),
+            ("result_json", "TEXT NOT NULL DEFAULT ''"),
+            ("retry_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("next_retry_at", "TEXT NOT NULL DEFAULT ''"),
+            ("last_attempt_at", "TEXT NOT NULL DEFAULT ''"),
+        ],
+    )
     _exec_many(
         conn,
         [
@@ -335,6 +382,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             "CREATE INDEX IF NOT EXISTS opps_project_idx ON opportunities(project_id, is_deleted, updated_at);",
             "CREATE INDEX IF NOT EXISTS actions_project_idx ON actions(project_id, is_deleted, updated_at);",
             "CREATE INDEX IF NOT EXISTS outbox_pending_idx ON outbox(project_id, status, created_at);",
+            "CREATE INDEX IF NOT EXISTS outbox_retry_idx ON outbox(project_id, status, next_retry_at);",
             "CREATE INDEX IF NOT EXISTS outbox_entity_idx ON outbox(project_id, entity, entity_id);",
             "CREATE INDEX IF NOT EXISTS assessments_item_idx ON assessments(project_id, item_id, item_type, is_deleted);",
             "CREATE INDEX IF NOT EXISTS assessments_risk_idx ON assessments(project_id, risk_id, is_deleted);",

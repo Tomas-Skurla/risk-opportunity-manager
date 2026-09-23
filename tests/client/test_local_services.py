@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from unittest.mock import Mock
 
 import pytest
@@ -20,6 +21,7 @@ def test_action_service_lists_creates_and_updates_both_target_types(
     monkeypatch,
 ) -> None:
     store = Mock()
+    store.write_transaction.side_effect = nullcontext
     store.list_actions.return_value = ["action"]
     store.get_action_project_and_version.return_value = ("project-1", 4)
     outbox = Mock()
@@ -64,6 +66,7 @@ def test_action_service_lists_creates_and_updates_both_target_types(
 
 def test_assessment_service_handles_new_existing_risk_and_opportunity() -> None:
     store = Mock()
+    store.write_transaction.side_effect = nullcontext
     store.list_assessments.return_value = ["assessment"]
     store.get_assessment_project_and_version.side_effect = [
         KeyError("new"),
@@ -92,6 +95,7 @@ def test_assessment_service_handles_new_existing_risk_and_opportunity() -> None:
 
 def test_helpdesk_service_create_update_and_both_delete_paths() -> None:
     store = Mock()
+    store.write_transaction.side_effect = nullcontext
     created = HelpDeskTicket(
         "ticket-new",
         "project-1",

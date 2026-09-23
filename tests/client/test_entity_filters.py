@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from riskapp_client.domain.domain_models import Risk
+from riskapp_client.services.entity_filters import ScoredFilterCriteria, filter_scored
+
 
 def _build_risks():
-    from riskapp_client.domain.domain_models import Risk
-
     return [
         Risk(
             id="r1",
@@ -41,11 +42,7 @@ def _build_risks():
 
 
 def test_filter_scored_search_score_range_and_owner_unassigned() -> None:
-    """filter_scored matches search across fields, normalises swapped score range, filters unassigned"""
-    from riskapp_client.services.entity_filters import (
-        ScoredFilterCriteria,
-        filter_scored,
-    )
+    """Test search, swapped score bounds and unassigned owner filtering."""
 
     risks = _build_risks()
 

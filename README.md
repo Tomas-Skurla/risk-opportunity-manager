@@ -1,33 +1,52 @@
 # Offline Risk & Opportunity Manager
 
-RiskApp is an offline-first risk and opportunity manager: a FastAPI/SQLAlchemy API and a PySide6 desktop client with a local SQLite cache, transactional outbox, optimistic conflict detection, project RBAC, audit receipts, and secure token rotation.
+[![CI](https://github.com/Tomas-Skurla/risk-opportunity-manager/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Tomas-Skurla/risk-opportunity-manager/actions/workflows/ci.yml)
+[![Coverage gate](https://img.shields.io/badge/coverage%20gate-90%25%20combined-brightgreen)](docs/README_QA.md)
+[![Python 3.14](https://img.shields.io/badge/python-3.14-blue.svg)](docs/SETUP_GUIDE.md)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
+RiskApp is an offline-first risk and opportunity manager: a FastAPI/SQLAlchemy API and a PySide6 desktop client with a local SQLite cache, persistent synchronization outbox, version-based conflict detection, project RBAC, audit receipts, and hashed rotating refresh tokens.
 
 ## What this repository demonstrates
 
 - layered desktop architecture with domain services behind UI-independent adapters;
-- resilient offline writes and idempotent two-way synchronization;
+- offline operation with reliable automatic background synchronization, persistent queued writes, server receipt deduplication, and a transactional monotonic change sequence;
+- a Qt Designer-backed Conflict Center that preserves unresolved writes and lets users explicitly keep the local copy, use the saved server copy, or decide later;
 - authorization enforced consistently across REST and sync paths;
+- Argon2id password hashing with automatic migration of legacy PBKDF2 hashes after a successful login;
 - bounded request/response handling, literal search escaping, and safe CSV export;
-- isolated API and client-core tests plus Ruff, compile, and dependency checks;
+- isolated API and client-core tests plus package-wide mypy, Ruff, compile, and dependency checks;
 - reproducible runtime lock files and an automated CI gate.
 
 ## Quick start
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for boundaries, invariants, security choices, and explicit production trade-offs.
+See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for boundaries, invariants, security choices, and explicit production trade-offs.
+
+## Screenshots
+
+### Risk workspace
+
+![RiskApp main window showing the project risk workspace](docs/images/riskapp-main-window.png)
+
+### Field-level conflict merge
+
+![RiskApp field merge dialog comparing local and server values](docs/images/conflict-field-merge.png)
+
 
 ## Run the review checks
 
 The suite runs Qt offscreen, so it does not need a display server but still requires the locked PySide6 runtime:
 
 ```bash
-python3 -m venv .venv
+python3.14 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements-test.txt
 bash scripts/check_project.sh
 ```
 
-The check script validates a fresh Alembic migration, runs tests with a 90% combined coverage gate plus independent 92% line and 80% branch ratchets, Ruff, byte-compilation, and `pip check`. CI runs the same command on every push and pull request. Black remains available through
-`bash scripts/format.sh`; formatting-only normalization is intentionally separate.
+The check script validates a fresh Alembic migration, runs tests with a 90% combined coverage gate plus independent 92% line and 80% branch ratchets, package-wide mypy checks, Ruff, byte-compilation, and `pip check`. CI runs the same command on every push and pull request. Black remains available through `bash scripts/format.sh`; formatting-only normalization is intentionally separate.
+
+CI pins third-party actions by full commit SHA, keeps security-event write access on the container job only, and uses Trivy to block actionable image vulnerabilities and exposed secrets. Trivy's image findings are also uploaded as SARIF when GitHub permits the event to write to code scanning
 
 ## Run the application
 
@@ -43,14 +62,17 @@ bash scripts/check_project.sh
 Start the API:
 
 ```bash
-RESET_SERVER_DB=1 bash scripts/run_server_dev.sh
+bash scripts/run_server_dev.sh
 ```
 
 Start the client in another terminal:
 
 ```bash
-RESET_CLIENT_DB=1 bash scripts/run_client_dev.sh
+bash scripts/run_client_dev.sh
 ```
+
+
+These startup commands preserve existing data. For a deliberate clean reset, prefix the corresponding command with `RESET_SERVER_DB=1` or `RESET_CLIENT_DB=1`. **Those reset flags delete the database, including any unsynced client changes.**
 
 The development launcher binds to localhost and bootstraps `admin@example.com` / `SuperHeslo123!`. These are local demo credentials only; deployed environments must provide their own secret and account settings. Interactive API documentation is available at `http://127.0.0.1:8000/docs`; health status is at `/health`.
 
@@ -98,7 +120,20 @@ client/       PySide6 application, domain services, local store, HTTP adapter
 server/       FastAPI routers, auth/RBAC, persistence, sync, operations
 tests/        Canonical headless client-core and API regression suite
 scripts/      Setup, quality, run, reset, and dependency-lock workflows
+docs/         Setup, testing, architecture, and quality guides
 ```
 
-Detailed setup and manual acceptance flows remain in [SETUP_GUIDE.md](SETUP_GUIDE.md) and [TEST_GUIDE.md](TEST_GUIDE.md). Development commands are summarized in
-[README_QA.md](README_QA.md).
+Setup, testing, architecture, and development commands are linked from the [documentation index](docs/README.md).
+
+## License
+
+RiskApp is licensed under the [MIT License](LICENSE).
+
+### Third-party software
+
+RiskApp uses [PySide6 (Qt for Python)](https://doc.qt.io/qtforpython-6/),
+which this project uses under the GNU Lesser General Public License v3.0.
+
+PySide6 and Qt are separate third-party works and are not covered by
+RiskApp's MIT License. This source repository does not bundle PySide6 or
+Qt binaries; they are installed separately as dependencies.

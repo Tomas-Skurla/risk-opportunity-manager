@@ -1,23 +1,71 @@
 from __future__ import annotations
 
-import json
 import logging
+from collections.abc import Callable, Iterable
 from typing import Any
 
 from riskapp_client.adapters.local_storage.sqlite_data_store import LocalStore, utc_iso
 from riskapp_client.adapters.local_storage.sync_outbox_queue import OutboxStore
+from riskapp_client.services.conflict_merge import merged_record
+
+_SYNC_EPOCH = "1970-01-01T00:00:00"
+_CONFLICT_RESOLUTIONS = {"keep_mine", "use_server", "later", "merge"}
+
+
+class _SyncCancelled(RuntimeError):
+    """Internal cooperative-cancellation signal."""
 
 
 class SyncService:
     def __init__(
-        self, store: LocalStore, outbox: OutboxStore, remote: Any | None
+        self,
+        store: LocalStore,
+        outbox: OutboxStore,
+        remote: Any | None,
+        *,
+        release_authentication_blocks: bool = True,
     ) -> None:
         self._store = store
         self._outbox = outbox
         self._remote = remote
+        if remote is not None and release_authentication_blocks:
+            # A newly constructed online backend represents a fresh authenticated
+            # session, so changes blocked by the previous session may try again.
+            self._outbox.release_authentication_blocks()
 
     def can_sync(self) -> bool:
         return self._remote is not None
+
+    @staticmethod
+    def _notify_progress(
+        progress: Callable[[str], None] | None,
+        message: str,
+    ) -> None:
+        if progress is None:
+            return
+        try:
+            progress(message)
+        # UI callbacks are external to the sync operation and must not abort it.
+        except Exception:  # noqa: BLE001  # pylint: disable=W0718
+            logging.getLogger(__name__).debug(
+                "Synchronization progress callback failed",
+                exc_info=True,
+            )
+
+    @staticmethod
+    def _check_cancel(should_cancel: Callable[[], bool] | None) -> None:
+        if should_cancel is not None and should_cancel():
+            raise _SyncCancelled
+
+    @staticmethod
+    def _validated_server_sequence(response: dict[str, Any]) -> int | None:
+        raw = response.get("server_sequence")
+        if raw is None:
+            # Compatibility with servers predating the sequence protocol.
+            return None
+        if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+            raise RuntimeError("Synchronization returned an invalid server_sequence")
+        return raw
 
     def pending_count(self, project_id: str | None = None) -> int:
         return self._outbox.pending_count(project_id)
@@ -25,25 +73,354 @@ class SyncService:
     def blocked_count(self, project_id: str | None = None) -> int:
         return self._outbox.blocked_count(project_id)
 
+    def deferred_count(self, project_id: str | None = None) -> int:
+        return self._outbox.deferred_count(project_id)
+
+    def next_retry_at(self, project_id: str | None = None) -> str | None:
+        return self._outbox.next_retry_at(project_id)
+
+    def conflict_count(self, project_id: str | None = None) -> int:
+        return self._outbox.conflict_count(project_id)
+
+    def error_count(self, project_id: str | None = None) -> int:
+        return self._outbox.error_count(project_id)
+
+    def last_sync_time(self, project_id: str | None) -> str | None:
+        if not project_id:
+            return None
+        value = self._store.get_last_server_time(project_id)
+        if not value or str(value).startswith("1970-01-01"):
+            return None
+        return str(value)
+
     def blocked_details(self, project_id: str | None = None) -> list[dict[str, Any]]:
         return self._outbox.get_blocked_changes(project_id)
 
-    def _json_snippet(self, obj: object, *, limit: int = 500) -> str:
-        try:
-            return json.dumps(obj)[:limit]
-        except Exception:  # noqa: BLE001
-            return str(obj)[:limit]
+    def conflict_details(self, project_id: str | None = None) -> list[dict[str, Any]]:
+        """Return only conflicts that are waiting for an explicit decision."""
+        return [
+            item
+            for item in self._outbox.get_blocked_changes(project_id)
+            if item.get("failure_kind") == "conflict"
+        ]
+
+    def _require_conflict(self, change_id: str) -> dict[str, Any]:
+        conflict = self._outbox.get_blocked_change(str(change_id))
+        if conflict is None:
+            raise KeyError("Synchronization conflict no longer exists")
+        if conflict.get("failure_kind") != "conflict":
+            raise ValueError("The selected outbox item is not a version conflict")
+        return conflict
+
+    def _current_local_version(self, conflict: dict[str, Any]) -> int:
+        entity = str(conflict["entity"])
+        entity_id = str(conflict["entity_id"])
+        getters = {
+            "risk": self._store.get_risk_project_and_version,
+            "opportunity": self._store.get_opportunity_project_and_version,
+            "action": self._store.get_action_project_and_version,
+            "assessment": self._store.get_assessment_project_and_version,
+            "helpdesk_ticket": self._store.get_helpdesk_ticket_project_and_version,
+        }
+        getter = getters.get(entity)
+        if getter is None:
+            raise ValueError(f"Unsupported conflict entity: {entity!r}")
+        local_project_id, version = getter(entity_id)
+        if str(local_project_id) != str(conflict["project_id"]):
+            raise RuntimeError("The conflicted item belongs to another project")
+        return int(version)
+
+    def _normalize_server_record(
+        self, conflict: dict[str, Any]
+    ) -> dict[str, Any]:
+        raw = conflict.get("server_record")
+        if not isinstance(raw, dict) or not raw:
+            raise RuntimeError(
+                "The server copy is unavailable for this conflict; choose "
+                "Keep mine or leave it for later."
+            )
+        record = dict(raw)
+        entity = str(conflict["entity"])
+        entity_id = str(conflict["entity_id"])
+        project_id = str(conflict["project_id"])
+        if str(record.get("id") or "") != entity_id:
+            raise RuntimeError("The saved server copy does not match this item")
+        record_project_id = record.get("project_id")
+        if record_project_id and str(record_project_id) != project_id:
+            raise RuntimeError("The saved server copy belongs to another project")
+        record["project_id"] = project_id
+
+        if entity in {"risk", "opportunity"}:
+            server_type = str(record.get("type") or entity)
+            if server_type != entity:
+                raise RuntimeError(
+                    "This conflict changes the entity type and cannot be "
+                    "resolved automatically."
+                )
+
+        # Older stored conflict payloads assigned item_id to both aliases.
+        # Resolve an ambiguous parent from the authoritative local parent rows.
+        if entity in {"action", "assessment"}:
+            item_id = str(record.get("item_id") or "")
+            risk_id = str(record.get("risk_id") or "")
+            opportunity_id = str(record.get("opportunity_id") or "")
+            if not item_id:
+                item_id = risk_id or opportunity_id
+                record["item_id"] = item_id
+            if item_id and bool(risk_id) == bool(opportunity_id):
+                is_opportunity = self._store.conn.execute(
+                    "SELECT 1 FROM opportunities WHERE project_id=? AND id=?;",
+                    (project_id, item_id),
+                ).fetchone()
+                is_risk = self._store.conn.execute(
+                    "SELECT 1 FROM risks WHERE project_id=? AND id=?;",
+                    (project_id, item_id),
+                ).fetchone()
+                if bool(is_opportunity) == bool(is_risk):
+                    raise RuntimeError(
+                        "The server copy has an ambiguous parent and cannot be "
+                        "applied safely."
+                    )
+                record["risk_id"] = item_id if is_risk else None
+                record["opportunity_id"] = item_id if is_opportunity else None
+        return record
+
+    def _apply_server_record(
+        self, conflict: dict[str, Any], record: dict[str, Any]
+    ) -> None:
+        project_id = str(conflict["project_id"])
+        entity = str(conflict["entity"])
+        appliers = {
+            "risk": self._store.apply_pull_risks,
+            "opportunity": self._store.apply_pull_opportunities,
+            "action": self._store.apply_pull_actions,
+            "assessment": self._store.apply_pull_assessments,
+            "helpdesk_ticket": self._store.apply_pull_helpdesk_tickets,
+        }
+        apply_record = appliers.get(entity)
+        if apply_record is None:
+            raise ValueError(f"Unsupported conflict entity: {entity!r}")
+        apply_record(project_id, [record])
+
+    def resolve_conflict(
+        self,
+        change_id: str,
+        resolution: str,
+        choices: dict[str, str] | None = None,
+        *,
+        expected_server_version: int | None = None,
+    ) -> dict[str, Any]:
+        """Resolve one persisted conflict without silently discarding either side."""
+        choice = str(resolution or "").strip().lower()
+        if choice not in _CONFLICT_RESOLUTIONS:
+            raise ValueError(
+                "resolution must be one of: keep_mine, use_server, later, merge"
+            )
+
+        if choice == "later":
+            conflict = self._require_conflict(change_id)
+            return {
+                "change_id": str(change_id),
+                "resolution": choice,
+                "resolved": False,
+                "project_id": str(conflict["project_id"]),
+            }
+
+        with self._store.write_transaction():
+            conflict = self._require_conflict(change_id)
+            project_id = str(conflict["project_id"])
+            if expected_server_version is not None:
+                current_server_version = conflict.get("server_version")
+                if (
+                    isinstance(expected_server_version, bool)
+                    or not isinstance(current_server_version, int)
+                    or isinstance(current_server_version, bool)
+                    or current_server_version != expected_server_version
+                ):
+                    raise RuntimeError(
+                        "The server copy changed while the Conflict Center was "
+                        "open. Reopen it and review the latest values."
+                    )
+
+            if choice == "keep_mine":
+                raw_server_version = conflict.get("server_version")
+                if raw_server_version is None:
+                    raise RuntimeError(
+                        "The current server version is unavailable; leave this "
+                        "conflict blocked for later."
+                    )
+                try:
+                    server_version = int(raw_server_version)
+                except (TypeError, ValueError) as exc:
+                    raise RuntimeError(
+                        "The current server version is unavailable; leave this "
+                        "conflict blocked for later."
+                    ) from exc
+                if server_version < 1:
+                    raise RuntimeError("The current server version is invalid")
+                target_version = max(
+                    server_version, self._current_local_version(conflict)
+                )
+                replacement_id = self._outbox.requeue_conflict_with_new_id(
+                    str(change_id), target_version
+                )
+                if not replacement_id:
+                    raise RuntimeError(
+                        "The conflict disappeared before it was resolved"
+                    )
+                return {
+                    "change_id": str(change_id),
+                    "replacement_change_id": replacement_id,
+                    "resolution": choice,
+                    "resolved": True,
+                    "project_id": project_id,
+                    "base_version": target_version,
+                }
+
+            server_record = self._normalize_server_record(conflict)
+            if choice == "merge":
+                version = conflict.get("server_version")
+                if (
+                    not isinstance(version, int)
+                    or isinstance(version, bool)
+                    or version < 1
+                    or int(server_record.get("version") or 0) != version
+                    or self._current_local_version(conflict) > version
+                ):
+                    raise RuntimeError(
+                        "The saved server copy is stale; synchronize again "
+                        "before merging"
+                    )
+                merge_source = {**conflict, "server_record": server_record}
+                record, selected = merged_record(merge_source, choices or {})
+                self._outbox.delete_outbox_ids([str(change_id)])
+                self._apply_server_record(conflict, server_record)
+                self._store.apply_merged_fields(
+                    str(conflict["entity"]), project_id,
+                    str(conflict["entity_id"]), record,
+                )
+                replacement_id = self._outbox.queue_merged_upsert(
+                    project_id, str(conflict["entity"]),
+                    str(conflict["entity_id"]), version, record,
+                )
+                self._store.reset_sync_watermark(project_id, _SYNC_EPOCH)
+                return {
+                    "change_id": str(change_id),
+                    "replacement_change_id": replacement_id,
+                    "resolution": choice,
+                    "resolved": True,
+                    "project_id": project_id,
+                    "base_version": version,
+                    "local_fields": sorted(selected),
+                }
+            self._outbox.delete_outbox_ids([str(change_id)])
+            self._apply_server_record(conflict, server_record)
+            # The saved conflict record is a point-in-time copy. Rewind the
+            # watermark so the next sync cannot miss a newer server update.
+            self._store.reset_sync_watermark(project_id, _SYNC_EPOCH)
+            return {
+                "change_id": str(change_id),
+                "resolution": choice,
+                "resolved": True,
+                "project_id": project_id,
+            }
 
     def _extract_change_ids(self, items: object) -> list[str]:
+        if not isinstance(items, Iterable):
+            return []
         return [
             str(it.get("change_id"))
-            for it in (items or [])
+            for it in items
             if isinstance(it, dict) and it.get("change_id")
         ]
 
+    @staticmethod
+    def _classify_status(status: int) -> tuple[str, bool]:
+        status = int(status or 0)
+        if status == 401:
+            return "authentication", False
+        if status == 403:
+            return "permission", False
+        if status == 0 or status in {408, 425, 429} or status >= 500:
+            return "transient", True
+        return "validation", False
+
+    def _request_failure(self, exc: Exception, *, phase: str) -> dict[str, Any]:
+        status_value = getattr(exc, "status", None)
+        if status_value is None:
+            raise exc
+        status = int(status_value or 0)
+        failure_kind, retryable = self._classify_status(status)
+        return {
+            "status": "error",
+            "reason": f"{phase}_request_failed",
+            "detail": str(getattr(exc, "detail", None) or exc),
+            "http_status": status,
+            "failure_kind": failure_kind,
+            "retryable": retryable,
+            "request_failed": True,
+        }
+
+    @staticmethod
+    def _normalize_error(item: dict[str, Any]) -> dict[str, Any]:
+        normalized = dict(item)
+        reason = str(normalized.get("reason") or "")
+        failure_kind = str(normalized.get("failure_kind") or "")
+        if not failure_kind:
+            if reason == "insufficient_permissions":
+                failure_kind = "permission"
+            elif reason == "internal_error":
+                failure_kind = "transient"
+            else:
+                failure_kind = "validation"
+        normalized["failure_kind"] = failure_kind
+        normalized["retryable"] = bool(
+            normalized.get("retryable") or failure_kind == "transient"
+        )
+        return normalized
+
+    @staticmethod
+    def _state_for_failure_kind(failure_kind: str) -> str:
+        return {
+            "transient": "retry_wait",
+            "authentication": "authentication_required",
+            "permission": "permission_denied",
+            "validation": "attention_required",
+            "conflict": "attention_required",
+        }.get(failure_kind, "attention_required")
+
+    def _finish_summary(
+        self, summary: dict[str, Any], project_id: str
+    ) -> dict[str, Any]:
+        summary["blocked_details"] = self.blocked_details(project_id)
+        summary["blocked"] = len(summary["blocked_details"])
+        summary["next_retry_at"] = self.next_retry_at(project_id)
+        if summary.get("state") == "complete" and summary["blocked"]:
+            summary["state"] = "attention_required"
+        elif summary.get("state") == "complete" and summary.get("deferred"):
+            summary["state"] = "retry_wait"
+        return summary
+
+    def _record_request_failure(
+        self, change_ids: list[str], failure: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        errors: list[dict[str, Any]] = []
+        for change_id in change_ids:
+            item = {**failure, "change_id": change_id}
+            errors.append(item)
+            if item["retryable"]:
+                self._outbox.defer_outbox_id(change_id, item)
+            else:
+                self._outbox.block_outbox_id(
+                    change_id,
+                    item,
+                    failure_kind=str(item["failure_kind"]),
+                )
+        return errors
+
     def _push_once(
         self, project_id: str, changes: list[dict[str, Any]]
-    ) -> dict[str, Any]:
+    ) -> object:
         if not self._remote:
             raise RuntimeError(
                 "No server configured (start the app online at least once)."
@@ -51,61 +428,131 @@ class SyncService:
         return self._remote.sync_push(project_id, changes)
 
     def _process_push(
-        self,
-        project_id: str,
-        changes: list[dict[str, Any]],
-        *,
-        block_conflicts: bool,
+        self, project_id: str, changes: list[dict[str, Any]]
     ) -> tuple[int, list[dict[str, Any]], list[dict[str, Any]]]:
-        resp = self._push_once(project_id, changes)
         sent_ids = [
             str(c.get("change_id") or "") for c in changes if c.get("change_id")
         ]
+        # Commit the send boundary before network I/O. A create deleted or
+        # edited while the request is in flight must assume version one may now
+        # exist on the server, even if the response never reaches this process.
+        self._outbox.mark_outbox_ids_attempted(sent_ids)
+        try:
+            resp = self._push_once(project_id, changes)
+        # Remote adapters expose different transport exception classes; the
+        # shared failure normalizer re-raises exceptions it cannot classify.
+        except Exception as exc:  # noqa: BLE001  # pylint: disable=W0718
+            failure = self._request_failure(exc, phase="push")
+            return 0, [], self._record_request_failure(sent_ids, failure)
+        if not isinstance(resp, dict):
+            failure = {
+                "status": "error",
+                "reason": "push_invalid_response",
+                "detail": "Server returned an invalid synchronization response",
+                "http_status": 0,
+                "failure_kind": "transient",
+                "retryable": True,
+                "request_failed": True,
+            }
+            return 0, [], self._record_request_failure(sent_ids, failure)
 
-        conflicts = list(resp.get("conflicts") or [])
-        errors = list(resp.get("errors") or [])
-        dup_ids = [str(x) for x in (resp.get("duplicate_change_ids") or []) if x]
+        raw_results = resp.get("results")
+        canonical_results = (
+            [
+                item
+                for item in raw_results
+                if isinstance(item, dict)
+                and item.get("change_id")
+                and item.get("status") in {"accepted", "conflict", "error"}
+            ]
+            if isinstance(raw_results, list)
+            else []
+        )
+        canonical_accepts: list[dict[str, Any]]
+        canonical_ids: set[str]
+        if canonical_results:
+            conflicts = [
+                item for item in canonical_results if item["status"] == "conflict"
+            ]
+            errors = [
+                self._normalize_error(item)
+                for item in canonical_results
+                if item["status"] == "error"
+            ]
+            processed = {
+                str(item["change_id"])
+                for item in canonical_results
+                if item["status"] == "accepted"
+            }
+            accepted_results = [
+                item
+                for item in canonical_results
+                if item["status"] == "accepted"
+            ]
+            canonical_accepts = [
+                item
+                for item in accepted_results
+                if isinstance(item.get("server_record"), dict)
+                or (
+                    isinstance(item.get("server_version"), int)
+                    and not isinstance(item.get("server_version"), bool)
+                )
+            ]
+            canonical_ids = {
+                str(item["change_id"]) for item in canonical_accepts
+            }
+        else:
+            # Compatibility with servers predating per-change receipt results.
+            conflicts = list(resp.get("conflicts") or [])
+            errors = [
+                self._normalize_error(item)
+                for item in list(resp.get("errors") or [])
+                if isinstance(item, dict)
+            ]
+            dup_ids = [
+                str(x) for x in (resp.get("duplicate_change_ids") or []) if x
+            ]
+            conflict_ids = set(self._extract_change_ids(conflicts))
+            error_ids = set(self._extract_change_ids(errors))
+            processed = (set(sent_ids) - conflict_ids - error_ids) | set(dup_ids)
+            canonical_accepts = []
+            canonical_ids = set()
 
-        conflict_ids = set(self._extract_change_ids(conflicts))
-        error_ids = set(self._extract_change_ids(errors))
+        if canonical_accepts:
+            self._outbox.acknowledge_accepted_results(
+                project_id, canonical_accepts
+            )
+        legacy_processed = processed - canonical_ids
+        if legacy_processed:
+            self._outbox.delete_outbox_ids(list(legacy_processed))
 
-        processed = (set(sent_ids) - conflict_ids - error_ids) | set(dup_ids)
-        if processed:
-            self._outbox.delete_outbox_ids(list(processed))
-
-        if block_conflicts:
-            for c in conflicts:
-                cid = str(c.get("change_id") or "")
-                if cid:
-                    self._outbox.block_outbox_id(cid, self._json_snippet(c))
+        for c in conflicts:
+            cid = str(c.get("change_id") or "")
+            if cid:
+                self._outbox.block_outbox_id(
+                    cid, c, failure_kind="conflict"
+                )
         for e in errors:
             cid = str(e.get("change_id") or "")
             if cid:
-                self._outbox.block_outbox_id(cid, self._json_snippet(e))
+                if bool(e.get("retryable")):
+                    self._outbox.defer_outbox_id(cid, e)
+                else:
+                    self._outbox.block_outbox_id(
+                        cid,
+                        e,
+                        failure_kind=str(e.get("failure_kind") or "error"),
+                    )
 
         return (len(processed), conflicts, errors)
 
-    def _requeue_conflicts(self, conflicts: list[dict[str, Any]]) -> list[str]:
-        new_ids: list[str] = []
-        for c in conflicts:
-            cid = str(c.get("change_id") or "")
-            sv = c.get("server_version")
-            if not cid:
-                continue
-            if sv is None:
-                self._outbox.block_outbox_id(cid, self._json_snippet(c))
-                continue
-            try:
-                server_version = int(sv)
-            except (TypeError, ValueError):
-                self._outbox.block_outbox_id(cid, self._json_snippet(c))
-                continue
-            new_id = self._outbox.requeue_conflict_with_new_id(cid, server_version)
-            if new_id:
-                new_ids.append(new_id)
-        return new_ids
-
-    def sync_project(self, project_id: str) -> dict[str, Any]:
+    def sync_project(
+        self,
+        project_id: str,
+        *,
+        should_cancel: Callable[[], bool] | None = None,
+        progress: Callable[[str], None] | None = None,
+    ) -> dict[str, Any]:
         if not self._remote:
             raise RuntimeError(
                 "No server configured (start the app online at least once)."
@@ -114,11 +561,14 @@ class SyncService:
         effective_project_id = project_id
 
         summary: dict[str, Any] = {
+            "state": "complete",
             "pushed": 0,
             "conflicts": 0,
             "errors": 0,
+            "deferred": 0,
             "blocked": 0,
             "blocked_details": [],
+            "next_retry_at": None,
             "pulled_risks": 0,
             "pulled_opportunities": 0,
             "pulled_actions": 0,
@@ -126,73 +576,149 @@ class SyncService:
             "pulled_helpdesk_tickets": 0,
         }
 
+        def cancelled() -> dict[str, Any]:
+            summary["state"] = "cancelled"
+            summary["cancelled"] = True
+            return self._finish_summary(summary, effective_project_id)
+
+        self._notify_progress(progress, "Preparing synchronization")
+        try:
+            self._check_cancel(should_cancel)
+        except _SyncCancelled:
+            return cancelled()
+
         if str(project_id).startswith("local-"):
+            self._notify_progress(progress, "Publishing local project")
             promoted = self._promote_local_project(project_id)
             if promoted and promoted != project_id:
                 summary["project_id_migrated_from"] = project_id
                 summary["project_id_migrated_to"] = promoted
                 effective_project_id = promoted
+            try:
+                self._check_cancel(should_cancel)
+            except _SyncCancelled:
+                return cancelled()
 
         changes = self._outbox.get_pending_changes(effective_project_id, limit=100)
         if changes:
-            pushed1, conflicts1, errors1 = self._process_push(
-                effective_project_id,
-                changes,
-                block_conflicts=False,
+            self._notify_progress(
+                progress,
+                f"Pushing {len(changes)} pending change(s)",
             )
-            summary["pushed"] += pushed1
-            summary["errors"] += len(self._extract_change_ids(errors1))
+            pushed, conflicts, errors = self._process_push(
+                effective_project_id, changes
+            )
+            summary["pushed"] += pushed
+            summary["conflicts"] += len(self._extract_change_ids(conflicts))
+            deferred_errors = [e for e in errors if bool(e.get("retryable"))]
+            blocked_errors = [e for e in errors if not bool(e.get("retryable"))]
+            summary["deferred"] += len(self._extract_change_ids(deferred_errors))
+            summary["errors"] += len(self._extract_change_ids(blocked_errors))
 
-            requeued_new_ids = self._requeue_conflicts(conflicts1)
-            summary["conflicts"] += len(requeued_new_ids)
-
-            if requeued_new_ids:
-                retry_changes = self._outbox.get_pending_changes(
-                    effective_project_id, limit=100
+            request_failures = [e for e in errors if e.get("request_failed")]
+            if request_failures:
+                failure = request_failures[0]
+                summary["state"] = self._state_for_failure_kind(
+                    str(failure.get("failure_kind") or "error")
                 )
-                retry_set = set(requeued_new_ids)
-                retry_changes = [
-                    c for c in retry_changes if str(c.get("change_id")) in retry_set
-                ]
+                summary["sync_error"] = failure
+                return self._finish_summary(summary, effective_project_id)
 
-                if retry_changes:
-                    pushed2, _conflicts2, errors2 = self._process_push(
-                        effective_project_id,
-                        retry_changes,
-                        block_conflicts=True,
-                    )
-                    summary["pushed"] += pushed2
-                    summary["errors"] += len(self._extract_change_ids(errors2))
+            try:
+                self._check_cancel(should_cancel)
+            except _SyncCancelled:
+                return cancelled()
 
         since = self._store.get_last_server_time(effective_project_id)
+        since_sequence = self._store.get_last_server_sequence(effective_project_id)
 
+        self._notify_progress(progress, "Pulling server changes")
         try:
-            pull = self._remote.sync_pull(effective_project_id, since)
-        except Exception as exc:  # noqa: BLE001
+            self._check_cancel(should_cancel)
+            pull = self._remote.sync_pull(
+                effective_project_id,
+                since,
+                since_sequence=since_sequence,
+            )
+            self._check_cancel(should_cancel)
+        except _SyncCancelled:
+            return cancelled()
+        # Keep pull fallback independent of the concrete remote adapter while
+        # re-raising failures that do not carry a recognizable status.
+        except Exception as exc:  # noqa: BLE001  # pylint: disable=W0718
             status = getattr(exc, "status", None)
-            if int(status or 0) != 413:
-                raise
-            pull = self._pull_paginated(effective_project_id, since)
+            if int(status or 0) == 413:
+                try:
+                    pull = self._pull_paginated(
+                        effective_project_id,
+                        since,
+                        since_sequence,
+                        should_cancel=should_cancel,
+                        progress=progress,
+                    )
+                except _SyncCancelled:
+                    return cancelled()
+                # Paginated adapters share the same status-based failure contract.
+                except Exception as page_exc:  # noqa: BLE001  # pylint: disable=W0718
+                    failure = self._request_failure(
+                        page_exc, phase="pull"
+                    )
+                    summary["state"] = self._state_for_failure_kind(
+                        str(failure["failure_kind"])
+                    )
+                    summary["sync_error"] = failure
+                    return self._finish_summary(summary, effective_project_id)
+            else:
+                failure = self._request_failure(exc, phase="pull")
+                summary["state"] = self._state_for_failure_kind(
+                    str(failure["failure_kind"])
+                )
+                summary["sync_error"] = failure
+                return self._finish_summary(summary, effective_project_id)
 
         server_time = str(pull.get("server_time") or utc_iso())
-        # Apply parent items before child records. This lets assessment pulls
-        # that only contain item_id be classified as risk vs opportunity.
-        for key in ("risks", "opportunities", "actions", "assessments"):
-            items = pull.get(key) or []
-            getattr(self._store, f"apply_pull_{key}")(effective_project_id, items)
-            summary[f"pulled_{key}"] = len(items)
+        server_sequence = self._validated_server_sequence(pull)
+        try:
+            # The pending check, every pulled row, and the watermark share one
+            # BEGIN IMMEDIATE transaction. A UI edit either commits before this
+            # block and is preserved, or waits and bases itself on the new row.
+            with self._store.write_transaction():
+                # Apply parents before children so an assessment containing only
+                # item_id can still be classified as risk vs opportunity.
+                for key in ("risks", "opportunities", "actions", "assessments"):
+                    self._check_cancel(should_cancel)
+                    items = pull.get(key) or []
+                    self._notify_progress(
+                        progress,
+                        f"Applying {len(items)} {key}",
+                    )
+                    getattr(self._store, f"apply_pull_{key}")(
+                        effective_project_id, items
+                    )
+                    summary[f"pulled_{key}"] = len(items)
 
-        helpdesk_items = pull.get("helpdesk_tickets") or []
-        if helpdesk_items:
-            self._store.apply_pull_helpdesk_tickets(
-                effective_project_id, helpdesk_items
-            )
-        summary["pulled_helpdesk_tickets"] = len(helpdesk_items)
+                self._check_cancel(should_cancel)
+                helpdesk_items = pull.get("helpdesk_tickets") or []
+                if helpdesk_items:
+                    self._notify_progress(
+                        progress,
+                        f"Applying {len(helpdesk_items)} help-desk ticket(s)",
+                    )
+                    self._store.apply_pull_helpdesk_tickets(
+                        effective_project_id, helpdesk_items
+                    )
+                summary["pulled_helpdesk_tickets"] = len(helpdesk_items)
 
-        self._store.set_last_server_time(effective_project_id, server_time)
-        summary["blocked_details"] = self.blocked_details(effective_project_id)
-        summary["blocked"] = len(summary["blocked_details"])
-        return summary
+                self._check_cancel(should_cancel)
+                self._notify_progress(progress, "Finalizing synchronization")
+                self._store.set_sync_watermark(
+                    effective_project_id,
+                    server_time,
+                    server_sequence,
+                )
+        except _SyncCancelled:
+            return cancelled()
+        return self._finish_summary(summary, effective_project_id)
 
     def _promote_local_project(self, local_project_id: str) -> str | None:
         if not self._remote:
@@ -233,25 +759,41 @@ class SyncService:
         if not new_id:
             return None
 
-        self._store.conn.execute(
-            "UPDATE projects SET name = ? WHERE id = ?;",
-            (name, local_project_id),
-        )
-        self._store.conn.commit()
-
-        self._store.migrate_project_id(
-            old_project_id=local_project_id, new_project_id=str(new_id)
-        )
-        self._store.upsert_projects([created])
+        with self._store.write_transaction():
+            self._store.conn.execute(
+                "UPDATE projects SET name = ? WHERE id = ?;",
+                (name, local_project_id),
+            )
+            self._store.migrate_project_id(
+                old_project_id=local_project_id, new_project_id=str(new_id)
+            )
+            self._store.upsert_projects([created])
         return str(new_id)
 
-    def _pull_paginated(self, project_id: str, since: str) -> dict[str, Any]:
+    def _pull_paginated(
+        self,
+        project_id: str,
+        since: str,
+        since_sequence: int = 0,
+        *,
+        should_cancel: Callable[[], bool] | None = None,
+        progress: Callable[[str], None] | None = None,
+    ) -> dict[str, Any]:
+        remote = self._remote
+        if remote is None:
+            raise RuntimeError(
+                "No server configured (start the app online at least once)."
+            )
 
         limit = 2000
         cursors: dict[str, str] = {}
+        snapshot_time: str | None = None
+        snapshot_sequence: int | None = None
+        sequence_snapshot_initialized = False
 
         merged: dict[str, Any] = {
             "server_time": None,
+            "server_sequence": None,
             "risks": [],
             "opportunities": [],
             "actions": [],
@@ -259,14 +801,42 @@ class SyncService:
             "helpdesk_tickets": [],
         }
 
+        page_number = 0
         while True:
-            resp = self._remote.sync_pull(
+            self._check_cancel(should_cancel)
+            page_number += 1
+            self._notify_progress(
+                progress,
+                f"Downloading synchronization page {page_number}",
+            )
+            resp = remote.sync_pull(
                 project_id,
                 since,
+                since_sequence=since_sequence,
                 limit_per_entity=limit,
                 cursors=cursors or None,
+                snapshot_time=snapshot_time,
+                snapshot_sequence=snapshot_sequence,
             )
-            merged["server_time"] = resp.get("server_time") or merged["server_time"]
+            self._check_cancel(should_cancel)
+            page_snapshot = str(resp.get("server_time") or "")
+            if not page_snapshot:
+                raise RuntimeError("Sync pagination response omitted server_time")
+            if snapshot_time is None:
+                snapshot_time = page_snapshot
+                merged["server_time"] = page_snapshot
+            elif page_snapshot != snapshot_time:
+                raise RuntimeError("Sync pagination snapshot changed between pages")
+
+            page_sequence = self._validated_server_sequence(resp)
+            if not sequence_snapshot_initialized:
+                snapshot_sequence = page_sequence
+                merged["server_sequence"] = page_sequence
+                sequence_snapshot_initialized = True
+            elif page_sequence != snapshot_sequence:
+                raise RuntimeError(
+                    "Sync pagination sequence snapshot changed between pages"
+                )
             for key in (
                 "risks",
                 "opportunities",

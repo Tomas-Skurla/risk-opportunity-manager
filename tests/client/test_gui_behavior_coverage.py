@@ -18,6 +18,9 @@ from riskapp_client.domain.domain_models import (
 )
 from riskapp_client.ui_v2.main_application_window import MainWindow
 
+# These tests deliberately invoke mixin internals to exercise UI behavior.
+# pylint: disable=protected-access
+
 
 class FakeStore:
     def __init__(self, project: Project) -> None:
@@ -34,6 +37,8 @@ class FakeStore:
         return self.project
 
 
+# Preserve the Backend protocol's keyword names even when this fake ignores them.
+# pylint: disable=unused-argument
 class GuiBackend:
     """In-memory backend implementing every main-window feature."""
 
@@ -43,6 +48,7 @@ class GuiBackend:
         self.remote = SimpleNamespace(email="manager@example.test")
         self.superuser = False
         self.calls: list[tuple] = []
+        self.editor_base_versions: list[tuple[str, str, int | None]] = []
         self.risks = [
             Risk(
                 "risk-1",
@@ -132,10 +138,10 @@ class GuiBackend:
     def is_superuser(self):
         return self.superuser
 
-    def list_risks(self, _project_id):
+    def list_risks(self, project_id):
         return list(self.risks)
 
-    def risks_report(self, _project_id, **_filters):
+    def risks_report(self, project_id, **filters):
         return {
             "total": len(self.risks),
             "project_total": len(self.risks),
@@ -153,19 +159,21 @@ class GuiBackend:
         return risk
 
     def update_risk(self, project_id, risk_id, **values):
+        base_version = values.pop("base_version", None)
+        self.editor_base_versions.append(("risk", risk_id, base_version))
         risk = Risk(risk_id, project_id, **values)
         self.risks = [risk if item.id == risk_id else item for item in self.risks]
         self.calls.append(("update_risk", risk_id))
         return risk
 
-    def delete_risk(self, _project_id, risk_id):
+    def delete_risk(self, project_id, risk_id):
         self.risks = [item for item in self.risks if item.id != risk_id]
         self.calls.append(("delete_risk", risk_id))
 
-    def list_opportunities(self, _project_id):
+    def list_opportunities(self, project_id):
         return list(self.opportunities)
 
-    def opportunities_report(self, _project_id, **_filters):
+    def opportunities_report(self, project_id, **filters):
         return {
             "total": 1,
             "project_total": 1,
@@ -185,6 +193,10 @@ class GuiBackend:
         return opportunity
 
     def update_opportunity(self, project_id, opportunity_id, **values):
+        base_version = values.pop("base_version", None)
+        self.editor_base_versions.append(
+            ("opportunity", opportunity_id, base_version)
+        )
         opportunity = Opportunity(opportunity_id, project_id, **values)
         self.opportunities = [
             opportunity if item.id == opportunity_id else item
@@ -193,13 +205,13 @@ class GuiBackend:
         self.calls.append(("update_opportunity", opportunity_id))
         return opportunity
 
-    def delete_opportunity(self, _project_id, opportunity_id):
+    def delete_opportunity(self, project_id, opportunity_id):
         self.opportunities = [
             item for item in self.opportunities if item.id != opportunity_id
         ]
         self.calls.append(("delete_opportunity", opportunity_id))
 
-    def list_actions(self, _project_id):
+    def list_actions(self, project_id):
         return list(self.actions)
 
     def create_action(self, project_id, **values):
@@ -232,29 +244,35 @@ class GuiBackend:
         self.calls.append(("update_action", action_id))
         return action
 
-    def list_assessments(self, _project_id, _item_type, item_id):
+    def list_assessments(self, project_id, item_type, item_id):
         return [item for item in self.assessments if item.item_id == item_id]
 
     def upsert_my_assessment(
-        self, _project_id, _item_type, item_id, probability, impact, notes
+        self,
+        project_id,
+        item_type,
+        item_id,
+        probability,
+        impact,
+        notes: str | None = None,
     ):
         assessment = Assessment(
-            "assessment-new", item_id, "user-1", probability, impact, notes
+            "assessment-new", item_id, "user-1", probability, impact, notes or ""
         )
         self.assessments = [assessment]
         self.calls.append(("assessment", item_id))
         return assessment
 
-    def list_members(self, _project_id):
+    def list_members(self, project_id):
         return list(self.members)
 
-    def add_member(self, _project_id, **values):
+    def add_member(self, project_id, **values):
         self.calls.append(("add_member", values["user_email"]))
 
-    def remove_member(self, _project_id, **values):
+    def remove_member(self, project_id, **values):
         self.calls.append(("remove_member", values["member_user_id"]))
 
-    def list_helpdesk_tickets(self, _project_id):
+    def list_helpdesk_tickets(self, project_id):
         return list(self.tickets)
 
     def create_helpdesk_ticket(self, project_id, **values):
@@ -312,7 +330,7 @@ class GuiBackend:
         return {"id": "snapshot-1"}
 
     @staticmethod
-    def top_history(_project_id, **_filters):
+    def top_history(project_id, **filters):
         return [
             {
                 "captured_at": "2026-01-02T03:04:05",
@@ -341,18 +359,37 @@ class GuiBackend:
     def delete_project(self, project_id):
         self.calls.append(("delete_project", project_id))
 
-
+# pylint: enable=unused-argument
 def _window(qtbot):
     backend = GuiBackend()
     window = MainWindow(backend)
     qtbot.addWidget(window)
     window.top_tab.auto_snap_timer.stop()
+    qtbot.waitUntil(lambda: not window._background_jobs.is_busy)
     return window, backend
+
+
+def test_window_stops_automatic_scheduler_before_shutdown(qtbot) -> None:
+    window = MainWindow(
+        GuiBackend(),
+        auto_sync_interval_seconds=60,
+        auto_sync_initial_delay_seconds=60,
+    )
+    qtbot.addWidget(window)
+    window.top_tab.auto_snap_timer.stop()
+
+    assert window._automatic_sync_scheduler.is_running
+    window.close()
+    assert not window._automatic_sync_scheduler.is_running
 
 
 def test_real_window_risk_and_opportunity_crud(monkeypatch, qtbot) -> None:
     window, backend = _window(qtbot)
-    monkeypatch.setattr(QMessageBox, "question", lambda *_args: QMessageBox.Yes)
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *_args: QMessageBox.StandardButton.Yes,
+    )
     warnings: list[str] = []
     monkeypatch.setattr(
         QMessageBox,
@@ -406,6 +443,49 @@ def test_real_window_risk_and_opportunity_crud(monkeypatch, qtbot) -> None:
     window.current_project_id = None
     window._save_risk({"title": "No project"})
     assert warnings[-1] == "Select a project first."
+
+
+def test_open_editors_keep_the_version_the_user_actually_saw(qtbot) -> None:
+    window, backend = _window(qtbot)
+    backend.risks[0].version = 4
+    backend.opportunities[0].version = 3
+    window._refresh_risks(use_remote_report=False)
+    window._refresh_opportunities(use_remote_report=False)
+
+    window._on_risk_clicked(0, 1)
+    assert window.current_risk_id == "risk-1"
+    assert window._risk_editor_base_version == 4
+    assert window.risk_form.title.text() == "Outage"
+
+    # Simulate a silent automatic-sync refresh. The list/cache sees version 5,
+    # while the already-open editor intentionally retains the version-4 form.
+    backend.risks[0].title = "Bob's synchronized title"
+    backend.risks[0].version = 5
+    window._refresh_risks(select_id="risk-1", use_remote_report=False)
+    assert window._risk_cache["risk-1"].version == 5
+    assert window.risk_form.title.text() == "Outage"
+
+    window.risk_form.title.setText("Alice's editor value")
+    window._editor_dirty = True
+    window._commit_editor_changes(refresh=True)
+    assert backend.editor_base_versions[-1] == ("risk", "risk-1", 4)
+
+    window._on_opportunity_clicked(0, 1)
+    assert window._opportunity_editor_base_version == 3
+    backend.opportunities[0].title = "Newer synchronized opportunity"
+    backend.opportunities[0].version = 4
+    window._refresh_opportunities(
+        select_id="opp-1",
+        use_remote_report=False,
+    )
+    window.opp_form.title.setText("Local opportunity editor")
+    window._opp_editor_dirty = True
+    window._commit_opp_editor_changes(refresh=True)
+    assert backend.editor_base_versions[-1] == (
+        "opportunity",
+        "opp-1",
+        3,
+    )
 
 
 def test_scored_entity_helpers_permissions_and_export(monkeypatch, qtbot) -> None:
@@ -531,15 +611,18 @@ def test_actions_assessments_and_matrix_behaviors(monkeypatch, qtbot) -> None:
 
     window.matrix_tab.kind_combo.setCurrentText("Opportunities")
     window._refresh_matrix()
-    assert window.opps_matrix_table.item(2, 3).text() == "1"
+    opportunity_count = window.opps_matrix_table.item(2, 3)
+    assert opportunity_count is not None and opportunity_count.text() == "1"
     window.matrix_tab.kind_combo.setCurrentText("Both")
     window._refresh_matrix()
-    assert window.risks_matrix_table.item(3, 4).text() == "1"
+    risk_count = window.risks_matrix_table.item(3, 4)
+    assert risk_count is not None and risk_count.text() == "1"
     window._render_matrix(
         window.risks_matrix_table,
         [SimpleNamespace(probability=0, impact=99)],
     )
-    assert window.risks_matrix_table.item(0, 4).text() == "1"
+    clamped_count = window.risks_matrix_table.item(0, 4)
+    assert clamped_count is not None and clamped_count.text() == "1"
 
 
 def test_helpdesk_crud_filters_and_failures(monkeypatch, qtbot) -> None:
@@ -582,10 +665,18 @@ def test_helpdesk_crud_filters_and_failures(monkeypatch, qtbot) -> None:
     created = window._current_ticket_id
     assert ("create_ticket", created) in backend.calls
 
-    monkeypatch.setattr(QMessageBox, "question", lambda *_args: QMessageBox.No)
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *_args: QMessageBox.StandardButton.No,
+    )
     window._delete_helpdesk_ticket()
     assert ("delete_ticket", created) not in backend.calls
-    monkeypatch.setattr(QMessageBox, "question", lambda *_args: QMessageBox.Yes)
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *_args: QMessageBox.StandardButton.Yes,
+    )
     window._delete_helpdesk_ticket()
     assert ("delete_ticket", created) in backend.calls
 
@@ -619,9 +710,11 @@ def test_history_snapshot_periods_and_auto_snapshot(monkeypatch, qtbot) -> None:
     )
 
     window._refresh_top_history()
+    qtbot.waitUntil(lambda: not window._background_jobs.is_busy)
     assert window.top_tab.top_table.rowCount() == 2
     assert "2 row(s)" in window.top_tab.top_report.text()
     window._snapshot_now()
+    qtbot.waitUntil(lambda: not window._background_jobs.is_busy)
     assert any(call[0] == "snapshot" for call in backend.calls)
 
     window.top_tab.top_period.setCurrentText("Last 7 days")
@@ -651,13 +744,14 @@ def test_history_snapshot_periods_and_auto_snapshot(monkeypatch, qtbot) -> None:
     window.top_tab.auto_snapshot_kind.setCurrentText("Risks")
     window._last_auto_snapshot_by_project.clear()
     window._maybe_auto_snapshot()
+    qtbot.waitUntil(lambda: not window._background_jobs.is_busy)
     assert "project-1" in window._last_auto_snapshot_by_project
     before = len(backend.calls)
     window._maybe_auto_snapshot()
     assert len(backend.calls) == before
 
 
-def test_core_permissions_context_and_layout_helpers(monkeypatch, qtbot) -> None:
+def test_core_permissions_context_and_layout_helpers(qtbot) -> None:
     window, backend = _window(qtbot)
     window.current_role = "unknown"
     window._offline_mode = True
@@ -672,11 +766,14 @@ def test_core_permissions_context_and_layout_helpers(monkeypatch, qtbot) -> None
     window._set_role_status(role="admin", offline=False, assumed=False)
     assert window.role_status.text() == "Role: superadmin"
 
-    window.tabs = window.ui.main_stacked_widget
     window.ui.main_stacked_widget.setCurrentWidget(window.risks_tab)
-    assert window._active_scored_tab_context()[1] is window.risks_table
+    risk_context = window._active_scored_tab_context()
+    assert risk_context is not None
+    assert risk_context[1] is window.risks_table
     window.ui.main_stacked_widget.setCurrentWidget(window.opps_tab)
-    assert window._active_scored_tab_context()[1] is window.opps_table
+    opportunity_context = window._active_scored_tab_context()
+    assert opportunity_context is not None
+    assert opportunity_context[1] is window.opps_table
     window.ui.main_stacked_widget.setCurrentWidget(window.matrix_tab)
     assert window._active_scored_tab_context() is None
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import csv
 
-from riskapp_client.adapters.local_storage.csv_data_exporter import (
+from riskapp_client.adapters.export.csv_data_exporter import (
     export_opportunities,
     export_risks,
 )

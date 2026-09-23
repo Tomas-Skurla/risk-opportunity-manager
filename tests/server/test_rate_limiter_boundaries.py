@@ -6,6 +6,11 @@ from collections import deque
 
 import pytest
 
+# Tests intentionally inspect and seed the limiter's private counter state.
+# pylint: disable=protected-access
+# Keep server imports local to the configured test environment.
+# pylint: disable=import-outside-toplevel
+
 
 @pytest.mark.parametrize(
     "kwargs",
@@ -42,7 +47,7 @@ def test_limiter_expires_hits_and_returns_retry_after(monkeypatch) -> None:
     now[0] = 111.5
     assert limiter.check("account") == (True, 0)
     limiter.reset()
-    assert limiter._hits == {}
+    assert not limiter._hits
 
 
 def test_limiter_prunes_stale_keys_and_bounds_untrusted_cardinality(
@@ -62,8 +67,11 @@ def test_limiter_prunes_stale_keys_and_bounds_untrusted_cardinality(
     assert set(limiter._hits) == {"fresh"}
     assert limiter.check("second") == (True, 0)
     assert limiter.check("third") == (True, 0)
-    allowed, retry_after = limiter.check("fourth")
-    assert allowed is False
-    assert retry_after == 10
-    assert "third" not in limiter._hits
-    assert rate_limit.InMemorySlidingWindowLimiter._OVERFLOW_KEY in limiter._hits
+    assert limiter.check("fourth") == (True, 0)
+    assert set(limiter._hits) == {"second", "third", "fourth"}
+
+    # A new identity gets its own bucket rather than inheriting another new
+    # identity's failures through a shared overflow key.
+    assert limiter.check("fourth") == (False, 10)
+    assert limiter.check("fifth") == (True, 0)
+    assert set(limiter._hits) == {"third", "fourth", "fifth"}

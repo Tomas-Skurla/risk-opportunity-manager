@@ -196,7 +196,9 @@ class Backend(Protocol):
     # --- Risks ---
     def list_risks(self, project_id: str) -> list[Risk]: ...
 
-    def risks_report(self, project_id: str, **filters) -> dict: ...
+    def risks_report(
+        self, project_id: str, **filters: Any
+    ) -> dict[str, Any]: ...
 
     def create_risk(
         self,
@@ -252,14 +254,16 @@ class Backend(Protocol):
         base_version: int | None = None,
     ) -> Risk:
         """Update risk."""
-        ...
+        raise NotImplementedError
 
     def delete_risk(self, project_id: str, risk_id: str) -> None: ...
 
     # --- Opportunities ---
     def list_opportunities(self, project_id: str) -> list[Opportunity]: ...
 
-    def opportunities_report(self, project_id: str, **filters) -> dict: ...
+    def opportunities_report(
+        self, project_id: str, **filters: Any
+    ) -> dict[str, Any]: ...
 
     def create_opportunity(
         self,
@@ -315,7 +319,7 @@ class Backend(Protocol):
         base_version: int | None = None,
     ) -> Opportunity:
         """Update opportunity."""
-        ...
+        raise NotImplementedError
 
     def delete_opportunity(self, project_id: str, opportunity_id: str) -> None: ...
 
@@ -357,7 +361,7 @@ class Backend(Protocol):
         base_version: int | None = None,
     ) -> Action:
         """Update action."""
-        ...
+        raise NotImplementedError
 
     # --- Assessments ---
     def list_assessments(

@@ -38,10 +38,26 @@ def test_create_and_update_assessment(tmp_path, isolated_app_factory):
     with TestClient(app) as c:
         h, pid, rid = _setup(c)
 
+        wrong_create_version = c.put(
+            f"/projects/{pid}/risks/{rid}/assessment",
+            json={"probability": 5, "impact": 4, "base_version": 1},
+            headers=h,
+        )
+        assert wrong_create_version.status_code == 409
+        assert wrong_create_version.json()["detail"] == {
+            "reason": "version_mismatch",
+            "server_version": None,
+        }
+
         # Create assessment
         r = c.put(
             f"/projects/{pid}/risks/{rid}/assessment",
-            json={"probability": 5, "impact": 4, "notes": "Very likely"},
+            json={
+                "probability": 5,
+                "impact": 4,
+                "notes": "Very likely",
+                "base_version": 0,
+            },
             headers=h,
         )
         assert r.status_code == 200
@@ -54,7 +70,12 @@ def test_create_and_update_assessment(tmp_path, isolated_app_factory):
         # Update assessment
         r = c.put(
             f"/projects/{pid}/risks/{rid}/assessment",
-            json={"probability": 2, "impact": 1, "notes": "Revised down"},
+            json={
+                "probability": 2,
+                "impact": 1,
+                "notes": "Revised down",
+                "base_version": a["version"],
+            },
             headers=h,
         )
         assert r.status_code == 200
@@ -71,7 +92,7 @@ def test_list_assessments(tmp_path, isolated_app_factory):
 
         c.put(
             f"/projects/{pid}/risks/{rid}/assessment",
-            json={"probability": 3, "impact": 3},
+            json={"probability": 3, "impact": 3, "base_version": 0},
             headers=h,
         )
 
@@ -84,11 +105,11 @@ def test_assessment_on_nonexistent_item_returns_404(tmp_path, isolated_app_facto
     """Assessing a non-existent risk returns HTTP 404"""
     app = isolated_app_factory(f"sqlite+pysqlite:///{tmp_path / 'assess3.db'}")
     with TestClient(app) as c:
-        h, pid, rid = _setup(c)
+        h, pid, _rid = _setup(c)
         fake_id = str(uuid.uuid4())
         r = c.put(
             f"/projects/{pid}/risks/{fake_id}/assessment",
-            json={"probability": 3, "impact": 3},
+            json={"probability": 3, "impact": 3, "base_version": 0},
             headers=h,
         )
         assert r.status_code == 404

@@ -6,6 +6,9 @@ import uuid
 
 from fastapi.testclient import TestClient
 
+# Database and router imports follow isolated_app_factory's module reloads.
+# pylint: disable=import-outside-toplevel
+
 
 def _register(client: TestClient, email: str, password: str = "Password123!"):
     response = client.post("/register", json={"email": email, "password": password})
@@ -84,7 +87,10 @@ def test_superuser_account_controls_and_reset_token_invalidation(
     with TestClient(app) as client:
         import riskapp_server.api.routers.users as users_router
 
+        # Configure the internal reset limiter for this boundary test.
+        # pylint: disable-next=protected-access
         users_router._reset_limiter.limit = 2
+        # pylint: disable-next=protected-access
         users_router._reset_limiter.reset()
         actor, actor_headers = _register(client, "actor@example.com")
         target, _ = _register(client, "target@example.com")

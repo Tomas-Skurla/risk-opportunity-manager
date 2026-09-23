@@ -1,0 +1,66 @@
+# Architecture
+
+RiskApp is an offline-first desktop application backed by a FastAPI service. The design keeps domain behavior independent from Qt and isolates persistence and HTTP details behind adapters.
+
+```mermaid
+flowchart TD
+    UI[PySide6 UI] --> Facade[Offline-first facade]
+    Facade --> Services[Domain services]
+    Services --> Store[(Local SQLite)]
+    Services --> Outbox[Persistent outbox]
+    Outbox --> API[FastAPI API]
+    API --> Auth[Auth and RBAC]
+    API --> Sync[Sync engine]
+    Auth --> DB[(Server database)]
+    Sync --> DB
+```
+
+## Boundaries
+
+| Area | Responsibility | Main location |
+| --- | --- | --- |
+| Desktop UI | Presentation and user interaction | `client/riskapp_client/ui_v2/` |
+| Application services | Use cases, filtering, and sync orchestration | `client/riskapp_client/services/` |
+| Client adapters | SQLite, outbox, mapping, and HTTP | `client/riskapp_client/adapters/` |
+| API routers | Transport validation and authorization boundary | `server/riskapp_server/api/routers/` |
+| Server core | Configuration, permissions, scoring, and queries | `server/riskapp_server/core/` |
+| Persistence | SQLAlchemy models and session lifecycle | `server/riskapp_server/db/` |
+| Synchronization | Pull cursors, version checks, receipt deduplication, audit | `server/riskapp_server/sync/` |
+
+The main window owns an explicit `MainWindowState` object for selection and access context shared across mixins. Compatibility properties preserve the existing mixin surface, while feature-specific caches remain owned by their corresponding mixins.
+
+## Offline synchronization invariants
+
+- Every local entity mutation and its outbox enqueue/replacement commit in one SQLite transaction. A failure in either write rolls back both.
+- At most one pending or blocked change exists per project/entity pair.
+- Every change has a stable `change_id`; retained server receipts deduplicate push retries for that identifier.
+- Version conflicts return the current server record and version. The client stores that complete outcome with the blocked outbox row so it survives restarts and can be resolved later.
+- The Conflict Center never resolves a conflict implicitly: **Keep mine** creates a new change ID against the newest known version, **Use server** atomically applies the saved server copy and removes the blocked write, and **Later** leaves it untouched. Applying a saved copy resets the pull watermark so a newer server change cannot be skipped.
+- Synchronization failures are classified: transient network/408/429/5xx failures remain queued with bounded backoff, while authentication, permission, validation, and conflict outcomes are blocked for the appropriate user action.
+- Automatic synchronization is a GUI-thread scheduler around the existing single-flight worker. It performs no I/O itself: each run constructs a worker-owned backend and SQLite connection, synchronizes visible projects serially, honors persisted retry timestamps plus bounded reconnect backoff, and stops its timer before application shutdown waits for the worker.
+- Existing-row sync updates/deletes and direct REST updates require `base_version` and claim it with a conditional version increment. SQLite begins each sync push with `BEGIN IMMEDIATE`; both REST and sync paths rely on the conditional update so a stale concurrent writer becomes an explicit conflict.
+- Parent items are applied before child actions and assessments during pull.
+- Every syncable write advances a per-project database counter in the same transaction and stamps the row with that sequence. The counter row serializes concurrent writers until commit; rollback also rolls back the reservation.
+- New clients pull the interval `(since_sequence, server_sequence]`, with one fixed `server_sequence` across pagination. This makes the feed independent of wall-clock ordering. Timestamp watermarks remain only as a compatibility path for older clients.
+- Project-id promotion updates the complete local graph in one deferred-FK transaction and leaves foreign-key enforcement enabled.
+
+## Security model
+
+- Access tokens are short-lived JWTs with issuer, audience, expiry, and unique id.
+- New passwords use Argon2id (`m=19456`, `t=2`, `p=1`). Legacy PBKDF2 hashes remain verifiable and are replaced only after a successful login.
+- Refresh and password-reset tokens are random and stored only as HMAC hashes keyed independently from JWT signing. Refresh rotation atomically forms a single replacement chain. A just-rotated token gets one short recovery opportunity while its replacement remains unused; older or already-advanced reuse revokes only that connected token family.
+- Project RBAC is enforced in both REST routers and  the sync engine.
+- Production startup rejects default secrets, wildcard hosts, returned reset tokens, and wildcard credentialed CORS.
+- Request bodies and response bodies are bounded; exported CSV neutralizes formula prefixes.
+- API responses and application logs share a validated correlation ID; structured JSON logging is configurable without logging request bodies, query strings, or tokens.
+- The local SQLite cache relies on operating-system user isolation and restrictive file permissions. It is not encrypted at rest.
+
+## Deliberate trade-offs
+
+The in-process rate limiter is appropriate for a single demo process and has bounded memory. A multi-instance deployment should replace it with a shared store. SQLite
+and automatic schema creation support local evaluation; production should use a managed database, explicit migrations, trusted-proxy configuration, centralized
+logs, and external secret management.
+
+`SECRET_KEY` signs access JWTs, while `TOKEN_HASH_KEY` protects stored refresh and password-reset token hashes. Production requires both. An existing deployment can preserve outstanding tokens by initially setting `TOKEN_HASH_KEY` to its current `SECRET_KEY` before rotating the JWT key; rotating `TOKEN_HASH_KEY` itself intentionally invalidates outstanding opaque tokens.
+
+Argon2id is intentionally configured at OWASP's minimum 19 MiB/two-iteration profile to keep interactive login practical on portfolio-scale deployments. Parameters are embedded in each hash, and successful login upgrades a hash when the configured profile changes. This avoids a forced password reset or a risky bulk migration of legacy PBKDF2 credentials.

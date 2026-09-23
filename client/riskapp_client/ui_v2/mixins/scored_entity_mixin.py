@@ -3,10 +3,18 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
+from typing import Any, cast
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QFileDialog, QMessageBox
-from riskapp_client.ui_v2.mixins.scored_entities_ui_helpers import (
+from PySide6.QtWidgets import (
+    QFileDialog,
+    QLabel,
+    QMessageBox,
+    QTableWidget,
+    QWidget,
+)
+from riskapp_client.ui_v2.helpers.scored_entities_ui_helpers import (
     date_bounds,
     form_values_for_entity,
     populate_scored_table,
@@ -18,11 +26,26 @@ from riskapp_client.utils.normalize import norm_optional_text_fields
 class ScoredEntityMixin:
     """A unified mixin for Risks and Opportunities"""
 
-    def _export_entity_csv(self, filename: str, cache: dict, export_fn) -> None:
+    current_project_id: str | None
+    _call_backend: Callable[..., Any]
+    _can_mark_deleted: Callable[[], bool]
+    _select_row_by_entity_id: Callable[..., None]
+    _update_scored_filter_report: Callable[..., None]
+    _update_sync_status: Callable[[], None]
+
+    def _export_entity_csv(
+        self,
+        filename: str,
+        cache: dict[str, Any],
+        export_fn: Callable[..., Any],
+    ) -> None:
         if not self.current_project_id:
             return
         path, _ = QFileDialog.getSaveFileName(
-            self, f"Export {filename}", filename, "CSV Files (*.csv)"
+            cast(QWidget, self),
+            f"Export {filename}",
+            filename,
+            "CSV Files (*.csv)",
         )
         if path:
             rows = list(cache.values())
@@ -32,16 +55,16 @@ class ScoredEntityMixin:
     def _refresh_entity(
         self,
         pid: str,
-        list_backend_fn,
-        filter_fn,
-        criteria_cls,
-        report_widget,
-        table_widget,
-        filters_dict,
-        mk_item_fn,
-        report_backend_fn=None,
+        list_backend_fn: Callable[..., Any],
+        filter_fn: Callable[..., Any],
+        criteria_cls: Callable[..., Any],
+        report_widget: Any,
+        table_widget: QTableWidget,
+        filters_dict: dict[str, Any],
+        mk_item_fn: Callable[..., Any],
+        report_backend_fn: Callable[..., Any] | None = None,
         select_id: str | None = None,
-    ) -> dict | None:
+    ) -> dict[str, Any] | None:
         full = self._call_backend("Backend error", list_backend_fn, pid)
         if full is None:
             return None
@@ -89,7 +112,7 @@ class ScoredEntityMixin:
         return cache
 
     @staticmethod
-    def _owner_filter_value(owner_widget):
+    def _owner_filter_value(owner_widget: Any) -> tuple[str | None, bool]:
         """Return (owner_user_id, owner_unassigned) from the owner filter widget."""
         try:
             data = owner_widget.currentData()  # QComboBox
@@ -111,19 +134,19 @@ class ScoredEntityMixin:
         self,
         row: int,
         col: int,
-        table,
-        cache,
-        current_id,
-        editor_dirty,
-        commit_fn,
-        form,
-        label_widget,
-        label_prefix,
+        table: QTableWidget,
+        cache: dict[str, Any],
+        current_id: str | None,
+        editor_dirty: bool,
+        commit_fn: Callable[..., Any],
+        form: Any,
+        label_widget: QLabel,
+        label_prefix: str,
     ) -> str | None:
         t_it = table.item(row, 1)
         if not t_it:
             return None
-        clicked_id = str(t_it.data(Qt.UserRole))
+        clicked_id = str(t_it.data(Qt.ItemDataRole.UserRole))
         if not clicked_id:
             return None
         if editor_dirty and current_id and current_id != clicked_id:
@@ -141,7 +164,15 @@ class ScoredEntityMixin:
         return ent.id
 
     def _commit_entity_editor_changes(
-        self, current_id, editor_dirty, form, update_backend_fn, refresh_fn, select_id
+        self,
+        current_id: str | None,
+        editor_dirty: bool,
+        form: Any,
+        update_backend_fn: Callable[..., Any],
+        refresh_fn: Callable[..., Any] | None,
+        select_id: str | None,
+        *,
+        base_version: int | None = None,
     ) -> bool:
         if not editor_dirty or not current_id:
             return False
@@ -154,9 +185,9 @@ class ScoredEntityMixin:
         st = str(payload.get("status") or "").strip().lower()
         if st == "deleted" and hasattr(self, "_can_mark_deleted"):
             try:
-                if not self._can_mark_deleted():  # type: ignore[attr-defined]
+                if not self._can_mark_deleted():
                     QMessageBox.warning(
-                        self,
+                        cast(QWidget, self),
                         "Not allowed",
                         "Only managers (or admins) can mark an item as deleted.",
                     )
@@ -166,17 +197,27 @@ class ScoredEntityMixin:
                 return False
         if (
             self._call_backend(
-                "Backend error", update_backend_fn, pid, current_id, **payload
+                "Backend error",
+                update_backend_fn,
+                pid,
+                current_id,
+                base_version=base_version,
+                **payload,
             )
             is None
         ):
             return False
         if refresh_fn:
             refresh_fn(select_id=select_id or current_id)
+        self._update_sync_status()
         return True
 
     def _delete_entity(
-        self, current_id: str | None, delete_backend_fn, refresh_fn, start_new_fn
+        self,
+        current_id: str | None,
+        delete_backend_fn: Callable[..., Any],
+        refresh_fn: Callable[[], None],
+        start_new_fn: Callable[[], None],
     ) -> None:
         """Safely prompt the user and delete the entity."""
         if not current_id:
@@ -184,33 +225,42 @@ class ScoredEntityMixin:
         pid = self.current_project_id
         if not pid:
             return
+        yes = QMessageBox.StandardButton.Yes
+        no = QMessageBox.StandardButton.No
         reply = QMessageBox.question(
-            self,
+            cast(QWidget, self),
             "Confirm Deletion",
             "Are you sure you want to completely delete this item? This cannot be undone.",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
+            yes | no,
+            no,
         )
-        if reply == QMessageBox.Yes:
+        if reply == yes:
             self._call_backend("Backend error", delete_backend_fn, pid, current_id)
             start_new_fn()
             refresh_fn()
+            self._update_sync_status()
 
     def _save_entity(
         self,
-        payload,
-        current_id,
-        update_backend_fn,
-        create_backend_fn,
-        refresh_fn,
-        form,
-        label_widget,
-        label_prefix,
-        extra_refreshes,
+        payload: dict[str, Any],
+        current_id: str | None,
+        update_backend_fn: Callable[..., Any],
+        create_backend_fn: Callable[..., Any],
+        refresh_fn: Callable[..., Any] | None,
+        form: Any,
+        label_widget: QLabel,
+        label_prefix: str,
+        extra_refreshes: list[Callable[[], None]],
+        *,
+        base_version: int | None = None,
     ) -> str | None:
         pid = self.current_project_id
         if not pid:
-            QMessageBox.warning(self, "No project", "Select a project first.")
+            QMessageBox.warning(
+                cast(QWidget, self),
+                "No project",
+                "Select a project first.",
+            )
             return None
         data = dict(payload or {})
         title = (data.pop("title", "") or "").strip()
@@ -237,9 +287,9 @@ class ScoredEntityMixin:
         st = str(data.get("status") or "").strip().lower()
         if st == "deleted" and hasattr(self, "_can_mark_deleted"):
             try:
-                if not self._can_mark_deleted():  # type: ignore[attr-defined]
+                if not self._can_mark_deleted():
                     QMessageBox.warning(
-                        self,
+                        cast(QWidget, self),
                         "Not allowed",
                         "Only managers (or admins) can mark an item as deleted.",
                     )
@@ -257,6 +307,7 @@ class ScoredEntityMixin:
                     title=title,
                     probability=p,
                     impact=i,
+                    base_version=base_version,
                     **data,
                 )
                 is None
@@ -304,4 +355,5 @@ class ScoredEntityMixin:
             refresh_fn(select_id=current_id)
         for ref in extra_refreshes:
             ref()
+        self._update_sync_status()
         return current_id

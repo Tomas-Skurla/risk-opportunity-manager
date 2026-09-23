@@ -19,9 +19,75 @@ def _env(name: str) -> str:
     return v
 
 
+def _validated_http_url(url: str) -> str:
+    """Return an operational URL after rejecting unsafe urllib schemes."""
+    value = str(url or "").strip()
+    if not value or any(ch.isspace() for ch in value):
+        raise SystemExit("RISKAPP_BASE_URL must be a non-empty URL without whitespace")
+    parsed = urllib.parse.urlparse(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise SystemExit("RISKAPP_BASE_URL must use HTTP or HTTPS and include a host")
+    if parsed.username or parsed.password or parsed.fragment:
+        raise SystemExit(
+            "RISKAPP_BASE_URL must not include credentials or a URL fragment"
+        )
+    return value
+
+
+class _SameOriginRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Allow redirects only when scheme and authority remain unchanged."""
+
+    def __init__(self, *, allowed_scheme: str, allowed_netloc: str) -> None:
+        super().__init__()
+        self._allowed_scheme = allowed_scheme.lower()
+        self._allowed_netloc = allowed_netloc.lower()
+
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: Any,
+        code: int,
+        msg: str,
+        headers: Any,
+        newurl: str,
+    ) -> urllib.request.Request | None:  # noqa: D401
+        parsed = urllib.parse.urlparse(newurl)
+        if parsed.scheme.lower() != self._allowed_scheme:
+            raise urllib.error.HTTPError(
+                newurl, code, "Cross-scheme redirect not allowed", headers, fp
+            )
+        if parsed.netloc.lower() != self._allowed_netloc:
+            raise urllib.error.HTTPError(
+                newurl, code, "Cross-origin redirect not allowed", headers, fp
+            )
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _http_request(
+    url: str, *, data: bytes, method: str, headers: dict[str, str]
+) -> urllib.request.Request:
+    safe_url = _validated_http_url(url)
+    return urllib.request.Request(  # noqa: S310 -- scheme checked above
+        safe_url, data=data, method=method, headers=headers
+    )
+
+
+def _open_http_request(req: urllib.request.Request, timeout: int) -> Any:
+    """Open an HTTP request without forwarding credentials across origins."""
+    safe_url = _validated_http_url(req.full_url)
+    parsed = urllib.parse.urlparse(safe_url)
+    opener = urllib.request.build_opener(
+        _SameOriginRedirectHandler(
+            allowed_scheme=parsed.scheme,
+            allowed_netloc=parsed.netloc,
+        )
+    )
+    return opener.open(req, timeout=timeout)  # noqa: S310 -- safe redirect handler
+
+
 def _request_json(req: urllib.request.Request, timeout: int) -> dict[str, Any]:
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with _open_http_request(req, timeout) as r:
             raw = r.read().decode("utf-8", errors="replace")
     except urllib.error.HTTPError as e:
         raw = e.read().decode("utf-8", errors="replace")
@@ -53,7 +119,7 @@ def login(base_url: str, email: str, password: str) -> str:
         )
         headers = {"Content-Type": "application/x-www-form-urlencoded"}
 
-    req = urllib.request.Request(url, data=body, method="POST", headers=headers)
+    req = _http_request(url, data=body, method="POST", headers=headers)
     payload = _request_json(req, timeout=20)
 
     token = payload.get("access_token") or payload.get("token")
@@ -70,12 +136,12 @@ def prune(base_url: str, token: str, project_id: str, days: int) -> dict[str, An
     ).strip()
     if not tpl:
         tpl = "/projects/{project_id}/maintenance/prune"
-    path = tpl.format(project_id=project_id)
+    path = tpl.format(project_id=urllib.parse.quote(project_id, safe=""))
     if not path.startswith("/"):
         path = "/" + path
 
     url = base_url.rstrip("/") + f"{path}?days={int(days)}"
-    req = urllib.request.Request(
+    req = _http_request(
         url,
         data=b"{}",
         method="POST",
@@ -90,7 +156,7 @@ def prune(base_url: str, token: str, project_id: str, days: int) -> dict[str, An
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m riskapp_server.ops.prune_job",
-        description="Call the admin-only retention prune endpoint.",
+        description="Call the superuser-only retention prune endpoint.",
     )
     parser.add_argument("project_id")
     parser.add_argument(

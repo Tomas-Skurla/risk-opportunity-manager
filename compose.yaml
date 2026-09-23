@@ -16,6 +16,7 @@ services:
     environment:
       ENV: development
       ALLOW_INSECURE_DEFAULT_SECRET: "1"
+      TOKEN_HASH_KEY: change-me-token-hash-key
       INITIAL_SUPERUSER_EMAIL: admin@example.com
       INITIAL_SUPERUSER_PASSWORD: SuperHeslo123!
       DATABASE_URL: sqlite+pysqlite:////data/riskapp.db

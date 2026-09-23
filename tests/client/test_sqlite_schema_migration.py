@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 
 import pytest
+from riskapp_client.adapters.local_storage.sqlite_data_store import LocalStore
 
 
 def _create_legacy_db(path: str) -> None:
@@ -64,11 +66,10 @@ def _create_legacy_db(path: str) -> None:
 def test_assessment_fk_migration_removes_risks_fk_and_adds_opportunity_id(
     tmp_path,
 ) -> None:
-    """SQLite migration drops legacy risks-FK on assessments and adds opportunity_id/item_* columns"""
+    """Migrating legacy assessments drops the risk FK and adds item columns."""
     db_file = tmp_path / "legacy.db"
     _create_legacy_db(str(db_file))
     # Opening LocalStore triggers ensure_schema() and runs the migration.
-    from riskapp_client.adapters.local_storage.sqlite_data_store import LocalStore
 
     store = LocalStore(str(db_file))
     try:
@@ -95,7 +96,6 @@ def test_assessment_fk_migration_removes_risks_fk_and_adds_opportunity_id(
 
 def test_project_id_migration_is_atomic_and_keeps_foreign_keys_enabled(tmp_path):
     """Promoting a local project migrates children without disabling FK checks."""
-    from riskapp_client.adapters.local_storage.sqlite_data_store import LocalStore
 
     store = LocalStore(str(tmp_path / "promotion.db"))
     try:
@@ -124,3 +124,60 @@ def test_project_id_migration_is_atomic_and_keeps_foreign_keys_enabled(tmp_path)
     finally:
         store.conn.rollback()
         store.close()
+
+
+def test_existing_outbox_gains_failure_and_result_columns(tmp_path) -> None:
+    db_file = tmp_path / "legacy-outbox.db"
+    conn = sqlite3.connect(db_file)
+    conn.execute("""
+        CREATE TABLE outbox (
+            change_id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            entity TEXT NOT NULL,
+            op TEXT NOT NULL,
+            entity_id TEXT NOT NULL,
+            base_version INTEGER,
+            record_json TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            last_error TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
+        );
+    """)
+    conn.commit()
+    conn.close()
+
+
+    with LocalStore(str(db_file)) as store:
+        columns = {
+            str(row[1])
+            for row in store.conn.execute("PRAGMA table_info(outbox);").fetchall()
+        }
+        assert "failure_kind" in columns
+        assert "result_json" in columns
+        assert "retry_count" in columns
+        assert "next_retry_at" in columns
+        assert "last_attempt_at" in columns
+
+
+def test_existing_sync_state_gains_a_zero_sequence_watermark(tmp_path) -> None:
+    db_file = tmp_path / "legacy-sync-state.db"
+    with (
+        closing(sqlite3.connect(db_file)) as connection,
+        connection,
+    ):
+        connection.execute(
+            """
+            CREATE TABLE sync_state (
+                project_id TEXT PRIMARY KEY,
+                last_server_time TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "INSERT INTO sync_state VALUES (?, ?)",
+            ("project-1", "2026-01-01T00:00:00"),
+        )
+
+    with LocalStore(str(db_file)) as store:
+        assert store.get_last_server_time("project-1") == "2026-01-01T00:00:00"
+        assert store.get_last_server_sequence("project-1") == 0

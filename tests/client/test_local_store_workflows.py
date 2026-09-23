@@ -9,6 +9,9 @@ from riskapp_client.adapters.local_storage.sqlite_data_store import LocalStore
 from riskapp_client.adapters.local_storage.sync_outbox_queue import OutboxStore
 from riskapp_client.domain.domain_models import Project
 
+# Pytest injects the store fixture into tests using the same parameter name.
+# pylint: disable=redefined-outer-name
+
 
 @pytest.fixture
 def store(tmp_path) -> Iterator[LocalStore]:
@@ -60,7 +63,7 @@ def test_project_id_migration_is_atomic_and_idempotent(store: LocalStore) -> Non
         impact=4,
         version=2,
     )
-    store.set_last_server_time(old_id, "2025-02-01T00:00:00")
+    store.set_sync_watermark(old_id, "2025-02-01T00:00:00", 17)
     ticket = store.create_helpdesk_ticket(old_id, title="Move ticket")
     OutboxStore(store).queue_risk_upsert(
         old_id,
@@ -81,6 +84,7 @@ def test_project_id_migration_is_atomic_and_idempotent(store: LocalStore) -> Non
     assert store.get_risk_project_and_version("risk-1") == (new_id, 2)
     assert store.get_helpdesk_ticket_project_id(ticket.id) == new_id
     assert store.get_last_server_time(new_id) == "2025-02-01T00:00:00"
+    assert store.get_last_server_sequence(new_id) == 17
     assert OutboxStore(store).pending_count(new_id) == 1
     assert store.get_meta("bootstrap_project_id") == new_id
     assert store.get_meta("bootstrap_user_project_id") == "another-project"
@@ -191,7 +195,8 @@ def test_scored_entity_lifecycle_and_pull_conflict_preservation(
 
     pulled = {item.id: item for item in store.list_risks(project.id)}
     assert pulled["risk-1"].title == "Local edit"
-    assert store.get_risk_project_and_version("risk-1") == (project.id, 7)
+    assert store.get_risk_project_and_version("risk-1") == (project.id, 2)
+    assert outbox.get_pending_changes(project.id)[0]["base_version"] == 2
     assert pulled["risk-server"].category == "Operations"
     assert "risk-deleted" not in pulled
     assert store.list_opportunities(project.id)[0].id == "opportunity-server"
@@ -280,7 +285,8 @@ def test_action_and_assessment_pulls_cover_both_parent_types(store: LocalStore) 
     )
     actions = {action.id: action for action in store.list_actions(project.id)}
     assert actions["action-local"].title == "Local action edited"
-    assert actions["action-local"].version == 8
+    assert actions["action-local"].version == 2
+    assert outbox.get_pending_changes(project.id)[0]["base_version"] == 2
     assert actions["action-server"].opportunity_id == "opportunity-1"
 
     with pytest.raises(KeyError, match="assessment not found"):
@@ -352,8 +358,14 @@ def test_action_and_assessment_pulls_cover_both_parent_types(store: LocalStore) 
     )
     assert store.get_assessment_project_and_version("assessment-pending") == (
         project.id,
-        9,
+        2,
     )
+    assessment_change = next(
+        change
+        for change in outbox.get_pending_changes(project.id)
+        if change["entity"] == "assessment"
+    )
+    assert assessment_change["base_version"] == 2
     opportunity_ids = {
         assessment.id
         for assessment in store.list_assessments(
@@ -417,7 +429,8 @@ def test_helpdesk_update_delete_and_pull_conflict_paths(store: LocalStore) -> No
 
     tickets = {item.id: item for item in store.list_helpdesk_tickets(project.id)}
     assert tickets[ticket.id].title == "Edited ticket"
-    assert tickets[ticket.id].version == 6
+    assert tickets[ticket.id].version == 0
+    assert outbox.get_pending_changes(project.id)[0]["base_version"] is None
     assert tickets["ticket-server"].category == "other"
     assert "ticket-deleted" not in tickets
 

@@ -58,6 +58,10 @@ RUN bash scripts/check_project.sh
 
 FROM base AS server
 
+RUN apt-get update \
+    && apt-get install --no-install-recommends --only-upgrade -y libpcre2-8-0 \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 COPY server/requirements.lock /tmp/server-requirements.lock
@@ -73,7 +77,7 @@ RUN groupadd --gid 1000 riskapp \
 # Only non-sensitive operational defaults are baked into the image.
 #
 # ENV, ALLOW_INSECURE_DEFAULT_SECRET, INITIAL_SUPERUSER_* and AUTO_CREATE_SCHEMA
-# are deliberately NOT set here. ARCHITECTURE.md states that production startup
+# are deliberately NOT set here. docs/ARCHITECTURE.md states that production startup
 # rejects default secrets; baking ALLOW_INSECURE_DEFAULT_SECRET=1 into the
 # runtime image would disable exactly that check for every consumer of the
 # image. The image now fails closed: it will not start without real config.

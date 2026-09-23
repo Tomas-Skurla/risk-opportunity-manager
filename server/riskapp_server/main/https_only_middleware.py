@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
+from starlette.requests import Request
+from starlette.responses import JSONResponse, Response
 
 from riskapp_server.core.config import ENFORCE_HTTPS, TRUST_X_FORWARDED_PROTO
 
@@ -9,7 +10,9 @@ from riskapp_server.core.config import ENFORCE_HTTPS, TRUST_X_FORWARDED_PROTO
 class HttpsOnlyMiddleware(BaseHTTPMiddleware):
     """Reject plain HTTP when HTTPS is required."""
 
-    async def dispatch(self, request, call_next):
+    async def dispatch(
+        self, request: Request, call_next: RequestResponseEndpoint
+    ) -> Response:
         if not ENFORCE_HTTPS:
             return await call_next(request)
 

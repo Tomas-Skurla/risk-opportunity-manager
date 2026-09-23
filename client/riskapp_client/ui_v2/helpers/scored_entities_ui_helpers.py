@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
 )  # pylint: disable=no-name-in-module
+
 from riskapp_client.services import entity_filters as filters
 
 
@@ -98,9 +99,11 @@ def populate_scored_table(
             )
             # Strictly force alignment on the Qt item itself
             if center:
-                item.setTextAlignment(Qt.AlignCenter)
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             else:
-                item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+                item.setTextAlignment(
+                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+                )
             table.setItem(row, col, item)
     return {x.id: x for x in items}
 

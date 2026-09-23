@@ -7,20 +7,82 @@ from __future__ import annotations
 
 import contextlib
 import logging
+from collections.abc import Callable, Iterable
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any, cast
 
 from PySide6.QtCore import Qt  # pylint: disable=no-name-in-module
 from PySide6.QtWidgets import (  # pylint: disable=no-name-in-module
     QDialog,
+    QLabel,
+    QListWidget,
     QListWidgetItem,
     QMessageBox,
+    QPushButton,
+    QTableWidget,
+    QWidget,
+)
+from riskapp_client.domain.domain_models import Project
+from riskapp_client.ui_v2.components.conflict_center_dialog import (
+    ConflictCenterDialog,
 )
 from riskapp_client.ui_v2.components.custom_gui_widgets import NewProjectDialog
 
-_PROJECT_NAME_ROLE = int(Qt.UserRole) + 1
+if TYPE_CHECKING:
+    from riskapp_client.ui_v2.components.custom_gui_widgets import RiskForm
+
+_PROJECT_NAME_ROLE = int(Qt.ItemDataRole.UserRole) + 1
 
 
 class ProjectsSyncMixin:
     """MainWindow mixin: ProjectsSyncMixin"""
+
+    backend: Any
+    conflicts_btn: QPushButton
+    current_assessment_item_id: str | None
+    current_assessment_item_type: str
+    current_opportunity_id: str | None
+    current_project_id: str | None
+    current_risk_id: str | None
+    editor_label: QLabel
+    project_list: QListWidget
+    risk_form: RiskForm
+    risks_table: QTableWidget
+    sync_btn: QPushButton
+    sync_status: QLabel
+    _editor_dirty: bool
+    _offline_mode: bool
+    _opp_editor_dirty: bool
+    _role_assumed: bool
+    _risks_col_widths: dict[str, list[int]]
+    _call_backend: Callable[..., Any]
+    _commit_editor_changes: Callable[..., Any]
+    _commit_opp_editor_changes: Callable[..., Any]
+    _detect_offline_mode: Callable[[], bool]
+    _refresh_action_opp_combo: Callable[..., Any]
+    _refresh_action_risk_combo: Callable[..., Any]
+    _refresh_actions: Callable[..., Any]
+    _refresh_assessments: Callable[..., Any]
+    _refresh_helpdesk: Callable[..., Any]
+    _refresh_matrix: Callable[..., Any]
+    _refresh_members: Callable[..., Any]
+    _refresh_opportunities: Callable[..., Any]
+    _refresh_risks: Callable[..., Any]
+    _refresh_top_history: Callable[..., Any]
+    _record_automatic_sync_failure: Callable[[], None]
+    #_record_automatic_sync_success: Callable[[object], None]
+    _schedule_automatic_sync: Callable[[], None]
+    _start_background_job: Callable[..., bool]
+    _start_new_action: Callable[..., Any]
+    #_observe_manual_sync_result: Callable[[object], None]
+
+    # BackgroundJobsMixin supplies these hooks in MainWindow. Declaring them as
+    # methods keeps sibling mixin signatures compatible for static analyzers.
+    def _record_automatic_sync_success(self, _result: object) -> None:
+        raise NotImplementedError  # pragma: no cover - mixin contract
+
+    def _observe_manual_sync_result(self, _result: object) -> None:
+        raise NotImplementedError  # pragma: no cover - mixin contract
 
     def _format_blocked_sync_details(self, summary: dict[str, object]) -> str:
         """Format unresolved blocked sync items for display in the popup."""
@@ -42,26 +104,42 @@ class ProjectsSyncMixin:
             lines.append(line)
         return "\n".join(lines)
 
-    def _refresh_all_views(self, *, select_id: str | None = None) -> None:
+    def _refresh_all_views(
+        self,
+        *,
+        select_id: str | None = None,
+        include_remote: bool = True,
+    ) -> None:
         """Refresh all project-scoped tabs from the backend/local store."""
-        self._refresh_risks(select_id=select_id)
+        self._refresh_risks(
+            select_id=select_id,
+            use_remote_report=include_remote,
+        )
         for fn in (
             self._refresh_action_risk_combo,
             self._refresh_actions,
             self._refresh_matrix,
-            self._refresh_top_history,
             self._refresh_assessments,
-            self._refresh_opportunities,
-            self._refresh_action_opp_combo,
-            self._refresh_members,
-            self._update_sync_status,
-            self._refresh_helpdesk,
         ):
             fn()
+        self._refresh_opportunities(use_remote_report=include_remote)
+        self._refresh_action_opp_combo()
+        if include_remote:
+            self._refresh_top_history()
+            self._refresh_members()
+        self._update_sync_status()
+        self._refresh_helpdesk()
 
-    def _load_projects(self, *, select_project_id: str | None = None) -> None:
+    def _load_projects(
+        self,
+        *,
+        select_project_id: str | None = None,
+        projects: Iterable[Project] | None = None,
+        notify_selection: bool = True,
+    ) -> None:
         self.project_list.clear()
-        projects = self._call_backend("Backend error", self.backend.list_projects)
+        if projects is None:
+            projects = self._call_backend("Backend error", self.backend.list_projects)
         if projects is None:
             return
         # Build a uid→email map for resolving project owners.
@@ -93,18 +171,29 @@ class ProjectsSyncMixin:
                 if owner_email:
                     display_name = f"{p.name}  ({owner_email})"
             item = QListWidgetItem(display_name)
-            item.setData(Qt.UserRole, p.id)
+            item.setData(Qt.ItemDataRole.UserRole, p.id)
             item.setData(_PROJECT_NAME_ROLE, p.name)
             self.project_list.addItem(item)
         if self.project_list.count() <= 0:
             return
+
+        def select_row(row: int) -> None:
+            if notify_selection:
+                self.project_list.setCurrentRow(row)
+                return
+            previously_blocked = self.project_list.blockSignals(True)
+            try:
+                self.project_list.setCurrentRow(row)
+            finally:
+                self.project_list.blockSignals(previously_blocked)
+
         if select_project_id:
             for i in range(self.project_list.count()):
                 it = self.project_list.item(i)
-                if str(it.data(Qt.UserRole)) == str(select_project_id):
-                    self.project_list.setCurrentRow(i)
+                if str(it.data(Qt.ItemDataRole.UserRole)) == str(select_project_id):
+                    select_row(i)
                     return
-        self.project_list.setCurrentRow(0)
+        select_row(0)
 
     def _on_project_selected(self) -> None:
         with contextlib.suppress(AttributeError, RuntimeError):
@@ -119,7 +208,7 @@ class ProjectsSyncMixin:
                 self.risks_table.columnWidth(c)
                 for c in range(self.risks_table.columnCount())
             ]
-        self.current_project_id = items[0].data(Qt.UserRole)
+        self.current_project_id = items[0].data(Qt.ItemDataRole.UserRole)
         self.current_risk_id = None
         self.current_opportunity_id = None
         self.current_assessment_item_id = None
@@ -138,8 +227,9 @@ class ProjectsSyncMixin:
         self._start_new_action()
 
     def _create_new_project(self) -> None:
-        dlg = NewProjectDialog(parent=self)
-        if dlg.exec() != QDialog.Accepted:
+        parent = cast(QWidget, self)
+        dlg = NewProjectDialog(parent=parent)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         name, description = dlg.values()
         # Avoid duplicate names in the sidebar.
@@ -154,7 +244,8 @@ class ProjectsSyncMixin:
             )
         if name.strip().lower() in existing_names:
             QMessageBox.warning(
-                self, "Duplicate name",
+                parent,
+                "Duplicate name",
                 f"A project named \"{name}\" already exists.\n"
                 "Please choose a different name.",
             )
@@ -162,31 +253,38 @@ class ProjectsSyncMixin:
         try:
             project = self.backend.create_project(name=name, description=description)
         except (RuntimeError, OSError, ValueError) as exc:
-            QMessageBox.critical(self, "Create project", str(exc))
+            QMessageBox.critical(parent, "Create project", str(exc))
             return
         self._load_projects(select_project_id=project.id)
 
     def _delete_current_project(self) -> None:
+        parent = cast(QWidget, self)
         pid = self.current_project_id
         if not pid:
-            QMessageBox.information(self, "Delete project", "No project selected.")
+            QMessageBox.information(
+                parent,
+                "Delete project",
+                "No project selected.",
+            )
             return
         items = self.project_list.selectedItems()
         name = items[0].text() if items else pid
+        yes = QMessageBox.StandardButton.Yes
+        no = QMessageBox.StandardButton.No
         reply = QMessageBox.warning(
-            self,
+            parent,
             "Delete project",
             f"Permanently delete project \"{name}\" and ALL its data?\n\n"
             "This cannot be undone. Only superadmins can do this.",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
+            yes | no,
+            no,
         )
-        if reply != QMessageBox.Yes:
+        if reply != yes:
             return
         try:
             self.backend.delete_project(pid)
         except (RuntimeError, OSError) as exc:
-            QMessageBox.critical(self, "Delete project", str(exc))
+            QMessageBox.critical(parent, "Delete project", str(exc))
             return
         self.current_project_id = None
         self._load_projects()
@@ -203,62 +301,307 @@ class ProjectsSyncMixin:
             return False
         return bool(project is not None and not project.created_by)
 
+    @staticmethod
+    def _format_last_sync_time(value: object) -> str:
+        raw = str(value or "").strip()
+        if not raw or raw.startswith("1970-01-01"):
+            return "never"
+        try:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return "unknown"
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        else:
+            parsed = parsed.astimezone(UTC)
+        return parsed.strftime("%Y-%m-%d %H:%M UTC")
+
     def _update_sync_status(self) -> None:
         pid = self.current_project_id
         if self._is_unsyncable_local_project(pid):
             self.sync_btn.setEnabled(False)
             self.sync_status.setText("Sync: local-only project, cannot be synced")
+            if hasattr(self, "conflicts_btn"):
+                self.conflicts_btn.setText("Conflicts (0)")
+                self.conflicts_btn.setEnabled(False)
             return
         pending = 0
-        blocked = 0
+        deferred = 0
+        conflicts = 0
+        errors = 0
+        last_sync: object = None
         can_sync = False
         if hasattr(self.backend, "pending_count"):
             try:
-                pending = self.backend.pending_count(pid)  # type: ignore[attr-defined]
+                pending = self.backend.pending_count(pid)
             except (AttributeError, RuntimeError):
                 pending = 0
-        if hasattr(self.backend, "blocked_count"):
+        if hasattr(self.backend, "conflict_count"):
             try:
-                blocked = self.backend.blocked_count(pid)  # type: ignore[attr-defined]
+                conflicts = self.backend.conflict_count(pid)
             except (AttributeError, RuntimeError):
-                blocked = 0
+                conflicts = 0
+        if hasattr(self.backend, "deferred_count"):
+            try:
+                deferred = self.backend.deferred_count(pid)
+            except (AttributeError, RuntimeError):
+                deferred = 0
+        if hasattr(self.backend, "error_count"):
+            try:
+                errors = self.backend.error_count(pid)
+            except (AttributeError, RuntimeError):
+                errors = 0
+        if hasattr(self.backend, "last_sync_time"):
+            try:
+                last_sync = self.backend.last_sync_time(pid)
+            except (AttributeError, RuntimeError):
+                last_sync = None
         if hasattr(self.backend, "can_sync"):
             try:
-                can_sync = bool(self.backend.can_sync())  # type: ignore[attr-defined]
+                can_sync = bool(self.backend.can_sync())
             except (AttributeError, RuntimeError):
                 can_sync = False
         self.sync_btn.setEnabled(bool(pid) and can_sync)
         mode = "ONLINE" if can_sync else "OFFLINE"
-        extra = f" · blocked: {blocked}" if blocked else ""
-        self.sync_status.setText(f"{mode} · pending changes: {pending}{extra}")
+        formatted_last_sync = self._format_last_sync_time(last_sync)
+        self.sync_status.setText(
+            f"{mode} · queued: {pending} · retrying: {deferred} "
+            f"· conflicts: {conflicts} "
+            f"· errors: {errors} · last sync: {formatted_last_sync}"
+        )
+        if hasattr(self, "conflicts_btn"):
+            self.conflicts_btn.setText(f"Conflicts ({conflicts})")
+            self.conflicts_btn.setEnabled(bool(pid) and conflicts > 0)
+        can_auto_sync = getattr(self.backend, "can_auto_sync", None)
+        if pending > 0 and callable(can_auto_sync) and bool(can_auto_sync()):
+            self._schedule_automatic_sync()
+
+    def _open_conflict_center(self) -> None:
+        parent = cast(QWidget, self)
+        pid = self.current_project_id
+        if not pid:
+            QMessageBox.information(
+                parent,
+                "Synchronization conflicts",
+                "No project selected.",
+            )
+            return
+        if not hasattr(self.backend, "conflict_details") or not hasattr(
+            self.backend, "resolve_conflict"
+        ):
+            QMessageBox.information(
+                parent,
+                "Synchronization conflicts",
+                "This backend does not support interactive conflict resolution.",
+            )
+            return
+        conflicts = self._call_backend(
+            "Could not load conflicts",
+            self.backend.conflict_details,
+            pid,
+        )
+        if conflicts is None:
+            self._update_sync_status()
+            return
+        if not isinstance(conflicts, list) or not conflicts:
+            QMessageBox.information(
+                parent,
+                "Synchronization conflicts",
+                "There are no unresolved conflicts for this project.",
+            )
+            self._update_sync_status()
+            return
+
+        dialog = ConflictCenterDialog(
+            conflicts,
+            self.backend.resolve_conflict,
+            parent=parent,
+        )
+        dialog.conflict_resolved.connect(
+            lambda _change_id, _resolution: self._update_sync_status()
+        )
+        dialog.exec()
+        self._refresh_all_views(select_id=self.current_risk_id)
 
     def _sync_now(self) -> None:
+        parent = cast(QWidget, self)
         pid = self.current_project_id
         if not pid:
             return
         if not hasattr(self.backend, "sync_project"):
-            QMessageBox.information(self, "Sync", "This backend does not support sync.")
+            QMessageBox.information(
+                parent,
+                "Sync",
+                "This backend does not support sync.",
+            )
             return
-        summary = self._call_backend("Sync failed", self.backend.sync_project, pid)  # type: ignore[attr-defined]
-        if summary is None:
-            self._update_sync_status()
+        if not self._start_background_job(
+            "sync",
+            {"project_id": str(pid)},
+            on_success=self._sync_succeeded,
+            on_failure=self._sync_failed,
+            on_cancelled=self._sync_cancelled,
+        ):
+            QMessageBox.information(
+                parent,
+                "Synchronization",
+                "Another background operation is already running.",
+            )
+
+    def _sync_succeeded(self, result: object) -> None:
+        if not isinstance(result, dict):
+            self._sync_failed("Synchronization returned an invalid result")
             return
+        summary = dict(result)
+        self._observe_manual_sync_result(summary)
         # If the sync promoted a local-only project to a server project,
         # reload project list and keep the user on the migrated project.
         migrated_to = summary.get("project_id_migrated_to")
         if migrated_to:
-            self._load_projects(select_project_id=str(migrated_to))
+            visible_projects = summary.pop("_visible_projects", None)
+            if isinstance(visible_projects, list):
+                self._load_projects(
+                    select_project_id=str(migrated_to),
+                    projects=visible_projects,
+                    notify_selection=False,
+                )
+            else:
+                selected = self.project_list.selectedItems()
+                if selected:
+                    selected[0].setData(
+                        Qt.ItemDataRole.UserRole,
+                        str(migrated_to),
+                    )
+                    raw_name = selected[0].data(_PROJECT_NAME_ROLE)
+                    if raw_name:
+                        selected[0].setText(str(raw_name))
             self.current_project_id = str(migrated_to)
-        # refresh UI from local store after sync
-        self._refresh_all_views(select_id=self.current_risk_id)
+        # Refresh from the local SQLite connection only. Pull already populated
+        # it; issuing reports/history/member requests here would put blocking
+        # network calls straight back onto the GUI thread.
+        self._refresh_all_views(
+            select_id=self.current_risk_id,
+            include_remote=False,
+        )
         blocked_details = self._format_blocked_sync_details(summary)
-        QMessageBox.information(
-            self,
-            "Sync complete",
+        state = str(summary.get("state") or "complete")
+        sync_error = summary.get("sync_error")
+        error_detail = ""
+        if isinstance(sync_error, dict):
+            error_detail = f"\n\n{sync_error.get('detail') or sync_error.get('reason')}"
+        message = (
             f"Pushed: {summary.get('pushed')}\n"
-            f"Conflicts rebased: {summary.get('conflicts')}\n"
+            f"Conflicts blocked: {summary.get('conflicts')}\n"
             f"Errors blocked: {summary.get('errors')}\n"
+            f"Retries scheduled: {summary.get('deferred', 0)}\n"
             f"Still blocked: {summary.get('blocked', 0)}\n"
             f"Pulled risks: {summary.get('pulled_risks')}"
-            f"{blocked_details}",
+            f"{blocked_details}{error_detail}"
         )
+        if state == "complete":
+            QMessageBox.information(
+                cast(QWidget, self),
+                "Sync complete",
+                message,
+            )
+            return
+        QMessageBox.warning(
+            cast(QWidget, self),
+            "Sync needs attention" if state != "retry_wait" else "Sync retry scheduled",
+            message,
+        )
+
+    def _sync_failed(self, message: str) -> None:
+        QMessageBox.critical(cast(QWidget, self), "Sync failed", message)
+        self._update_sync_status()
+
+    def _sync_cancelled(self) -> None:
+        QMessageBox.information(
+            cast(QWidget, self),
+            "Synchronization cancelled",
+            "Synchronization stopped safely. Changes already acknowledged by "
+            "the server remain acknowledged; remaining work will be retried.",
+        )
+        self._update_sync_status()
+
+    def _automatic_sync_requested(self) -> bool:
+        """Start a silent all-project sync when the UI is safe to refresh."""
+        if self._editor_dirty or self._opp_editor_dirty:
+            return False
+        available = getattr(self.backend, "can_auto_sync", None)
+        if callable(available) and not bool(available()):
+            return False
+        can_sync = getattr(self.backend, "can_sync", None)
+        export_remote = callable(can_sync) and not bool(can_sync())
+        return self._start_background_job(
+            "automatic_sync",
+            {"export_remote": export_remote},
+            on_success=self._automatic_sync_succeeded,
+            on_failure=self._automatic_sync_failed,
+            on_cancelled=self._automatic_sync_cancelled,
+        )
+
+    def _automatic_sync_succeeded(self, result: object) -> None:
+        """Adopt reconnect state and refresh local views without modal dialogs."""
+        if not isinstance(result, dict):
+            self._automatic_sync_failed(
+                "Automatic synchronization returned an invalid result"
+            )
+            return
+        summary = dict(result)
+        authenticated_remote = summary.pop("_authenticated_remote", None)
+        if authenticated_remote is not None:
+            adopt_remote = getattr(
+                self.backend,
+                "adopt_authenticated_remote",
+                None,
+            )
+            if callable(adopt_remote):
+                adopt_remote(authenticated_remote)
+                self._offline_mode = False
+                self._role_assumed = False
+
+        migrations = summary.get("project_id_migrations")
+        selected_project_id = str(self.current_project_id or "")
+        if isinstance(migrations, dict) and selected_project_id in migrations:
+            selected_project_id = str(migrations[selected_project_id])
+
+        visible_projects = summary.pop("_visible_projects", None)
+        if (
+            authenticated_remote is not None or migrations
+        ) and isinstance(visible_projects, list):
+            self._load_projects(
+                select_project_id=selected_project_id or None,
+                projects=visible_projects,
+                notify_selection=False,
+            )
+            selected = self.project_list.currentItem()
+            self.current_project_id = (
+                str(selected.data(Qt.ItemDataRole.UserRole))
+                if selected is not None
+                else None
+            )
+
+        self._record_automatic_sync_success(summary)
+        if self.current_project_id:
+            self._refresh_all_views(
+                select_id=self.current_risk_id,
+                include_remote=False,
+            )
+        else:
+            self._update_sync_status()
+
+    def _automatic_sync_failed(self, message: str) -> None:
+        """Back off silently after an automatic worker or reconnect failure."""
+        logging.getLogger(__name__).info(
+            "Automatic synchronization failed; retry scheduled: %s",
+            message,
+        )
+        self._record_automatic_sync_failure()
+        self._update_sync_status()
+
+    def _automatic_sync_cancelled(self) -> None:
+        # Cancellation is normally caused by application shutdown. If the
+        # window remains open, resume the ordinary interval without treating
+        # the cancellation as a connectivity failure.
+        self._record_automatic_sync_success({"state": "complete"})
