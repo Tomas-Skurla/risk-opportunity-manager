@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import cast
+from unittest.mock import Mock
 
 import pytest
 from fastapi import FastAPI
@@ -171,3 +173,56 @@ def test_create_app_optional_middleware_and_health_states(
         degraded = client.get("/health")
         assert degraded.status_code == 503
         assert degraded.json() == {"status": "degraded", "db": "unreachable"}
+
+
+def test_server_entrypoint_environment_flags(monkeypatch) -> None:
+    from riskapp_server import __main__ as server_main
+
+    run = Mock()
+    monkeypatch.setattr("uvicorn.run", run)
+    monkeypatch.setenv("ENV", "production")
+    monkeypatch.setenv("RISKAPP_HOST", "0.0.0.0")
+    monkeypatch.setenv("RISKAPP_PORT", "9000")
+    monkeypatch.setenv("RISKAPP_RELOAD", "yes")
+    assert server_main.main() == 0
+    run.assert_called_once_with(
+        "riskapp_server.main.app:app",
+        host="0.0.0.0",
+        port=9000,
+        reload=True,
+    )
+    monkeypatch.delenv("RISKAPP_RELOAD")
+    assert server_main._env_flag("RISKAPP_RELOAD", False) is False
+
+
+@pytest.mark.asyncio
+async def test_https_middleware_allows_rejects_and_honors_forwarded_proto(
+    monkeypatch,
+) -> None:
+    from riskapp_server.main import https_only_middleware
+    from starlette.requests import Request
+    from starlette.responses import Response
+
+    middleware = object.__new__(https_only_middleware.HttpsOnlyMiddleware)
+    next_response = Response("next")
+
+    async def call_next(_request: Request) -> Response:
+        return next_response
+
+    request_double = SimpleNamespace(
+        url=SimpleNamespace(scheme="http"),
+        headers={},
+    )
+    request = cast(Request, request_double)
+
+    monkeypatch.setattr(https_only_middleware, "ENFORCE_HTTPS", False)
+    assert await middleware.dispatch(request, call_next) is next_response
+
+    monkeypatch.setattr(https_only_middleware, "ENFORCE_HTTPS", True)
+    monkeypatch.setattr(https_only_middleware, "TRUST_X_FORWARDED_PROTO", False)
+    response = await middleware.dispatch(request, call_next)
+    assert response.status_code == 400
+
+    monkeypatch.setattr(https_only_middleware, "TRUST_X_FORWARDED_PROTO", True)
+    request_double.headers = {"x-forwarded-proto": "HTTPS, http"}
+    assert await middleware.dispatch(request, call_next) is next_response

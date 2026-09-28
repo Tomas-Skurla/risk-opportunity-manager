@@ -131,6 +131,22 @@ The server exposes Help Desk CRUD routes per project:
 Help Desk tickets are included in sync push/pull for server-backed projects.
 Every REST update of a risk, opportunity, action, assessment, or Help Desk ticket must include the current `base_version`. A missing version is rejected with HTTP 422; a stale version returns HTTP 409 and the server's current version.
 
+## Audit retention
+
+Superusers can delete old audit-log and sync-receipt rows for one project. Use the
+`access_token` returned by the login call above:
+
+```bash
+curl -X POST "http://127.0.0.1:8000/projects/$PROJECT_ID/maintenance/prune?days=180" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+`days` defaults to `RETENTION_DAYS` (180) and is limited to 1-3650. Sync receipts are
+kept for at least `SYNC_RECEIPT_RETENTION_DAYS` (365) so replayed pushes stay
+idempotent. Project administrators get HTTP 403: they cannot shorten their own
+project's audit trail. To run this on a schedule, log in within the same job,
+because access tokens expire after `ACCESS_TOKEN_MINUTES`.
+
 ## Configuration
 
 Common settings:

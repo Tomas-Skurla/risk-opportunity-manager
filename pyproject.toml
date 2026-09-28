@@ -86,7 +86,7 @@ ignore = [
   "S107",
 ]
 "tests/client/test_gui_behavior_coverage.py" = ["S108"]
-"tests/server/test_ops_cli.py" = ["S104"]
+"tests/server/test_app_lifespan.py" = ["S104"]
 
 "server/riskapp_server/api/routers/**/*.py" = ["B008"]
 "server/riskapp_server/auth/service.py" = ["B008"]
