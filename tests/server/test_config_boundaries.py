@@ -104,7 +104,6 @@ def test_runtime_validation_reports_all_unsafe_settings(monkeypatch) -> None:
         "ALGORITHM": "RS256",
         "SECRET_KEY": "short",
         "TOKEN_HASH_KEY": "short",
-        "ALLOW_INSECURE_DEFAULT_SECRET": True,
         "CORS_ORIGINS": ["*"],
         "INITIAL_SUPERUSER_EMAIL": "root@example.test",
         "INITIAL_SUPERUSER_PASSWORD": None,
@@ -135,7 +134,6 @@ def test_valid_production_and_local_settings_pass(monkeypatch) -> None:
         "ALGORITHM": "HS512",
         "SECRET_KEY": "s" * 32,
         "TOKEN_HASH_KEY": "t" * 32,
-        "ALLOW_INSECURE_DEFAULT_SECRET": False,
         "CORS_ORIGINS": ["https://app.example.test"],
         "INITIAL_SUPERUSER_EMAIL": None,
         "INITIAL_SUPERUSER_PASSWORD": None,
@@ -147,10 +145,56 @@ def test_valid_production_and_local_settings_pass(monkeypatch) -> None:
     config.validate_runtime_config()
 
     monkeypatch.setattr(config, "ENV", "development")
-    monkeypatch.setattr(config, "SECRET_KEY", "change-me")
-    with pytest.raises(config.ConfigurationError, match="set SECRET_KEY"):
-        config.validate_runtime_config()
-
-    monkeypatch.setattr(config, "ALLOW_INSECURE_DEFAULT_SECRET", True)
     monkeypatch.setattr(config, "ALLOWED_HOSTS", ["*"])
     config.validate_runtime_config()
+    monkeypatch.setattr(config, "ENV", "test")
+    config.validate_runtime_config()
+
+
+@pytest.mark.parametrize("mode", ["development", "test", "production"])
+@pytest.mark.parametrize("key_name", ["SECRET_KEY", "TOKEN_HASH_KEY"])
+@pytest.mark.parametrize(
+    "unsafe_value", [None, "", "   ", "change-me", "change-me-token-hash-key", "s" * 31]
+)
+def test_legacy_flag_cannot_bypass_key_validation(
+    mode: str, key_name: str, unsafe_value: str | None
+) -> None:
+    """Real environment parsing must reject unsafe keys even with the old flag."""
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "PYTHONPATH": str(ROOT / "server"),
+            "ENV": mode,
+            "SECRET_KEY": "s" * 32,
+            "TOKEN_HASH_KEY": "t" * 32,
+            "ALLOW_INSECURE_DEFAULT_SECRET": "1",
+            "ALGORITHM": "HS256",
+            "ALLOWED_HOSTS": "localhost",
+            "CORS_ORIGINS": "",
+            "PASSWORD_RESET_RETURN_TOKEN": "0",
+            "INITIAL_SUPERUSER_EMAIL": "",
+            "INITIAL_SUPERUSER_PASSWORD": "",
+        }
+    )
+    if unsafe_value is None:
+        environment.pop(key_name)
+    else:
+        environment[key_name] = unsafe_value
+
+    result = subprocess.run(  # noqa: S603 - fixed interpreter and validation command
+        [
+            sys.executable,
+            "-c",
+            "from riskapp_server.core.config import validate_runtime_config; "
+            "validate_runtime_config()",
+        ],
+        cwd=ROOT,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert result.returncode != 0
+    assert f"{key_name} must contain at least 32 characters" in result.stderr

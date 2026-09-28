@@ -108,6 +108,7 @@ echo
 echo "Done."
 echo
 echo "Start server:"
+echo "  ./scripts/dev-init.sh"
 echo "  RESET_SERVER_DB=1 bash scripts/run_server_dev.sh"
 echo
 echo "Start client:"

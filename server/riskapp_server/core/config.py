@@ -109,12 +109,10 @@ ENV: str = _env_choice(
     {"development", "production", "test"},
 )
 
-SECRET_KEY: str = os.getenv("SECRET_KEY", "change-me").strip()
-# Refresh/password-reset tokens are HMACed with this independent key. An empty
-# value is accepted only for development/test compatibility; auth then falls
-# back to SECRET_KEY. Production validation requires an explicit value.
+SECRET_KEY: str = os.getenv("SECRET_KEY", "").strip()
+# Refresh/password-reset tokens are HMACed with this explicitly supplied key.
+# Both keys are required in every environment.
 TOKEN_HASH_KEY: str = os.getenv("TOKEN_HASH_KEY", "").strip()
-ALLOW_INSECURE_DEFAULT_SECRET: bool = _env_bool("ALLOW_INSECURE_DEFAULT_SECRET", False)
 ALGORITHM: str = os.getenv("ALGORITHM", "HS256").strip().upper()
 TOKEN_MINUTES: int = _env_int("TOKEN_MINUTES", 15, minimum=1, maximum=1440)
 ACCESS_TOKEN_MINUTES: int = _env_int(
@@ -205,16 +203,13 @@ ALLOWED_HOSTS: list[str] = _env_list(
 def validate_runtime_config() -> None:
     """Fail closed for settings that affect authentication or request trust."""
     errors: list[str] = []
-    # This literal identifies the deliberately rejected development sentinel.
-    insecure_secret = not SECRET_KEY or SECRET_KEY == "change-me"  # noqa: S105
-    local_env = ENV in {"development", "test"}
 
     if ALGORITHM not in {"HS256", "HS384", "HS512"}:
         errors.append("ALGORITHM must be HS256, HS384, or HS512")
-    if insecure_secret and not (local_env and ALLOW_INSECURE_DEFAULT_SECRET):
-        errors.append(
-            "set SECRET_KEY (the insecure default is allowed only in development/test)"
-        )
+    if len(SECRET_KEY) < 32:
+        errors.append("SECRET_KEY must contain at least 32 characters")
+    if len(TOKEN_HASH_KEY) < 32:
+        errors.append("TOKEN_HASH_KEY must contain at least 32 characters")
     if "*" in CORS_ORIGINS:
         errors.append("CORS_ORIGINS cannot contain '*' when credentials are enabled")
     if bool(INITIAL_SUPERUSER_EMAIL) != bool(INITIAL_SUPERUSER_PASSWORD):
@@ -223,16 +218,6 @@ def validate_runtime_config() -> None:
         )
 
     if ENV == "production":
-        if ALLOW_INSECURE_DEFAULT_SECRET:
-            errors.append("ALLOW_INSECURE_DEFAULT_SECRET is forbidden in production")
-        if len(SECRET_KEY) < 32:
-            errors.append(
-                "SECRET_KEY must contain at least 32 characters in production"
-            )
-        if len(TOKEN_HASH_KEY) < 32:
-            errors.append(
-                "TOKEN_HASH_KEY must contain at least 32 characters in production"
-            )
         if PASSWORD_RESET_RETURN_TOKEN:
             errors.append("PASSWORD_RESET_RETURN_TOKEN is forbidden in production")
         if not ALLOWED_HOSTS or "*" in ALLOWED_HOSTS:

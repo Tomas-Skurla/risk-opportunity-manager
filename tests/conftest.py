@@ -26,7 +26,6 @@ def isolated_app_factory(monkeypatch: pytest.MonkeyPatch):
             "TOKEN_HASH_KEY": (
                 "riskapp-test-token-hash-key-that-is-not-used-in-production"
             ),
-            "ALLOW_INSECURE_DEFAULT_SECRET": "0",
             "DATABASE_URL": db_url,
             "AUTO_CREATE_SCHEMA": "1",
             "LOGIN_RATE_LIMIT_PER_MINUTE": "2",

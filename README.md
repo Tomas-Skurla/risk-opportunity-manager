@@ -32,7 +32,6 @@ See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for boundaries, invariants, security
 
 ![RiskApp field merge dialog comparing local and server values](docs/images/conflict-field-merge.png)
 
-
 ## Run the review checks
 
 The suite runs Qt offscreen, so it does not need a display server but still requires the locked PySide6 runtime:
@@ -62,6 +61,7 @@ bash scripts/check_project.sh
 Start the API:
 
 ```bash
+./scripts/dev-init.sh
 bash scripts/run_server_dev.sh
 ```
 
@@ -71,19 +71,44 @@ Start the client in another terminal:
 bash scripts/run_client_dev.sh
 ```
 
-
 These startup commands preserve existing data. For a deliberate clean reset, prefix the corresponding command with `RESET_SERVER_DB=1` or `RESET_CLIENT_DB=1`. **Those reset flags delete the database, including any unsynced client changes.**
 
-The development launcher binds to localhost and bootstraps `admin@example.com` / `SuperHeslo123!`. These are local demo credentials only; deployed environments must provide their own secret and account settings. Interactive API documentation is available at `http://127.0.0.1:8000/docs`; health status is at `/health`.
+The setup script generates private keys and a random administrator password in
+`.env`; rerunning it preserves existing values. The development launcher reads
+that file and binds to localhost. Log in using `INITIAL_SUPERUSER_EMAIL` and
+`INITIAL_SUPERUSER_PASSWORD` from `.env`. Interactive API documentation is at
+`http://127.0.0.1:8000/docs`; health status is at `/health`.
 
 ## Run the development API with Docker
 
 The container workflow packages only the FastAPI development server. The PySide6 desktop client continues to run natively so it can use the host desktop, local cache, and normal platform integration.
 
-Start the API with its demo account and a persistent SQLite volume:
+From the repository root, generate local credentials and start the API:
 
 ```bash
+./scripts/dev-init.sh
 docker compose up --build
+```
+
+Open `.env` locally to read `INITIAL_SUPERUSER_PASSWORD`. The initial login email
+is `admin@example.com`, you can change it in `.env` before the first start.
+Rerunning the script leaves any existing `.env` unchanged. To skip administrator
+creation, clear both `INITIAL_SUPERUSER_EMAIL` and `INITIAL_SUPERUSER_PASSWORD`
+
+Compose reads `.env` automatically. Variables exported in your shell take
+precedence over the file, so remove stale exports when switching configurations.
+Compose refuses to start with either key missing or empty. The API requires both
+keys to contain at least 32 characters in every environment; there is no insecure
+bypass. To validate the Compose configuration without printing secrets:
+
+```bash
+docker compose config --quiet
+```
+
+An existing private settings file can still be selected explicitly, for example:
+
+```bash
+docker compose --env-file .env.compose.local up --build
 ```
 
 Verify it from another terminal:
@@ -92,18 +117,28 @@ Verify it from another terminal:
 curl http://127.0.0.1:8000/health
 ```
 
-Then launch the native client with the existing script. Its development default already points to `http://127.0.0.1:8000`. To use another host port, set both the Compose mapping and the client URL:
+Then launch the native client with the existing script and log in with your own
+account. Its development default already points to `http://127.0.0.1:8000`. To use
+another host port, set both the Compose mapping and the client URL:
 
 ```bash
 RISKAPP_HOST_PORT=8080 docker compose up --build
 RISKAPP_URL=http://127.0.0.1:8080 bash scripts/run_client_dev.sh
 ```
 
-Stop the server while retaining its demo data with `docker compose down`. Remove the named SQLite volume and start from an empty server database with:
+Stop the server while retaining its data with:
 
 ```bash
-docker compose down --volumes
+docker compose down
 ```
+
+Adding `--volumes` deletes the named SQLite volume and all its data.
+
+For an existing database, changing the bootstrap variables does not change an
+account's password or permissions. Change any previously used demo password
+through the application. The bootstrap variables can be cleared after the
+initial account is created. Replacing the signing and token-hash keys invalidates
+existing tokens, users will need to log in again.
 
 The separate test target installs the locked server and desktop dependencies, adds the Qt offscreen libraries, and runs the same migration, test, lint, compilation, and dependency checks as CI:
 

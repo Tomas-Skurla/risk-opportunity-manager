@@ -50,7 +50,7 @@ The main window owns an explicit `MainWindowState` object for selection and acce
 - New passwords use Argon2id (`m=19456`, `t=2`, `p=1`). Legacy PBKDF2 hashes remain verifiable and are replaced only after a successful login.
 - Refresh and password-reset tokens are random and stored only as HMAC hashes keyed independently from JWT signing. Refresh rotation atomically forms a single replacement chain. A just-rotated token gets one short recovery opportunity while its replacement remains unused; older or already-advanced reuse revokes only that connected token family.
 - Project RBAC is enforced in both REST routers and  the sync engine.
-- Production startup rejects default secrets, wildcard hosts, returned reset tokens, and wildcard credentialed CORS.
+- Every environment requires explicit signing and token-hash keys of at least 32 characters. There is no insecure-default bypass. Production startup additionally rejects wildcard hosts and returned reset tokens, wildcard credentialed CORS is rejected in every environment.
 - Request bodies and response bodies are bounded; exported CSV neutralizes formula prefixes.
 - API responses and application logs share a validated correlation ID; structured JSON logging is configurable without logging request bodies, query strings, or tokens.
 - The local SQLite cache relies on operating-system user isolation and restrictive file permissions. It is not encrypted at rest.
@@ -61,6 +61,6 @@ The in-process rate limiter is appropriate for a single demo process and has bou
 and automatic schema creation support local evaluation; production should use a managed database, explicit migrations, trusted-proxy configuration, centralized
 logs, and external secret management.
 
-`SECRET_KEY` signs access JWTs, while `TOKEN_HASH_KEY` protects stored refresh and password-reset token hashes. Production requires both. An existing deployment can preserve outstanding tokens by initially setting `TOKEN_HASH_KEY` to its current `SECRET_KEY` before rotating the JWT key; rotating `TOKEN_HASH_KEY` itself intentionally invalidates outstanding opaque tokens.
+`SECRET_KEY` signs access JWTs, while `TOKEN_HASH_KEY` hashes refresh and password-reset tokens before database storage. Every environment requires both keys, each at least 32 characters long. Generate them independently and do not reuse the same value for both; token hashing has no fallback to the signing key. When upgrading a deployment that previously shared one key, configure two fresh independent keys. This invalidates existing access tokens, refresh tokens, and password-reset links; users must sign in again or request a new reset link. Key rotation does not change accounts, passwords, or application data. Keep existing secure, independent keys unchanged unless intentionally rotating them. Changing only `TOKEN_HASH_KEY` invalidates refresh and password-reset tokens, existing access JWTs remain valid until expiry or separate invalidation.
 
 Argon2id is intentionally configured at OWASP's minimum 19 MiB/two-iteration profile to keep interactive login practical on portfolio-scale deployments. Parameters are embedded in each hash, and successful login upgrades a hash when the configured profile changes. This avoids a forced password reset or a risky bulk migration of legacy PBKDF2 credentials.

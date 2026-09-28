@@ -21,7 +21,6 @@ from riskapp_server.auth import passwords as password_hashing
 from riskapp_server.core.config import (
     ACCESS_TOKEN_MINUTES,
     ALGORITHM,
-    ALLOW_INSECURE_DEFAULT_SECRET,
     REFRESH_TOKEN_DAYS,
     REFRESH_TOKEN_REUSE_GRACE_SECONDS,
     SECRET_KEY,
@@ -38,9 +37,6 @@ verify_pw = password_hashing.verify_pw
 password_needs_rehash = password_hashing.password_needs_rehash
 
 validate_runtime_config()
-# "change-me" is a sentinel that is rejected outside local development.
-if SECRET_KEY == "change-me" and ALLOW_INSECURE_DEFAULT_SECRET:  # noqa: S105
-    logger.warning("Using the default SECRET_KEY; do not use this outside local dev.")
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/login")
 
@@ -69,9 +65,8 @@ create_token = create_access_token
 
 def hash_bearer_secret(raw: str) -> str:
     """Hash a bearer token with a key independent from JWT signing."""
-    key = TOKEN_HASH_KEY or SECRET_KEY
     return hmac.new(
-        key.encode("utf-8"), raw.encode("utf-8"), hashlib.sha256
+        TOKEN_HASH_KEY.encode("utf-8"), raw.encode("utf-8"), hashlib.sha256
     ).hexdigest()
 
 

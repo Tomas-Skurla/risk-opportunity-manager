@@ -82,21 +82,26 @@ jobs:
         id: build_api
         run: docker build --target server -t riskapp-api:ci .
 
-      # The image no longer carries development defaults, so CI has to supply
-      # them explicitly. That is the point: anything that starts this image
-      # must state, in the open, that it is running an insecure configuration.
+      # This health check uses disposable runtime keys and needs no admin account.
+      # Register the keys for log masking before passing them to the container.
       # Published to 127.0.0.1 rather than 0.0.0.0 -- Docker's published-port
       # rules live in nat/PREROUTING and the filter FORWARD chain, so they are
       # not covered by INPUT-chain host firewall rules.
       - name: Start API container
+        shell: bash
         run: |
+          SECRET_KEY="$(openssl rand -hex 32)"
+          TOKEN_HASH_KEY="$(openssl rand -hex 32)"
+          echo "::add-mask::$SECRET_KEY"
+          echo "::add-mask::$TOKEN_HASH_KEY"
+          export SECRET_KEY TOKEN_HASH_KEY
+
           docker run --detach --name riskapp-api \
             --publish 127.0.0.1:8000:8000 \
             --env ENV=development \
-            --env ALLOW_INSECURE_DEFAULT_SECRET=1 \
+            --env SECRET_KEY \
+            --env TOKEN_HASH_KEY \
             --env AUTO_CREATE_SCHEMA=1 \
-            --env INITIAL_SUPERUSER_EMAIL=admin@example.com \
-            --env INITIAL_SUPERUSER_PASSWORD='SuperHeslo123!' \
             riskapp-api:ci
 
       - name: Wait for healthy API

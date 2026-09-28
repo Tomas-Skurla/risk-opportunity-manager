@@ -137,16 +137,15 @@ bash scripts/check_project.sh
 Use Terminal 1:
 
 ```bash
+./scripts/dev-init.sh
 RESET_SERVER_DB=1 bash scripts/run_server_dev.sh
 ```
 
-This starts Uvicorn with local-development defaults:
-
-```text
-ALLOW_INSECURE_DEFAULT_SECRET=1
-INITIAL_SUPERUSER_EMAIL=admin@example.com
-INITIAL_SUPERUSER_PASSWORD=SuperHeslo123!
-```
+The setup script creates a private, Git-ignored `.env` with random signing and
+token-hash keys and an administrator password. Reruns preserve existing values.
+The launcher loads that file, with exported settings taking precedence. Read
+`INITIAL_SUPERUSER_EMAIL` and `INITIAL_SUPERUSER_PASSWORD` from `.env` to log in.
+Existing database accounts are never changed by bootstrap settings.
 
 The server runs at:
 
@@ -168,7 +167,7 @@ HTTP 200
 {"status":"ok","db":"ok"}
 ```
 
-Do not use `ALLOW_INSECURE_DEFAULT_SECRET=1` outside local development.
+Deliberately resetting the development database still requires `RESET_SERVER_DB=1`, this deletes all server data.
 
 For staging or production, run the migration job once before starting API
 workers. `DATABASE_URL` is intentionally required:
@@ -205,8 +204,10 @@ Login with:
 ```text
 Server URL: http://127.0.0.1:8000
 Email: admin@example.com
-Password: SuperHeslo123!
+Password: the generated INITIAL_SUPERUSER_PASSWORD from .env
 ```
+
+Use the email from `.env` if you changed it before creating the account.
 
 ---
 
@@ -233,6 +234,7 @@ bash scripts/bootstrap_dev.sh --skip-os-prereqs --relock
 Then start the server and client separately:
 
 ```bash
+./scripts/dev-init.sh
 RESET_SERVER_DB=1 bash scripts/run_server_dev.sh
 RESET_CLIENT_DB=1 bash scripts/run_client_dev.sh
 ```
@@ -402,9 +404,8 @@ server/riskapp.db
 | --- | --- | --- |
 | `DATABASE_URL` | `sqlite+pysqlite:///./riskapp.db` | Server database URL |
 | `ENV` | `development` | One of `development`, `test`, or `production`; invalid values stop startup |
-| `SECRET_KEY` | `change-me` | Set a real secret outside local development |
-| `TOKEN_HASH_KEY` | unset | Separate HMAC key for refresh/password-reset token hashes; required in production |
-| `ALLOW_INSECURE_DEFAULT_SECRET` | unset | Use `1` only for local development |
+| `SECRET_KEY` | unset | Random signing key; required and at least 32 characters in every environment |
+| `TOKEN_HASH_KEY` | unset | Separate random HMAC key for refresh/password-reset token hashes; required and at least 32 characters in every environment |
 | `INITIAL_SUPERUSER_EMAIL` | unset | Optional create-only startup superadmin email; existing accounts are never modified |
 | `INITIAL_SUPERUSER_PASSWORD` | unset | Password used only when creating the bootstrap account |
 | `ACCESS_TOKEN_MINUTES` | `15` | Access-token lifetime |
@@ -419,7 +420,12 @@ server/riskapp.db
 | `PASSWORD_RESET_RETURN_TOKEN` | `0` | Development/test only; forbidden in production |
 | `SYNC_PUSH_EXPUNGE_EVERY` | `200` | Sync push housekeeping interval; legacy `SYNC_PUSH_EXUNGE_EVERY` is deprecated |
 
-For a new production deployment, generate `SECRET_KEY` and `TOKEN_HASH_KEY` independently and keep both in the deployment's secret manager. When upgrading an existing deployment, initially set `TOKEN_HASH_KEY` to its current `SECRET_KEY`; after deploying, `SECRET_KEY` can be rotated independently without logging out refresh-token holders. Rotating `TOKEN_HASH_KEY` deliberately invalidates existing refresh and password-reset tokens.
+For a new deployment, generate `SECRET_KEY` and `TOKEN_HASH_KEY` independently
+and keep both in the deployment's secret manager. If an existing deployment
+previously omitted `TOKEN_HASH_KEY`, initially set it to the existing signing key
+to preserve token hashes, provided that key is private and at least 32 characters
+long. Keep an already configured token-hash key unchanged. Rotating
+`TOKEN_HASH_KEY` invalidates existing refresh and password-reset tokens.
 
 No password-table migration is required when upgrading. New and changed passwords use Argon2id; a valid login with an older `pbkdf2_sha256` password hash rewrites that one hash to Argon2id in the successful login transaction.
 

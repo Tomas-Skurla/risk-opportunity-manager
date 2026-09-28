@@ -33,6 +33,7 @@ Use `server/requirements.txt` only as the source/range file when regenerating th
 From the repository root:
 
 ```bash
+./scripts/dev-init.sh
 RESET_SERVER_DB=1 bash scripts/run_server_dev.sh
 ```
 
@@ -42,13 +43,10 @@ Without resetting the database:
 bash scripts/run_server_dev.sh
 ```
 
-The development script sets:
-
-```text
-ALLOW_INSECURE_DEFAULT_SECRET=1
-INITIAL_SUPERUSER_EMAIL=admin@example.com
-INITIAL_SUPERUSER_PASSWORD=SuperHeslo123!
-```
+The setup script generates private keys and a random administrator password in
+the Git-ignored `.env`, preserving an existing file. The development launcher
+loads `.env`; exported settings take precedence. `RESET_SERVER_DB=1` deletes the
+existing development database before startup.
 
 The server runs at:
 
@@ -63,12 +61,11 @@ If you need to run without the helper script:
 ```bash
 cd /path/to/repo
 source .venv/bin/activate
+./scripts/dev-init.sh
 rm -f server/riskapp.db
 cd server
-ALLOW_INSECURE_DEFAULT_SECRET=1 \
-INITIAL_SUPERUSER_EMAIL=admin@example.com \
-INITIAL_SUPERUSER_PASSWORD='SuperHeslo123!' \
-uvicorn riskapp_server.main.app:app --reload --host 127.0.0.1 --port 8000
+uvicorn riskapp_server.main.app:app --env-file ../.env \
+  --reload --host 127.0.0.1 --port 8000
 ```
 
 ## Health check
@@ -89,12 +86,10 @@ HTTP 200
 
 ### Superadmin bootstrap
 
-Use these environment variables before startup:
-
-```text
-INITIAL_SUPERUSER_EMAIL=admin@example.com
-INITIAL_SUPERUSER_PASSWORD=SuperHeslo123!
-```
+`scripts/dev-init.sh` fills `INITIAL_SUPERUSER_EMAIL` and
+`INITIAL_SUPERUSER_PASSWORD` in `.env`. Read the generated password there and
+change the email before the first start if needed. To skip account creation,
+leave both settings blank. Deployments can supply their own values directly.
 
 On startup, the server creates that user only when the email is absent. If the account already exists, bootstrap leaves its password, active state, and superuser flag unchanged.
 
@@ -110,10 +105,18 @@ curl -X POST http://127.0.0.1:8000/register \
 
 ### Login
 
+Enter the credentials from `.env`, or the account's current password if it has
+already been changed:
+
 ```bash
+read -r -p 'Email: ' RISKAPP_LOGIN_EMAIL
+read -r -s -p 'Password: ' RISKAPP_LOGIN_PASSWORD
+printf '\n'
 curl -X POST http://127.0.0.1:8000/login \
   -H 'Content-Type: application/x-www-form-urlencoded' \
-  -d 'username=admin@example.com&password=SuperHeslo123%21'
+  --data-urlencode "username=$RISKAPP_LOGIN_EMAIL" \
+  --data-urlencode "password=$RISKAPP_LOGIN_PASSWORD"
+unset RISKAPP_LOGIN_PASSWORD
 ```
 
 ## Help Desk endpoints
@@ -136,9 +139,8 @@ Common settings:
 | --- | --- | --- |
 | `DATABASE_URL` | `sqlite+pysqlite:///./riskapp.db` | Server database URL |
 | `ENV` | `development` | One of `development`, `test`, or `production`; invalid values stop startup |
-| `SECRET_KEY` | `change-me` | Required outside local dev unless insecure default is explicitly allowed |
-| `TOKEN_HASH_KEY` | unset | HMAC key for stored refresh/password-reset tokens; required and at least 32 characters in production |
-| `ALLOW_INSECURE_DEFAULT_SECRET` | unset | Use `1` only for local development |
+| `SECRET_KEY` | unset | Random JWT signing key; required and at least 32 characters in every environment |
+| `TOKEN_HASH_KEY` | unset | Separate random HMAC key for stored refresh/password-reset tokens; required and at least 32 characters in every environment |
 | `ACCESS_TOKEN_MINUTES` | `15` | Access-token lifetime; legacy alias: `TOKEN_MINUTES` |
 | `REFRESH_TOKEN_DAYS` | `30` | Refresh-token lifetime |
 | `REFRESH_TOKEN_REUSE_GRACE_SECONDS` | `30` | One-time lost-response recovery window; `0` disables recovery |
@@ -161,7 +163,16 @@ Common settings:
 
 `SECRET_KEY` signs access JWTs. `TOKEN_HASH_KEY` hashes opaque refresh and password-reset tokens before database storage, so routine JWT-key rotation does not invalidate those tokens. Generate the two values independently for new deployments.
 
-For an existing deployment, first set `TOKEN_HASH_KEY` to the current `SECRET_KEY` value and deploy this version. You may then rotate `SECRET_KEY` without invalidating stored refresh/password-reset token hashes. Changing `TOKEN_HASH_KEY` itself invalidates all outstanding refresh and reset tokens.
+For an existing deployment that previously omitted `TOKEN_HASH_KEY`, set it to
+the existing `SECRET_KEY` before upgrading, provided that key is private and at
+least 32 characters long. This preserves stored refresh/password-reset token
+hashes. Keep an already configured `TOKEN_HASH_KEY` unchanged. Changing it
+invalidates all outstanding refresh and reset tokens.
+
+Missing, blank, and short keys now stop startup in development and test as well
+as production. The former `ALLOW_INSECURE_DEFAULT_SECRET` setting has no effect.
+Replace any previously shared demo keys with generated values; affected users
+will need to log in again.
 
 Every HTTP response includes `X-Request-ID`. A valid incoming `X-Request-ID` is preserved; otherwise the API generates one. RiskApp application logs include the same ID, HTTP method, path, status, and duration without recording query strings, authorization headers, or request bodies. Set `RISKAPP_LOG_FORMAT=json` for structured production logs; Uvicorn's own process logs remain independently configured by Uvicorn.
 

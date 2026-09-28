@@ -20,7 +20,6 @@ def _run_alembic(database_path: Path, revision: str) -> None:
             "ENV": "test",
             "SECRET_KEY": "riskapp-sequence-migration-test-secret",
             "TOKEN_HASH_KEY": "riskapp-sequence-migration-token-key",
-            "ALLOW_INSECURE_DEFAULT_SECRET": "0",
             "AUTO_CREATE_SCHEMA": "0",
             "DATABASE_URL": f"sqlite+pysqlite:///{database_path.as_posix()}",
         }
