@@ -17,7 +17,6 @@ The repository now uses project-level scripts from `scripts/` for repeatable set
 
 ```text
 scripts/
-  setup_os_prereqs.sh       # best-effort OS package prerequisites for apt/dnf/yum/pacman/zypper/apk/brew
   setup_python_env.sh       # creates .venv and installs runtime locks + dev tools
   check_project.sh          # runs tests, type checks, lint, and pip check
   typecheck.sh              # checks both complete application packages
@@ -27,13 +26,12 @@ scripts/
   dev-init.sh               # generates private local keys and an admin password
   run_server_dev.sh         # starts FastAPI dev server
   run_client_dev.sh         # starts PySide6 client
-  bootstrap_dev.sh          # orchestration wrapper around setup/check scripts
 ```
 
-Most users should start with:
+Most users should install the OS packages from
+[step 2 of the setup guide](SETUP_GUIDE.md#2-install-os-prerequisites), then start with:
 
 ```bash
-bash scripts/setup_os_prereqs.sh --desktop
 bash scripts/setup_python_env.sh
 bash scripts/diagnose_qt_runtime.sh
 bash scripts/check_project.sh

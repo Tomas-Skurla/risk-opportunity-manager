@@ -35,7 +35,7 @@ bash scripts/format.sh       # intentionally rewrites files
 bash scripts/check_project.sh --fix
 ```
 
-The canonical suite includes headless Qt interaction tests. Install the client lock file and the OS packages from `scripts/setup_os_prereqs.sh --headless-gui` before running the complete suite.
+The canonical suite includes headless Qt interaction tests. Install the client lock file and the OS packages from [step 2 of the setup guide](SETUP_GUIDE.md#2-install-os-prerequisites) before running the complete suite.
 
 Mypy checks all modules under `server/riskapp_server` and `client/riskapp_client`. Strict function annotations, unreachable-code checks, extra checks, and unused-ignore checks are enabled package-wide. Only generated Qt `ui_*.py` modules have a narrow override because they are regenerated from Designer forms rather than maintained by hand.
 

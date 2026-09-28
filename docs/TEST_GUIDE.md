@@ -8,17 +8,12 @@ This guide verifies a clean local setup, automated checks, GUI startup, core fun
 
 ## 1. Clean automated setup
 
+Install the OS packages from [step 2 of the setup guide](SETUP_GUIDE.md#2-install-os-prerequisites), then:
+
 ```bash
-bash scripts/setup_os_prereqs.sh --desktop
 bash scripts/setup_python_env.sh
 bash scripts/diagnose_qt_runtime.sh
 bash scripts/check_project.sh
-```
-
-If OS prerequisites are already installed:
-
-```bash
-bash scripts/bootstrap_dev.sh --skip-os-prereqs
 ```
 
 Expected:
@@ -449,11 +444,8 @@ Snapshots require a server-backed/synced project.
 2. Click **Export CSV**.
 3. Verify a CSV file is created and includes the visible filtered risk list.
 
-If your OS lacks a spreadsheet viewer, install LibreOffice Calc through OS packages or run:
-
-```bash
-bash scripts/setup_os_prereqs.sh --all
-```
+If you have no spreadsheet application, open the file in a text editor or install
+LibreOffice Calc with `sudo apt install -y libreoffice-calc`.
 
 ---
 

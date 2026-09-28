@@ -13,10 +13,11 @@ PySide6 desktop client for RiskApp.
 
 ## Recommended install
 
-From the repository root:
+Install the OS packages from
+[step 2 of the setup guide](../docs/SETUP_GUIDE.md#2-install-os-prerequisites), then
+run from the repository root:
 
 ```bash
-bash scripts/setup_os_prereqs.sh --desktop
 bash scripts/setup_python_env.sh
 bash scripts/diagnose_qt_runtime.sh
 ```
@@ -82,7 +83,7 @@ curl -X POST http://127.0.0.1:8000/register \
 ## Configuration
 
 | Variable | Default | Notes |
-|---|---|---|
+| --- | --- | --- |
 | `RISKAPP_URL` | `http://127.0.0.1:8000` | Server URL used by the client |
 | `RISKAPP_API_BASE_URL` | same as `RISKAPP_URL` | API base URL override |
 | `RISKAPP_EMAIL` | unset | Optional login prefill/automation |
@@ -96,7 +97,7 @@ curl -X POST http://127.0.0.1:8000/register \
 ## Offline modes
 
 | Mode | Account? | Server required? | Sync later? | Sidebar label |
-|---|---:|---:|---:|---|
+| --- | ---: | ---: | ---: | --- |
 | Online | yes | yes at login | yes | owner email if known |
 | Offline as known user | known identity | no | yes, automatically after connectivity returns | `(offline, will sync)` |
 | Fully local anonymous | no | no | no | `(local only)` |
@@ -121,11 +122,8 @@ sudo apt install -y libglib2.0-0
 sudo apt install -y libglib2.0-0t64
 ```
 
-For broader OS package installation, rerun:
-
-```bash
-bash scripts/setup_os_prereqs.sh --desktop
-```
+The full package list is in
+[step 2 of the setup guide](../docs/SETUP_GUIDE.md#2-install-os-prerequisites).
 
 ## Notes
 

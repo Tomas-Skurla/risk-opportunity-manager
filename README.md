@@ -49,10 +49,10 @@ CI pins third-party actions by full commit SHA, keeps security-event write acces
 
 ## Run the application
 
-For the complete desktop environment:
+For the complete desktop environment, install the OS packages from
+[step 2 of the setup guide](docs/SETUP_GUIDE.md#2-install-os-prerequisites), then run:
 
 ```bash
-bash scripts/setup_os_prereqs.sh --desktop
 bash scripts/setup_python_env.sh
 bash scripts/diagnose_qt_runtime.sh
 bash scripts/check_project.sh

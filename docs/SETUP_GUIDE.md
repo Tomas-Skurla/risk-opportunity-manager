@@ -1,13 +1,13 @@
 # RiskApp — Setup Guide
 
-This guide describes the recommended local setup using the repository scripts. The scripts keep setup repeatable across Linux distributions and macOS/Homebrew where possible.
+This guide describes the recommended local setup using the repository scripts.
 
 ## Prerequisites
 
 - Python 3.14. Docker, CI, Black, Ruff, mypy, and dependency relocking all use this same minor version.
 - A shell capable of running Bash scripts.
 - Two terminal windows for running the server and client.
-- For the desktop GUI, install OS-level Qt/X11 runtime libraries through `scripts/setup_os_prereqs.sh`.
+- Ubuntu 24.04 or newer. Other distributions need the equivalent packages from step 2.
 
 The project uses a **single virtual environment at the repository root**:
 
@@ -33,31 +33,19 @@ If you downloaded a ZIP, extract it first and then `cd` into the extracted proje
 
 ## 2. Install OS prerequisites
 
-For a desktop development machine:
-
 ```bash
-bash scripts/setup_os_prereqs.sh --desktop
+sudo apt install -y git curl python3-venv \
+  libdbus-1-3 libegl1 libgl1 libfontconfig1 libglib2.0-0t64 libx11-xcb1 \
+  libxkbcommon-x11-0 libxcb1 libxcb-cursor0 libxcb-icccm4 libxcb-image0 \
+  libxcb-keysyms1 libxcb-randr0 libxcb-render0 libxcb-render-util0 \
+  libxcb-shape0 libxcb-shm0 libxcb-sync1 libxcb-xfixes0 libxcb-xinerama0 libxcb-xkb1
 ```
 
-For server/API-only testing:
-
-```bash
-bash scripts/setup_os_prereqs.sh --server-only
-```
-
-For headless GUI smoke testing:
-
-```bash
-bash scripts/setup_os_prereqs.sh --headless-gui
-```
-
-For everything, including LibreOffice Calc for CSV manual checks:
-
-```bash
-bash scripts/setup_os_prereqs.sh --all
-```
-
-The script is best-effort and supports common package managers including `apt`, `dnf`, `yum`, `pacman`, `zypper`, `apk`, and `brew`. Package names still vary by distro; if the Qt GUI fails, run the diagnostic script in step 4.
+The `lib*` packages are the Qt runtime libraries PySide6 needs, for both the
+desktop client and the headless test suite. A desktop install already has most
+of them, and apt skips those. Every locked Python dependency ships as a prebuilt
+wheel, so no compiler or Python headers are needed. If the client still fails to
+start, the diagnostic script in step 4 names the missing library.
 
 ---
 
@@ -211,32 +199,14 @@ Use the email from `.env` if you changed it before creating the account.
 
 ---
 
-## 8. Optional one-shot bootstrap
+## 8. Refresh dependency locks
 
-After each individual script has been tested, you can use the orchestrator:
-
-```bash
-bash scripts/bootstrap_dev.sh --desktop
-```
-
-If OS packages are already installed:
+After changing a version range in `server/requirements.txt` or
+`client/requirements.txt`, regenerate the lock files and rebuild the environment:
 
 ```bash
-bash scripts/bootstrap_dev.sh --skip-os-prereqs
-```
-
-If dependency ranges changed and you need fresh locks:
-
-```bash
-bash scripts/bootstrap_dev.sh --skip-os-prereqs --relock
-```
-
-Then start the server and client separately:
-
-```bash
-./scripts/dev-init.sh
-RESET_SERVER_DB=1 bash scripts/run_server_dev.sh
-RESET_CLIENT_DB=1 bash scripts/run_client_dev.sh
+bash scripts/relock_python_deps.sh
+bash scripts/setup_python_env.sh --recreate
 ```
 
 ---
