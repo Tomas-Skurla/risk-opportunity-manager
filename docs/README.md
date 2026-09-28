@@ -24,6 +24,7 @@ scripts/
   diagnose_qt_runtime.sh    # diagnoses missing PySide6/Qt native libraries
   relock_python_deps.sh     # regenerates server/client lock files separately
   reset_dev_state.sh        # removes dev SQLite DBs
+  dev-init.sh               # generates private local keys and an admin password
   run_server_dev.sh         # starts FastAPI dev server
   run_client_dev.sh         # starts PySide6 client
   bootstrap_dev.sh          # orchestration wrapper around setup/check scripts
@@ -41,6 +42,7 @@ bash scripts/check_project.sh
 Then run the app:
 
 ```bash
+./scripts/dev-init.sh
 RESET_SERVER_DB=1 bash scripts/run_server_dev.sh
 RESET_CLIENT_DB=1 bash scripts/run_client_dev.sh
 ```

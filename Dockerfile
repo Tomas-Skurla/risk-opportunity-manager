@@ -76,12 +76,10 @@ RUN groupadd --gid 1000 riskapp \
 
 # Only non-sensitive operational defaults are baked into the image.
 #
-# ENV, ALLOW_INSECURE_DEFAULT_SECRET, INITIAL_SUPERUSER_* and AUTO_CREATE_SCHEMA
-# are deliberately NOT set here. docs/ARCHITECTURE.md states that production startup
-# rejects default secrets; baking ALLOW_INSECURE_DEFAULT_SECRET=1 into the
-# runtime image would disable exactly that check for every consumer of the
-# image. The image now fails closed: it will not start without real config.
-# Development values live in compose.yaml, which is not what gets deployed.
+# Signing keys, token-hash keys, and bootstrap credentials are supplied at runtime.
+# Startup requires both keys in every environment and has no insecure bypass.
+# For local development, scripts/dev-init.sh generates private values in .env;
+# compose.yaml passes them to the container without copying them into the image.
 #
 # RISKAPP_HOST=0.0.0.0 is correct *inside* the container -- the process must
 # listen on the container's interface. Restricting exposure is the publisher's

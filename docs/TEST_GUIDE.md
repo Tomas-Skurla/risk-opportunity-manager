@@ -34,6 +34,7 @@ All checks passed.
 Terminal 1:
 
 ```bash
+./scripts/dev-init.sh
 RESET_SERVER_DB=1 bash scripts/run_server_dev.sh
 ```
 
@@ -63,7 +64,7 @@ HTTP 200
 
 ## 4. Superadmin login and project creation
 
-1. Login dialog → `admin@example.com` / `SuperHeslo123!` → **OK**.
+1. Login dialog → use `INITIAL_SUPERUSER_EMAIL` and `INITIAL_SUPERUSER_PASSWORD` from `.env` → **OK**.
 2. Verify the app enters online mode.
 3. Verify the sidebar is empty on a clean database.
 4. Click **New Project** → name `Test Project` → **OK**.
@@ -304,9 +305,14 @@ bash scripts/run_client_dev.sh
 ```bash
 BASE=http://127.0.0.1:8000
 
+read -r -p 'Administrator email: ' RISKAPP_LOGIN_EMAIL
+read -r -s -p 'Administrator password: ' RISKAPP_LOGIN_PASSWORD
+printf '\n'
 LOGIN=$(curl -s -X POST "$BASE/login" \
   -H 'Content-Type: application/x-www-form-urlencoded' \
-  -d 'username=admin@example.com&password=SuperHeslo123%21')
+  --data-urlencode "username=$RISKAPP_LOGIN_EMAIL" \
+  --data-urlencode "password=$RISKAPP_LOGIN_PASSWORD")
+unset RISKAPP_LOGIN_PASSWORD
 TOKEN=$(echo "$LOGIN" | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
 
 PID=$(curl -s "$BASE/projects" -H "Authorization: Bearer $TOKEN" \

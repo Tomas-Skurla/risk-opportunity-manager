@@ -4,21 +4,20 @@ services:
       context: .
       target: server
     image: riskapp-api:local
-    # Bound to loopback. Docker publishes ports with a DNAT rule in
-    # nat/PREROUTING and an accept rule in the filter FORWARD chain, so the
-    # packets bypass INPUT entirely -- a default-deny host firewall managed
-    # through ufw will not block a published port. Set RISKAPP_HOST_ADDR to
-    # 0.0.0.0 explicitly if you actually intend LAN exposure.
+    # Use RISKAPP_HOST_ADDR explicitly to bind another host address.
+    # Local HTTP development server: publish to loopback by default.
     ports:
       - ${RISKAPP_HOST_ADDR:-127.0.0.1}:${RISKAPP_HOST_PORT:-8000}:8000
-    # Development-only configuration. These values are intentionally kept out of
-    # the image (see Dockerfile) so the published artifact fails closed.
+    # Generate private values in .env with ./scripts/dev-init.sh.
+    # Missing or empty keys stop Compose before it creates the container.
     environment:
       ENV: development
-      ALLOW_INSECURE_DEFAULT_SECRET: "1"
-      TOKEN_HASH_KEY: change-me-token-hash-key
-      INITIAL_SUPERUSER_EMAIL: admin@example.com
-      INITIAL_SUPERUSER_PASSWORD: SuperHeslo123!
+      SECRET_KEY: ${SECRET_KEY:?Run ./scripts/dev-init.sh or supply SECRET_KEY}
+      TOKEN_HASH_KEY: ${TOKEN_HASH_KEY:?Run ./scripts/dev-init.sh or supply TOKEN_HASH_KEY}
+      # Set both to create the first administrator.
+      # They can be omitted after the administrator account exists.
+      INITIAL_SUPERUSER_EMAIL: ${INITIAL_SUPERUSER_EMAIL:-}
+      INITIAL_SUPERUSER_PASSWORD: ${INITIAL_SUPERUSER_PASSWORD:-}
       DATABASE_URL: sqlite+pysqlite:////data/riskapp.db
       AUTO_CREATE_SCHEMA: "1"
       RISKAPP_HOST: 0.0.0.0

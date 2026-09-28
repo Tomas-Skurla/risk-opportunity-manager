@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: riskapp-swagger-env
+  namespace: riskapp
+data:
+  SWAGGER_JSON_URL: "http://127.0.0.1:8000/openapi.json"
+  VALIDATOR_URL: "none"
