@@ -13,7 +13,7 @@ RiskApp is an offline-first risk and opportunity manager: a FastAPI/SQLAlchemy A
 - offline operation with reliable automatic background synchronization, persistent queued writes, server receipt deduplication, and a transactional monotonic change sequence;
 - a Qt Designer-backed Conflict Center that preserves unresolved writes and lets users explicitly keep the local copy, use the saved server copy, or decide later;
 - authorization enforced consistently across REST and sync paths;
-- Argon2id password hashing with automatic migration of legacy PBKDF2 hashes after a successful login;
+- Argon2id password hashing that upgrades stored hashes to new parameters at the next login;
 - bounded request/response handling, literal search escaping, and safe CSV export;
 - isolated API and client-core tests plus package-wide mypy, Ruff, compile, and dependency checks;
 - reproducible runtime lock files and an automated CI gate.

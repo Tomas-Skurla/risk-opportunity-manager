@@ -8,12 +8,11 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from riskapp_server.auth.passwords import hash_pw, verify_pw
 from riskapp_server.auth.service import (
     get_current_user,
     hash_bearer_secret,
-    hash_pw,
     revoke_user_refresh_tokens,
-    verify_pw,
 )
 from riskapp_server.core.config import (
     PASSWORD_RESET_RATE_LIMIT_PER_HOUR,

@@ -388,7 +388,7 @@ server/riskapp.db
 | `TRUST_X_FORWARDED_PROTO` | `0` | Enable only behind a configured trusted proxy |
 | `MAX_REQUEST_BODY_BYTES` | `2097152` | Maximum declared or streamed request body |
 | `PASSWORD_RESET_RETURN_TOKEN` | `0` | Development/test only; forbidden in production |
-| `SYNC_PUSH_EXPUNGE_EVERY` | `200` | Sync push housekeeping interval; legacy `SYNC_PUSH_EXUNGE_EVERY` is deprecated |
+| `SYNC_PUSH_EXPUNGE_EVERY` | `200` | Sync push housekeeping interval |
 
 For a new deployment, generate `SECRET_KEY` and `TOKEN_HASH_KEY` independently
 and keep both in the deployment's secret manager. If an existing deployment
@@ -396,8 +396,6 @@ previously omitted `TOKEN_HASH_KEY`, initially set it to the existing signing ke
 to preserve token hashes, provided that key is private and at least 32 characters
 long. Keep an already configured token-hash key unchanged. Rotating
 `TOKEN_HASH_KEY` invalidates existing refresh and password-reset tokens.
-
-No password-table migration is required when upgrading. New and changed passwords use Argon2id; a valid login with an older `pbkdf2_sha256` password hash rewrites that one hash to Argon2id in the successful login transaction.
 
 ### Client
 

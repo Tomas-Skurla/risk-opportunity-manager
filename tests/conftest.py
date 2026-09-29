@@ -32,7 +32,6 @@ def isolated_app_factory(monkeypatch: pytest.MonkeyPatch):
             "LOGIN_RATE_LIMIT_WINDOW_SECONDS": "60",
             "REFRESH_TOKEN_REUSE_GRACE_SECONDS": "30",
             "PASSWORD_RESET_RETURN_TOKEN": "1" if return_reset_token else "0",
-            "PBKDF2_ITERS": "100000",
             "MAX_REQUEST_BODY_BYTES": str(max_request_body_bytes),
             "ALLOWED_HOSTS": "*",
             "CORS_ORIGINS": "",

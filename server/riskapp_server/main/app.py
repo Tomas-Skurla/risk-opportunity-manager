@@ -24,7 +24,7 @@ from riskapp_server.api.routers.projects import router as projects_router
 from riskapp_server.api.routers.snapshots import router as snapshots_router
 from riskapp_server.api.routers.sync_routes import router as sync_router
 from riskapp_server.api.routers.users import router as users_router
-from riskapp_server.auth.service import hash_pw
+from riskapp_server.auth.passwords import hash_pw
 from riskapp_server.core.config import (
     ALLOWED_HOSTS,
     CORS_ORIGINS,

@@ -1,25 +1,10 @@
 from __future__ import annotations
 
-import base64
-import hashlib
-
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 # Server imports follow isolated_app_factory's environment and module reloads.
 # pylint: disable=import-outside-toplevel
-
-
-def _legacy_pbkdf2_hash(password: str, *, iterations: int = 100_000) -> str:
-    salt = b"legacy-test-salt"
-    digest = hashlib.pbkdf2_hmac(
-        "sha256", password.encode(), salt, iterations
-    )
-    return (
-        f"pbkdf2_sha256${iterations}$"
-        f"{base64.b64encode(salt).decode()}$"
-        f"{base64.b64encode(digest).decode()}"
-    )
 
 
 def test_bearer_hash_uses_token_hash_key_not_jwt_secret(
@@ -43,63 +28,68 @@ def test_new_password_hashes_use_argon2id(
     tmp_path, isolated_app_factory
 ) -> None:
     isolated_app_factory(f"sqlite+pysqlite:///{tmp_path / 'argon2.db'}")
-    import riskapp_server.auth.service as auth_service
+    from riskapp_server.auth import passwords
 
-    stored_hash = auth_service.hash_pw("Password123!")
+    stored_hash = passwords.hash_pw("Password123!")
 
     assert stored_hash.startswith("$argon2id$")
-    assert auth_service.verify_pw("Password123!", stored_hash) is True
-    assert auth_service.verify_pw("WrongPassword123!", stored_hash) is False
-    assert auth_service.password_needs_rehash(stored_hash) is False
+    assert passwords.verify_pw("Password123!", stored_hash) is True
+    assert passwords.verify_pw("WrongPassword123!", stored_hash) is False
+    assert passwords.password_needs_rehash(stored_hash) is False
+    # Anything that is not an Argon2 hash is rejected, never interpreted.
+    old_format = "pbkdf2_sha256$1$c2FsdA==$aGFzaA=="
+    assert passwords.verify_pw("Password123!", old_format) is False
+    assert passwords.password_needs_rehash("not-a-hash") is False
 
 
-def test_successful_login_lazily_upgrades_legacy_pbkdf2_hash(
+def test_successful_login_upgrades_outdated_argon2_hash(
     tmp_path, isolated_app_factory
 ) -> None:
-    db_file = tmp_path / "legacy-password.db"
+    from argon2 import PasswordHasher
+
+    db_file = tmp_path / "outdated-hash.db"
     app = isolated_app_factory(f"sqlite+pysqlite:///{db_file}")
     import riskapp_server.db.session as session
 
     password = "Password123!"
-    legacy_hash = _legacy_pbkdf2_hash(password)
+    outdated_hash = PasswordHasher(time_cost=1, memory_cost=8 * 1024).hash(password)
+
+    def stored_hash() -> str:
+        with session.SessionLocal() as db:
+            return db.execute(
+                select(session.User.password_hash).where(
+                    session.User.email == "upgrade@example.com"
+                )
+            ).scalar_one()
 
     with TestClient(app) as client:
         response = client.post(
             "/register",
-            json={"email": "legacy@example.com", "password": password},
+            json={"email": "upgrade@example.com", "password": password},
         )
         assert response.status_code == 201, response.text
 
         with session.SessionLocal() as db:
             user = db.execute(
-                select(session.User).where(session.User.email == "legacy@example.com")
+                select(session.User).where(session.User.email == "upgrade@example.com")
             ).scalar_one()
-            user.password_hash = legacy_hash
+            user.password_hash = outdated_hash
             db.commit()
 
         response = client.post(
             "/login",
-            data={"username": "legacy@example.com", "password": "WrongPassword1!"},
+            data={"username": "upgrade@example.com", "password": "WrongPassword1!"},
         )
         assert response.status_code == 401
-        with session.SessionLocal() as db:
-            user = db.execute(
-                select(session.User).where(session.User.email == "legacy@example.com")
-            ).scalar_one()
-            assert user.password_hash == legacy_hash
+        assert stored_hash() == outdated_hash
 
         response = client.post(
             "/login",
-            data={"username": "legacy@example.com", "password": password},
+            data={"username": "upgrade@example.com", "password": password},
         )
         assert response.status_code == 200, response.text
-
-        with session.SessionLocal() as db:
-            user = db.execute(
-                select(session.User).where(session.User.email == "legacy@example.com")
-            ).scalar_one()
-            assert user.password_hash.startswith("$argon2id$")
-            assert user.password_hash != legacy_hash
+        assert stored_hash() != outdated_hash
+        assert stored_hash().startswith("$argon2id$v=19$m=19456,t=2,p=1$")
 
 
 def test_password_policy_rejects_weak_password(tmp_path, isolated_app_factory) -> None:

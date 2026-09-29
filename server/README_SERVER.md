@@ -157,7 +157,7 @@ Common settings:
 | `ENV` | `development` | One of `development`, `test`, or `production`; invalid values stop startup |
 | `SECRET_KEY` | unset | Random JWT signing key; required and at least 32 characters in every environment |
 | `TOKEN_HASH_KEY` | unset | Separate random HMAC key for stored refresh/password-reset tokens; required and at least 32 characters in every environment |
-| `ACCESS_TOKEN_MINUTES` | `15` | Access-token lifetime; legacy alias: `TOKEN_MINUTES` |
+| `ACCESS_TOKEN_MINUTES` | `15` | Access-token lifetime |
 | `REFRESH_TOKEN_DAYS` | `30` | Refresh-token lifetime |
 | `REFRESH_TOKEN_REUSE_GRACE_SECONDS` | `30` | One-time lost-response recovery window; `0` disables recovery |
 | `LOGIN_RATE_LIMIT_PER_MINUTE` | `10` | Per-IP-and-email login attempts in the configured window |
@@ -175,7 +175,7 @@ Common settings:
 | `RISKAPP_LOG_FORMAT` | `plain` | `plain` for local use or newline-delimited `json` for log collectors |
 | `PASSWORD_RESET_RETURN_TOKEN` | `0` | Development/test only; forbidden in production |
 | `MAX_SYNC_PULL_PER_ENTITY` | `5000` | Sync pull cap |
-| `SYNC_PUSH_EXPUNGE_EVERY` | `200` | Sync push housekeeping interval; misspelled `SYNC_PUSH_EXUNGE_EVERY` remains a deprecated fallback |
+| `SYNC_PUSH_EXPUNGE_EVERY` | `200` | Sync push housekeeping interval |
 
 `SECRET_KEY` signs access JWTs. `TOKEN_HASH_KEY` hashes opaque refresh and password-reset tokens before database storage, so routine JWT-key rotation does not invalidate those tokens. Generate the two values independently for new deployments.
 
@@ -192,7 +192,7 @@ will need to log in again.
 
 Every HTTP response includes `X-Request-ID`. A valid incoming `X-Request-ID` is preserved; otherwise the API generates one. RiskApp application logs include the same ID, HTTP method, path, status, and duration without recording query strings, authorization headers, or request bodies. Set `RISKAPP_LOG_FORMAT=json` for structured production logs; Uvicorn's own process logs remain independently configured by Uvicorn.
 
-New account passwords are hashed with Argon2id using 19 MiB of memory, two iterations, and one lane. Existing `pbkdf2_sha256` hashes continue to verify and are replaced with Argon2id only after that user successfully logs in. The `PBKDF2_ITERS` setting is retained for compatibility but no longer controls new password hashes.
+New account passwords are hashed with Argon2id using 19 MiB of memory, two iterations, and one lane. If these parameters are raised later, existing hashes are upgraded at each user's next successful login.
 
 ## Scoring notes
 

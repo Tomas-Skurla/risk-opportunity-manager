@@ -47,7 +47,7 @@ The main window owns an explicit `MainWindowState` object for selection and acce
 ## Security model
 
 - Access tokens are short-lived JWTs with issuer, audience, expiry, and unique id.
-- New passwords use Argon2id (`m=19456`, `t=2`, `p=1`). Legacy PBKDF2 hashes remain verifiable and are replaced only after a successful login.
+- Passwords use Argon2id (`m=19456`, `t=2`, `p=1`). Hashes created with older parameters are upgraded after the next successful login.
 - Refresh and password-reset tokens are random and stored only as HMAC hashes keyed independently from JWT signing. Refresh rotation atomically forms a single replacement chain. A just-rotated token gets one short recovery opportunity while its replacement remains unused; older or already-advanced reuse revokes only that connected token family.
 - Project RBAC is enforced in both REST routers and  the sync engine.
 - Every environment requires explicit signing and token-hash keys of at least 32 characters. There is no insecure-default bypass. Production startup additionally rejects wildcard hosts and returned reset tokens, wildcard credentialed CORS is rejected in every environment.
@@ -63,4 +63,4 @@ logs, and external secret management.
 
 `SECRET_KEY` signs access JWTs, while `TOKEN_HASH_KEY` hashes refresh and password-reset tokens before database storage. Every environment requires both keys, each at least 32 characters long. Generate them independently and do not reuse the same value for both; token hashing has no fallback to the signing key. When upgrading a deployment that previously shared one key, configure two fresh independent keys. This invalidates existing access tokens, refresh tokens, and password-reset links; users must sign in again or request a new reset link. Key rotation does not change accounts, passwords, or application data. Keep existing secure, independent keys unchanged unless intentionally rotating them. Changing only `TOKEN_HASH_KEY` invalidates refresh and password-reset tokens, existing access JWTs remain valid until expiry or separate invalidation.
 
-Argon2id is intentionally configured at OWASP's minimum 19 MiB/two-iteration profile to keep interactive login practical on portfolio-scale deployments. Parameters are embedded in each hash, and successful login upgrades a hash when the configured profile changes. This avoids a forced password reset or a risky bulk migration of legacy PBKDF2 credentials.
+Argon2id is intentionally configured at OWASP's minimum 19 MiB/two-iteration profile to keep interactive login practical on portfolio-scale deployments. Parameters are embedded in each hash, and successful login upgrades a hash when the configured profile changes. Raising the parameters later therefore needs no forced password reset.

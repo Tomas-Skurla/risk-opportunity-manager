@@ -17,7 +17,6 @@ from sqlalchemy import select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
-from riskapp_server.auth import passwords as password_hashing
 from riskapp_server.core.config import (
     ACCESS_TOKEN_MINUTES,
     ALGORITHM,
@@ -30,11 +29,6 @@ from riskapp_server.core.config import (
 from riskapp_server.db.session import RefreshToken, User, get_db, utcnow
 
 logger = logging.getLogger("riskapp_server.auth")
-
-# Backward-compatible exports for existing callers of auth.service.
-hash_pw = password_hashing.hash_pw
-verify_pw = password_hashing.verify_pw
-password_needs_rehash = password_hashing.password_needs_rehash
 
 validate_runtime_config()
 

@@ -5,7 +5,6 @@ The project intentionally keeps configuration dependency-free. Invalid values fa
 from __future__ import annotations
 
 import os
-import warnings
 
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 _FALSE_VALUES = {"0", "false", "no", "off"}
@@ -48,32 +47,6 @@ def _env_int(
     return value
 
 
-def _env_int_with_deprecated_alias(
-    name: str,
-    deprecated_name: str,
-    default: int,
-    *,
-    minimum: int | None = None,
-    maximum: int | None = None,
-) -> int:
-    """Read an integer setting while temporarily accepting an old name."""
-    canonical_is_set = name in os.environ
-    deprecated_is_set = deprecated_name in os.environ
-    if deprecated_is_set:
-        warnings.warn(
-            f"{deprecated_name} is deprecated; use {name}",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-    selected_name = name if canonical_is_set or not deprecated_is_set else deprecated_name
-    return _env_int(
-        selected_name,
-        default,
-        minimum=minimum,
-        maximum=maximum,
-    )
-
-
 def _env_list(name: str, default: str = "") -> list[str]:
     return [
         part.strip() for part in os.getenv(name, default).split(",") if part.strip()
@@ -114,9 +87,9 @@ SECRET_KEY: str = os.getenv("SECRET_KEY", "").strip()
 # Both keys are required in every environment.
 TOKEN_HASH_KEY: str = os.getenv("TOKEN_HASH_KEY", "").strip()
 ALGORITHM: str = os.getenv("ALGORITHM", "HS256").strip().upper()
-TOKEN_MINUTES: int = _env_int("TOKEN_MINUTES", 15, minimum=1, maximum=1440)
+
 ACCESS_TOKEN_MINUTES: int = _env_int(
-    "ACCESS_TOKEN_MINUTES", TOKEN_MINUTES, minimum=1, maximum=1440
+    "ACCESS_TOKEN_MINUTES", 15, minimum=1, maximum=1440
 )
 REFRESH_TOKEN_DAYS: int = _env_int("REFRESH_TOKEN_DAYS", 30, minimum=1, maximum=365)
 REFRESH_TOKEN_REUSE_GRACE_SECONDS: int = _env_int(
@@ -158,10 +131,6 @@ TRUST_X_FORWARDED_PROTO: bool = _env_bool("TRUST_X_FORWARDED_PROTO", False)
 INITIAL_SUPERUSER_EMAIL: str | None = _optional_env("INITIAL_SUPERUSER_EMAIL")
 INITIAL_SUPERUSER_PASSWORD: str | None = _optional_env("INITIAL_SUPERUSER_PASSWORD")
 
-# Retained only for configuration compatibility with deployments created before
-# Argon2id became the default. Stored PBKDF2 hashes carry their own iteration
-# count and are upgraded after a successful login.
-PBKDF2_ITERS: int = _env_int("PBKDF2_ITERS", 200_000, minimum=100_000)
 
 DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite+pysqlite:///./riskapp.db").strip()
 DB_POOL_RECYCLE: int = _env_int("DB_POOL_RECYCLE", 1800, minimum=0)
@@ -180,14 +149,7 @@ AUTO_CREATE_SCHEMA: bool = _env_bool("AUTO_CREATE_SCHEMA", ENV != "production")
 MAX_SYNC_PULL_PER_ENTITY: int = _env_int(
     "MAX_SYNC_PULL_PER_ENTITY", 5000, minimum=1, maximum=50_000
 )
-SYNC_PUSH_EXPUNGE_EVERY: int = _env_int_with_deprecated_alias(
-    "SYNC_PUSH_EXPUNGE_EVERY",
-    "SYNC_PUSH_EXUNGE_EVERY",
-    200,
-    minimum=1,
-)
-# Deprecated Python-level compatibility alias. New code must use EXPUNGE.
-SYNC_PUSH_EXUNGE_EVERY: int = SYNC_PUSH_EXPUNGE_EVERY
+SYNC_PUSH_EXPUNGE_EVERY: int = _env_int("SYNC_PUSH_EXPUNGE_EVERY", 200, minimum=1)
 SNAPSHOT_INSERT_CHUNK: int = _env_int("SNAPSHOT_INSERT_CHUNK", 1000, minimum=100)
 RETENTION_DAYS: int = _env_int("RETENTION_DAYS", 180, minimum=1)
 SYNC_RECEIPT_RETENTION_DAYS: int = _env_int(

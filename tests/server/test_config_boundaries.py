@@ -71,31 +71,6 @@ def test_environment_helpers_reject_malformed_and_out_of_range_values(
     with pytest.raises(config.ConfigurationError, match="CHOICE_SETTING"):
         config._env_choice("CHOICE_SETTING", "plain", {"plain", "json"})
 
-def test_integer_setting_deprecated_alias_and_canonical_precedence(
-    monkeypatch,
-) -> None:
-    import riskapp_server.core.config as config
-
-    monkeypatch.delenv("NEW_SETTING", raising=False)
-    monkeypatch.setenv("OLD_SETTING", "17")
-    with pytest.warns(DeprecationWarning, match="OLD_SETTING is deprecated"):
-        assert (
-            config._env_int_with_deprecated_alias(
-                "NEW_SETTING", "OLD_SETTING", 5, minimum=1
-            )
-            == 17
-        )
-
-    monkeypatch.setenv("NEW_SETTING", "23")
-    with pytest.warns(DeprecationWarning, match="OLD_SETTING is deprecated"):
-        assert (
-            config._env_int_with_deprecated_alias(
-                "NEW_SETTING", "OLD_SETTING", 5, minimum=1
-            )
-            == 23
-        )
-
-
 def test_runtime_validation_reports_all_unsafe_settings(monkeypatch) -> None:
     import riskapp_server.core.config as config
 
@@ -153,48 +128,19 @@ def test_valid_production_and_local_settings_pass(monkeypatch) -> None:
 
 @pytest.mark.parametrize("mode", ["development", "test", "production"])
 @pytest.mark.parametrize("key_name", ["SECRET_KEY", "TOKEN_HASH_KEY"])
-@pytest.mark.parametrize(
-    "unsafe_value", [None, "", "   ", "change-me", "change-me-token-hash-key", "s" * 31]
-)
-def test_legacy_flag_cannot_bypass_key_validation(
-    mode: str, key_name: str, unsafe_value: str | None
+def test_missing_keys_are_rejected_in_every_environment(
+    monkeypatch: pytest.MonkeyPatch, mode: str, key_name: str
 ) -> None:
-    """Real environment parsing must reject unsafe keys even with the old flag."""
-    environment = os.environ.copy()
-    environment.update(
-        {
-            "PYTHONPATH": str(ROOT / "server"),
-            "ENV": mode,
-            "SECRET_KEY": "s" * 32,
-            "TOKEN_HASH_KEY": "t" * 32,
-            "ALLOW_INSECURE_DEFAULT_SECRET": "1",
-            "ALGORITHM": "HS256",
-            "ALLOWED_HOSTS": "localhost",
-            "CORS_ORIGINS": "",
-            "PASSWORD_RESET_RETURN_TOKEN": "0",
-            "INITIAL_SUPERUSER_EMAIL": "",
-            "INITIAL_SUPERUSER_PASSWORD": "",
-        }
-    )
-    if unsafe_value is None:
-        environment.pop(key_name)
-    else:
-        environment[key_name] = unsafe_value
+    """No environment is exempt, and each key is checked on its own."""
+    import riskapp_server.core.config as config
 
-    result = subprocess.run(  # noqa: S603 - fixed interpreter and validation command
-        [
-            sys.executable,
-            "-c",
-            "from riskapp_server.core.config import validate_runtime_config; "
-            "validate_runtime_config()",
-        ],
-        cwd=ROOT,
-        env=environment,
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
+    monkeypatch.setattr(config, "ENV", mode)
+    monkeypatch.setattr(config, "SECRET_KEY", "s" * 32)
+    monkeypatch.setattr(config, "TOKEN_HASH_KEY", "t" * 32)
+    monkeypatch.setattr(config, key_name, "")
 
-    assert result.returncode != 0
-    assert f"{key_name} must contain at least 32 characters" in result.stderr
+    with pytest.raises(
+        config.ConfigurationError,
+        match=f"{key_name} must contain at least 32 characters",
+    ):
+        config.validate_runtime_config()
