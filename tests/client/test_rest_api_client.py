@@ -414,7 +414,7 @@ def test_project_helpers_and_common_payload_builders() -> None:
         "description": "",
     }
     backend.delete_project("project-1")
-    assert backend._req.call_args.args == ("DELETE", "/projects/project-1")
+    assert backend._req.call_args.args == ("DELETE", "/admin/projects/project-1")
 
     payload = backend._build_scored_payload(
         "Item", 2, 3, {"code": " R-1 ", "category": "", "status": None}

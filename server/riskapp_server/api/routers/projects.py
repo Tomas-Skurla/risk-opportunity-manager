@@ -1,28 +1,19 @@
 from __future__ import annotations
 
 import uuid
-from datetime import timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Response
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.functions import count
 
 from riskapp_server.auth.service import get_current_user
-from riskapp_server.core.config import RETENTION_DAYS, SYNC_RECEIPT_RETENTION_DAYS
 from riskapp_server.core.permissions import ensure_member, require_min_role
 from riskapp_server.db.session import (
-    Action,
-    Assessment,
-    AuditLog,
-    HelpDeskTicket,
-    Item,
     Project,
     ProjectMember,
     Role,
-    ScoreSnapshot,
-    SyncReceipt,
     User,
     get_db,
     utcnow,
@@ -241,77 +232,5 @@ def remove_member(
         _ensure_not_last_admin(db, project_id, actor=user)
 
     db.delete(m)
-    db.commit()
-    return Response(status_code=204)
-
-
-@router.post("/projects/{project_id}/maintenance/prune")
-def prune_project_logs(
-    project_id: uuid.UUID,
-    days: int | None = None,
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
-) -> dict[str, Any]:
-    """Delete old audit/sync receipt rows for a project as a superuser.
-
-    Project administrators are part of the activity being audited, so they
-    cannot shorten or erase their own project's audit history.
-    """
-    _require_superuser(user)
-    if db.get(Project, project_id) is None:
-        raise HTTPException(status_code=404, detail="Project not found")
-    d = int(days or RETENTION_DAYS)
-    d = max(1, min(d, 3650))
-    cutoff = utcnow() - timedelta(days=d)
-    receipt_cutoff = utcnow() - timedelta(days=max(d, SYNC_RECEIPT_RETENTION_DAYS))
-
-    r1 = db.execute(
-        delete(AuditLog).where(AuditLog.project_id == project_id, AuditLog.ts < cutoff)
-    )
-    r2 = db.execute(
-        delete(SyncReceipt).where(
-            SyncReceipt.project_id == project_id,
-            SyncReceipt.processed_at < receipt_cutoff,
-        )
-    )
-    db.commit()
-    return {
-        "ok": True,
-        "cutoff": cutoff.isoformat(),
-        "receipt_cutoff": receipt_cutoff.isoformat(),
-        "audit_deleted": int(getattr(r1, "rowcount", 0) or 0),
-        "sync_receipts_deleted": int(getattr(r2, "rowcount", 0) or 0),
-    }
-
-
-@router.delete(
-    "/projects/{project_id}",
-    status_code=204,
-    response_class=Response,
-)
-def delete_project(
-    project_id: uuid.UUID,
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
-) -> Response:
-    """Permanently delete a project and all its data. Superadmin only."""
-    _require_superuser(user)
-
-    proj = db.execute(select(Project).where(Project.id == project_id)).scalars().first()
-    if not proj:
-        raise HTTPException(status_code=404, detail="Project not found")
-
-    # Cascade delete all dependent data.
-    # Assessments FK → items, so delete them first.
-    item_ids = select(Item.id).where(Item.project_id == project_id).scalar_subquery()
-    db.execute(delete(Assessment).where(Assessment.item_id.in_(item_ids)))
-    db.execute(delete(Action).where(Action.project_id == project_id))
-    db.execute(delete(Item).where(Item.project_id == project_id))
-    db.execute(delete(ScoreSnapshot).where(ScoreSnapshot.project_id == project_id))
-    db.execute(delete(HelpDeskTicket).where(HelpDeskTicket.project_id == project_id))
-    db.execute(delete(SyncReceipt).where(SyncReceipt.project_id == project_id))
-    db.execute(delete(AuditLog).where(AuditLog.project_id == project_id))
-    db.execute(delete(ProjectMember).where(ProjectMember.project_id == project_id))
-    db.delete(proj)
     db.commit()
     return Response(status_code=204)

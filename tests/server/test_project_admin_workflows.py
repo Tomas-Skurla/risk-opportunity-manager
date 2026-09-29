@@ -137,31 +137,31 @@ def test_superuser_bypass_pruning_and_project_cascade_delete(
         assert risk.status_code == 201
 
         project_admin_prune = client.post(
-            f"/projects/{project_id}/maintenance/prune?days=0",
+            f"/admin/projects/{project_id}/maintenance/prune?days=0",
             headers=regular_headers,
         )
         assert project_admin_prune.status_code == 403
 
         default_prune = client.post(
-            f"/projects/{project_id}/maintenance/prune?days=0",
+            f"/admin/projects/{project_id}/maintenance/prune?days=0",
             headers=super_headers,
         )
 
         assert default_prune.status_code == 200
         assert default_prune.json()["ok"] is True
         bounded_prune = client.post(
-            f"/projects/{project_id}/maintenance/prune?days=99999",
+            f"/admin/projects/{project_id}/maintenance/prune?days=99999",
             headers=super_headers,
         )
         assert bounded_prune.status_code == 200
         missing_prune = client.post(
-            f"/projects/{uuid.uuid4()}/maintenance/prune",
+            f"/admin/projects/{uuid.uuid4()}/maintenance/prune",
             headers=super_headers,
         )
         assert missing_prune.status_code == 404
 
         forbidden = client.delete(
-            f"/projects/{project_id}", headers=regular_headers
+            f"/admin/projects/{project_id}", headers=regular_headers
         )
         assert forbidden.status_code == 403
         missing_id = uuid.uuid4()
@@ -170,11 +170,15 @@ def test_superuser_bypass_pruning_and_project_cascade_delete(
             == 404
         )
         assert (
-            client.delete(f"/projects/{missing_id}", headers=super_headers).status_code
+            client.delete(
+                f"/admin/projects/{missing_id}", headers=super_headers
+            ).status_code
             == 404
         )
 
-        deleted = client.delete(f"/projects/{project_id}", headers=super_headers)
+        deleted = client.delete(
+            f"/admin/projects/{project_id}", headers=super_headers
+        )
         assert deleted.status_code == 204
         assert (
             client.get(f"/projects/{project_id}", headers=super_headers).status_code
@@ -192,3 +196,63 @@ def test_superuser_bypass_pruning_and_project_cascade_delete(
         assert downgraded.status_code == 201
         assert downgraded.json()["updated"] is True
         assert regular["user_id"] != superuser["user_id"]
+
+
+def test_every_admin_route_requires_a_superuser(tmp_path, isolated_app_factory) -> None:
+    """The router-wide check covers every /admin route, including future ones."""
+    from fastapi.routing import APIRoute
+
+    app = isolated_app_factory(f"sqlite+pysqlite:///{tmp_path / 'admin-routes.db'}")
+    from riskapp_server.auth.service import require_superuser
+
+    admin_routes = [
+        route
+        for route in app.routes
+        if isinstance(route, APIRoute) and route.path.startswith("/admin/")
+    ]
+    assert admin_routes
+    for route in admin_routes:
+        assert any(dep.dependency is require_superuser for dep in route.dependencies), (
+            route.path
+        )
+
+
+def test_admin_routes_reject_regular_users_and_old_paths_are_gone(
+    tmp_path, isolated_app_factory
+) -> None:
+    app = isolated_app_factory(f"sqlite+pysqlite:///{tmp_path / 'admin-access.db'}")
+    with TestClient(app) as client:
+        regular, regular_headers = _register(client, "regular@example.com")
+        project_id = client.post(
+            "/projects", json={"name": "Owned by a project admin"}, headers=regular_headers
+        ).json()["id"]
+        user_id = regular["user_id"]
+
+        admin_calls = [
+            ("DELETE", f"/admin/projects/{project_id}", None),
+            ("POST", f"/admin/projects/{project_id}/maintenance/prune", None),
+            ("POST", f"/admin/users/{user_id}/deactivate", None),
+            ("POST", f"/admin/users/{user_id}/activate", None),
+            (
+                "POST",
+                f"/admin/users/{user_id}/set-password",
+                {"new_password": "AnotherPassword123!"},
+            ),
+        ]
+        for method, path, body in admin_calls:
+            anonymous = client.request(method, path, json=body)
+            assert anonymous.status_code == 401, path
+            # Being the project's own admin grants no global administration.
+            as_project_admin = client.request(
+                method, path, json=body, headers=regular_headers
+            )
+            assert as_project_admin.status_code == 403, path
+
+        # The previous addresses are retired rather than kept as aliases.
+        old_delete = client.delete(f"/projects/{project_id}", headers=regular_headers)
+        assert old_delete.status_code == 405
+        old_prune = client.post(
+            f"/projects/{project_id}/maintenance/prune", headers=regular_headers
+        )
+        assert old_prune.status_code == 404
+        assert client.get(f"/projects/{project_id}", headers=regular_headers).status_code == 200

@@ -16,6 +16,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from riskapp_server import __version__
 from riskapp_server.api.routers.actions import router as actions_router
+from riskapp_server.api.routers.admin import router as admin_router
 from riskapp_server.api.routers.auth_routes import router as auth_router
 from riskapp_server.api.routers.helpdesk import router as helpdesk_router
 from riskapp_server.api.routers.items import router as items_router
@@ -60,6 +61,7 @@ ROUTERS = (
     snapshots_router,
     helpdesk_router,
     sync_router,
+    admin_router,
 )
 
 

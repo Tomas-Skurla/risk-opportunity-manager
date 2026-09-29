@@ -370,7 +370,7 @@ def test_audit_prune_keeps_receipts_inside_idempotency_window(
             receipt_user.is_superuser = True
             db.commit()
         pruned = client.post(
-            f"/projects/{project_id}/maintenance/prune?days=1", headers=headers
+            f"/admin/projects/{project_id}/maintenance/prune?days=1", headers=headers
         )
         assert pruned.status_code == 200
         assert pruned.json()["sync_receipts_deleted"] == 0

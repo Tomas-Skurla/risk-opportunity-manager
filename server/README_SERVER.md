@@ -131,13 +131,23 @@ The server exposes Help Desk CRUD routes per project:
 Help Desk tickets are included in sync push/pull for server-backed projects.
 Every REST update of a risk, opportunity, action, assessment, or Help Desk ticket must include the current `base_version`. A missing version is rejected with HTTP 422; a stale version returns HTTP 409 and the server's current version.
 
+## Global administration
+
+Operations reserved for superusers live under `/admin/`, and the admin router requires a superuser for every route in it:
+
+- `DELETE /admin/projects/{project_id}` deletes a project and all its data
+- `POST /admin/projects/{project_id}/maintenance/prune` removes old audit history
+- `POST /admin/users/{user_id}/deactivate`, `.../activate`, `.../set-password`
+
+A gateway can therefore keep global administration off the public entrance with one path rule, while the API still checks the superuser flag itself. Project administrators manage their own projects through the ordinary routes.
+
 ## Audit retention
 
 Superusers can delete old audit-log and sync-receipt rows for one project. Use the
 `access_token` returned by the login call above:
 
 ```bash
-curl -X POST "http://127.0.0.1:8000/projects/$PROJECT_ID/maintenance/prune?days=180" \
+curl -X POST "http://127.0.0.1:8000/admin/projects/$PROJECT_ID/maintenance/prune?days=180" \
   -H "Authorization: Bearer $TOKEN"
 ```
 

@@ -100,6 +100,9 @@ def isolated_app_factory(monkeypatch: pytest.MonkeyPatch):
         import riskapp_server.api.routers.sync_routes as sync_routes
 
         importlib.reload(sync_routes)
+        import riskapp_server.api.routers.admin as admin
+
+        importlib.reload(admin)
 
         import riskapp_server.sync.engine as sync_engine
 

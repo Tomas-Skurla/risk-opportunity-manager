@@ -17,6 +17,7 @@ from sqlalchemy import select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
+from riskapp_server.auth.passwords import hash_pw
 from riskapp_server.core.config import (
     ACCESS_TOKEN_MINUTES,
     ALGORITHM,
@@ -26,6 +27,7 @@ from riskapp_server.core.config import (
     TOKEN_HASH_KEY,
     validate_runtime_config,
 )
+from riskapp_server.core.password_policy import validate_password
 from riskapp_server.db.session import RefreshToken, User, get_db, utcnow
 
 logger = logging.getLogger("riskapp_server.auth")
@@ -351,3 +353,24 @@ def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
     return user
+
+
+def require_superuser(user: User = Depends(get_current_user)) -> User:
+    """Dependency for global administration: only superusers may continue."""
+    if not user.is_superuser:
+        raise HTTPException(status_code=403, detail="Superadmin privileges required")
+    return user
+
+
+def set_user_password(
+    db: Session, user: User, new_password: str, *, commit: bool = True
+) -> None:
+    """Replace a user's password after a policy check and end their sessions."""
+    issues = validate_password(new_password)
+    if issues:
+        raise HTTPException(status_code=400, detail={"password": issues})
+    user.password_hash = hash_pw(new_password)
+    revoke_user_refresh_tokens(db, user.id)
+    db.add(user)
+    if commit:
+        db.commit()

@@ -558,7 +558,7 @@ class ApiBackend:
 
     def delete_project(self, project_id: str) -> None:
         """Permanently delete a project on the server (superadmin only)."""
-        self._req("DELETE", f"/projects/{project_id}")
+        self._req("DELETE", f"/admin/projects/{project_id}")
 
     def _to_assessment(self, j: dict[str, Any]) -> Assessment:
         return assessment_from_mapping(j)
