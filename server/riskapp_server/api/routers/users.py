@@ -37,11 +37,6 @@ _reset_limiter = InMemorySlidingWindowLimiter(
 )
 
 
-def _require_superuser(user: User) -> None:
-    if not getattr(user, "is_superuser", False):
-        raise HTTPException(status_code=403, detail="Admin privileges required")
-
-
 @router.get("/users/me", response_model=UserOut)
 def me(user: User = Depends(get_current_user)) -> User:
     return user

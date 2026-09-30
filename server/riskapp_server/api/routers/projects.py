@@ -47,11 +47,6 @@ def _ensure_not_last_admin(
         )
 
 
-def _require_superuser(user: User) -> None:
-    if not user.is_superuser:
-        raise HTTPException(status_code=403, detail="Superadmin privileges required")
-
-
 @router.post("/projects", response_model=ProjectOut, status_code=201)
 def create_project(
     payload: ProjectCreate,
