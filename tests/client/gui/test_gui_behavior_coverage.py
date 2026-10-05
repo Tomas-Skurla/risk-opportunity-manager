@@ -227,6 +227,8 @@ class GuiBackend:
         return action
 
     def update_action(self, project_id, action_id, **values):
+        base_version = values.pop("base_version", None)
+        self.editor_base_versions.append(("action", action_id, base_version))
         target_type = values.pop("target_type")
         target_id = values.pop("target_id")
         action = Action(
@@ -485,6 +487,28 @@ def test_open_editors_keep_the_version_the_user_actually_saw(qtbot) -> None:
         "opp-1",
         3,
     )
+
+
+def test_action_editor_keeps_its_loaded_version_after_sync_refresh(qtbot) -> None:
+    window, backend = _window(qtbot)
+    backend.actions[0].version = 4
+    backend.actions[0].description = "Original description"
+    window._refresh_actions()
+    window._on_action_clicked(0, 0)
+
+    backend.actions[0].version = 5
+    backend.actions[0].description = "Bob's synchronized description"
+    window._refresh_actions(select_action_id="action-1")
+    assert window.actions_tab.action_desc.toPlainText() == "Original description"
+
+    window.actions_tab.action_title.setText("Alice's title")
+    window._save_action()
+    assert backend.editor_base_versions[-1] == ("action", "action-1", 4)
+    window._save_action()
+    assert backend.editor_base_versions[-1] == ("action", "action-1", 4)
+
+    window._start_new_action()
+    assert window._action_editor_base_version is None
 
 
 def test_scored_entity_helpers_permissions_and_export(monkeypatch, qtbot) -> None:

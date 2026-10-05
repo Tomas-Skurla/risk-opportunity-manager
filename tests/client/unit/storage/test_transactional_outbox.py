@@ -108,16 +108,21 @@ def test_helpdesk_create_rolls_back_when_outbox_insert_fails(local_store) -> Non
     assert local_store.list_helpdesk_tickets(project_id) == []
 
 
-def test_helpdesk_delete_rolls_back_and_preserves_previous_change(local_store) -> None:
+@pytest.mark.parametrize("version", [0, 3])
+def test_helpdesk_delete_rolls_back_and_preserves_previous_change(
+    local_store, version: int
+) -> None:
     backend, project_id = _backend(local_store)
     ticket = backend.create_helpdesk_ticket(project_id, title="Keep me")
     local_store.conn.execute(
-        "UPDATE helpdesk_tickets SET version=3, dirty=0 WHERE id=?;",
-        (ticket.id,),
+        "UPDATE helpdesk_tickets SET version=?, dirty=0 WHERE id=?;",
+        (version, ticket.id),
     )
     local_store.conn.commit()
     backend.update_helpdesk_ticket(ticket.id, title="Queued update")
     original_change = backend.outbox.get_pending_changes(project_id)[0]
+    if version == 0:
+        backend.outbox.mark_outbox_ids_attempted([original_change["change_id"]])
     _reject_outbox_inserts(local_store)
 
     with pytest.raises(sqlite3.IntegrityError, match="simulated outbox failure"):

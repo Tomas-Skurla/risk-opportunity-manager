@@ -8,7 +8,11 @@ It uses two accounts. `<your admin email here>` and `<your admin password here>`
 
 ## 1. Set up and start
 
-Follow the [setup guide](SETUP_GUIDE.md) through step 7, starting the server with `RESET_SERVER_DB=1` and the client with `RESET_CLIENT_DB=1` so both begin with empty databases. Before continuing, confirm that:
+Follow the [setup guide](SETUP_GUIDE.md) through step 7. Normal startup preserves existing data.
+
+This manual checklist assumes empty development databases. If you need to reset an existing installation, stop both applications and use the [deliberate reset procedure](SETUP_GUIDE.md#9-reset-local-dev-state) before starting them again. **This deletes server data and all client data, including unsynced changes.**
+
+Before continuing, confirm that:
 
 - `bash scripts/check_project.sh` ends with `All checks passed.` ([step 5](SETUP_GUIDE.md#5-run-automated-checks))
 - the health check in [step 6](SETUP_GUIDE.md#6-start-the-server) returns `HTTP 200` and `{"status":"ok","db":"ok"}`

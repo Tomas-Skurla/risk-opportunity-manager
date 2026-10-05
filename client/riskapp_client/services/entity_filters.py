@@ -25,6 +25,7 @@ def parse_date(value: str) -> datetime | None:
 ANY_STATUS = "(any)"
 MAX_SCORE = 999_999
 
+
 @dataclass(frozen=True)
 class ScoredFilterCriteria:
     """Shared filter criteria for any scored entity."""

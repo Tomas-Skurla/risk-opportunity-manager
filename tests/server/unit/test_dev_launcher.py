@@ -72,7 +72,7 @@ def test_launcher_passes_dotenv_as_data_without_sourcing(launcher: Path) -> None
     assert result.returncode == 0
     capture = json.loads((launcher / "capture.json").read_text())
     arguments = capture["args"]
-    assert arguments[arguments.index("--env-file") + 1] == str(launcher / ".env")
+    assert Path(arguments[arguments.index("--env-file") + 1]) == launcher / ".env"
     assert not (launcher / "should-not-exist").exists()
     assert all(value is None for value in capture["env"].values())
 

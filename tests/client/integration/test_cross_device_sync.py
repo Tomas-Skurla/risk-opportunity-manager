@@ -34,6 +34,7 @@ class _InProcessRemote:
         self.project_id = project_id
         self.headers = headers
         self.fail_pull = False
+        self.lose_push_response = False
 
     @staticmethod
     def _body(response: Any) -> dict[str, Any]:
@@ -54,7 +55,10 @@ class _InProcessRemote:
             json={"project_id": project_id, "changes": changes},
             headers=self.headers,
         )
-        return self._body(response)
+        body = self._body(response)
+        if self.lose_push_response:
+            raise _RemoteError(503, "simulated lost push response")
+        return body
 
     def sync_pull(
         self,
@@ -217,6 +221,63 @@ def test_accepted_push_survives_a_failed_pull_and_can_then_be_deleted(
             backend.store.close()
 
 
+@pytest.mark.parametrize("restart_client", [False, True])
+def test_helpdesk_delete_after_lost_create_response_reaches_server(
+    tmp_path,
+    isolated_app_factory,
+    restart_client: bool,
+) -> None:
+    app = isolated_app_factory(f"sqlite+pysqlite:///{tmp_path / 'server.db'}")
+    with TestClient(app) as client:
+        project_id, headers = _server_project(client)
+        remote = _InProcessRemote(client, project_id, headers)
+        db_path = tmp_path / "device.db"
+        backend = _backend(db_path, project_id, remote)
+        try:
+            ticket = backend.create_helpdesk_ticket(
+                project_id, title="Delete after a lost response"
+            )
+            remote.lose_push_response = True
+
+            assert backend.sync_project(project_id)["state"] == "retry_wait"
+            assert backend.store.get_helpdesk_ticket_project_and_version(ticket.id) == (
+                project_id,
+                0,
+            )
+            pulled = remote.sync_pull(project_id, since_sequence=0)
+            server_row = next(
+                item for item in pulled["helpdesk_tickets"] if item["id"] == ticket.id
+            )
+            assert server_row["version"] == 1
+            assert server_row["is_deleted"] is False
+
+            if restart_client:
+                backend.store.close()
+                backend = OfflineFirstBackend(LocalStore(str(db_path)), remote=remote)
+
+            backend.delete_helpdesk_ticket(ticket.id)
+            pending = backend.outbox.get_pending_changes(project_id)
+            assert len(pending) == 1
+            assert pending[0]["op"] == "delete"
+            assert pending[0]["base_version"] == 1
+
+            remote.lose_push_response = False
+            assert backend.sync_project(project_id)["state"] == "complete"
+            assert backend.pending_count(project_id) == 0
+            assert backend.list_helpdesk_tickets(project_id) == []
+
+            pulled = remote.sync_pull(project_id, since_sequence=0)
+            server_row = next(
+                item for item in pulled["helpdesk_tickets"] if item["id"] == ticket.id
+            )
+            assert server_row["version"] == 2
+            assert server_row["is_deleted"] is True
+            assert backend.sync_project(project_id)["state"] == "complete"
+            assert backend.list_helpdesk_tickets(project_id) == []
+        finally:
+            backend.store.close()
+
+
 def test_two_offline_devices_with_the_same_code_converge(
     tmp_path,
     isolated_app_factory,
@@ -359,3 +420,75 @@ def test_pull_rows_and_watermark_are_one_local_transaction(local_store) -> None:
     assert row["version"] == 1
     assert local_store.get_last_server_sequence(project.id) == 0
     local_store.apply_pull_opportunities = original_apply  # type: ignore[method-assign]
+
+
+def test_stale_action_editor_conflicts_after_another_devices_update(
+    tmp_path, isolated_app_factory
+) -> None:
+    app = isolated_app_factory(f"sqlite+pysqlite:///{tmp_path / 'actions-server.db'}")
+    with TestClient(app) as client:
+        project_id, headers = _server_project(client)
+        parent = client.post(
+            f"/projects/{project_id}/risks",
+            json={"type": "risk", "title": "Parent", "probability": 2, "impact": 2},
+            headers=headers,
+        )
+        assert parent.status_code == 201, parent.text
+        remote = _InProcessRemote(client, project_id, headers)
+        alice = _backend(tmp_path / "actions-alice.db", project_id, remote)
+        bob = _backend(tmp_path / "actions-bob.db", project_id, remote)
+        try:
+            bob.sync_project(project_id)
+            action = bob.create_action(
+                project_id,
+                target_type="risk",
+                target_id=parent.json()["id"],
+                kind="mitigation",
+                title="Original action",
+                description="Original description",
+                status="open",
+                owner_user_id=None,
+            )
+            assert bob.sync_project(project_id)["pushed"] == 1
+            alice.sync_project(project_id)
+            editor = alice.list_actions(project_id)[0]
+            assert editor.version == 1
+
+            bob.update_action(
+                project_id,
+                action.id,
+                target_type="risk",
+                target_id=editor.risk_id,
+                kind=editor.kind,
+                title=editor.title,
+                description="Bob's description",
+                status=editor.status,
+                owner_user_id=None,
+            )
+            assert bob.sync_project(project_id)["pushed"] == 1
+            alice.sync_project(project_id)
+            assert alice.list_actions(project_id)[0].version == 2
+
+            alice.update_action(
+                project_id,
+                action.id,
+                target_type="risk",
+                target_id=editor.risk_id,
+                kind=editor.kind,
+                title="Alice's title",
+                description=editor.description,
+                status=editor.status,
+                owner_user_id=None,
+                base_version=editor.version,
+            )
+            queued = alice.outbox.get_pending_changes(project_id)[0]
+            assert queued["base_version"] == 1
+            assert alice.sync_project(project_id)["conflicts"] == 1
+            persisted = client.get(
+                f"/projects/{project_id}/actions", headers=headers
+            ).json()[0]
+            assert persisted["description"] == "Bob's description"
+            assert persisted["title"] == "Original action"
+        finally:
+            alice.store.close()
+            bob.store.close()

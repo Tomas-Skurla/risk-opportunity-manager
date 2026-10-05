@@ -58,15 +58,25 @@ RUN bash scripts/check_project.sh
 
 FROM base AS server
 
+# Apply Debian security updates to packages inherited from the pinned base.
+# Fail the build if the repository does not yet provide the fixed Perl version.
 RUN apt-get update \
-    && apt-get install --no-install-recommends --only-upgrade -y libpcre2-8-0 \
+    && apt-get install --no-install-recommends --only-upgrade -y \
+        libpcre2-8-0 \
+        perl-base \
+    && dpkg --compare-versions \
+        "$(dpkg-query -W -f='${Version}' perl-base)" ge '5.36.0-7+deb12u4' \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 COPY server/requirements.lock /tmp/server-requirements.lock
+# pip bundles urllib3 2.7.0. Remove the installer and its vendored libraries
+# after installation; the API runtime does not need them. The test stage keeps pip.
 RUN python -m pip install --no-cache-dir \
-        --requirement /tmp/server-requirements.lock
+        --requirement /tmp/server-requirements.lock \
+    && python -m pip check \
+    && python -m pip uninstall --yes pip
 
 COPY server ./server
 

@@ -127,7 +127,17 @@ class CoreMixin:
 
     @current_action_id.setter
     def current_action_id(self, value: str | None) -> None:
+        if value != self.state.action_id:
+            self.state.action_editor_base_version = None
         self.state.action_id = value
+
+    @property
+    def _action_editor_base_version(self) -> int | None:
+        return self.state.action_editor_base_version
+
+    @_action_editor_base_version.setter
+    def _action_editor_base_version(self, value: int | None) -> None:
+        self.state.action_editor_base_version = value
 
     @property
     def current_assessment_item_type(self) -> str:

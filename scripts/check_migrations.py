@@ -7,6 +7,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+from contextlib import closing
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -54,7 +55,7 @@ def main() -> int:
         _run_alembic(["current", "--check-heads"], environment)
         _run_alembic(["check"], environment)
 
-        with sqlite3.connect(database_path) as connection:
+        with closing(sqlite3.connect(database_path)) as connection:
             version = connection.execute(
                 "SELECT version_num FROM alembic_version"
             ).fetchone()

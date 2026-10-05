@@ -120,6 +120,7 @@ def test_helpdesk_service_create_update_and_both_delete_paths() -> None:
         ("project-1", 2),
     ]
     outbox = Mock()
+    outbox.remote_create_may_exist.return_value = False
     service = HelpDeskService(store, outbox)
 
     assert service.list("project-1") == [created]

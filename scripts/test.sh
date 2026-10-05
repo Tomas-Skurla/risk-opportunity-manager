@@ -20,16 +20,22 @@ cleanup_coverage_report() {
 }
 trap cleanup_coverage_report EXIT
 
+coverage_report_python="$coverage_report"
+if command -v cygpath >/dev/null 2>&1; then
+  # Git Bash converts bare paths differently from pytest's embedded json: path.
+  coverage_report_python="$(cygpath -m "$coverage_report")"
+fi
+
 python -m pytest -c pyproject.toml -q \
   --cov=server/riskapp_server \
   --cov=client/riskapp_client \
   --cov-branch \
   --cov-fail-under=90 \
   --cov-report=term-missing \
-  --cov-report="json:${coverage_report}" \
+  --cov-report="json:${coverage_report_python}" \
   "$@"
 
 python scripts/check_coverage_thresholds.py \
-  "$coverage_report" \
+  "$coverage_report_python" \
   --min-lines=92 \
   --min-branches=80

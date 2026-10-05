@@ -122,7 +122,9 @@ class ScoredEntityMixin:
                 return str(data), False
             return None, False
         except AttributeError, RuntimeError:
-            logging.getLogger(__name__).debug("Could not read owner filter widget", exc_info=True)
+            logging.getLogger(__name__).debug(
+                "Could not read owner filter widget", exc_info=True
+            )
             return None, False
 
     def _on_entity_clicked(

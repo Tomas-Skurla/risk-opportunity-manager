@@ -135,7 +135,7 @@ Use Terminal 1:
 
 ```bash
 bash scripts/dev-init.sh
-RESET_SERVER_DB=1 bash scripts/run_server_dev.sh
+bash scripts/run_server_dev.sh
 ```
 
 The setup script creates a private, Git-ignored `.env` with random signing and token-hash keys and an administrator password. Reruns preserve existing values. The launcher loads that file, with exported settings taking precedence. Read `INITIAL_SUPERUSER_EMAIL` and `INITIAL_SUPERUSER_PASSWORD` from `.env` to log in. Existing database accounts are never changed by bootstrap settings.
@@ -189,7 +189,7 @@ Keep `AUTO_CREATE_SCHEMA=0` in deployed environments. Existing databases made wi
 Use Terminal 2:
 
 ```bash
-RESET_CLIENT_DB=1 bash scripts/run_client_dev.sh
+bash scripts/run_client_dev.sh
 ```
 
 This launches the PySide6 desktop client with:
@@ -233,6 +233,8 @@ bash scripts/setup_python_env.sh --recreate
 ---
 
 ## 9. Reset local dev state
+
+**Destructive:** resetting deletes the server database and the client database,including unsynced client changes. Normal startup in steps 6 and 7 preserves existing data. Use a reset only when you deliberately want an empty database.
 
 Interactive:
 

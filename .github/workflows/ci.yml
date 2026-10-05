@@ -67,7 +67,7 @@ jobs:
       - name: Scan repository for exposed secrets
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          version: v0.74.0
+          version: v0.75.0
           scan-type: fs
           scan-ref: .
           scanners: secret
@@ -135,7 +135,7 @@ jobs:
       - name: Scan image for known vulnerabilities
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          version: v0.74.0
+          version: v0.75.0
           trivyignores: .trivyignore.yaml
           image-ref: riskapp-api:ci
           scanners: vuln,secret
@@ -152,7 +152,7 @@ jobs:
         if: always() && steps.build_api.outcome == 'success'
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          version: v0.74.0
+          version: v0.75.0
           trivyignores: .trivyignore.yaml
           image-ref: riskapp-api:ci
           scanners: vuln,secret

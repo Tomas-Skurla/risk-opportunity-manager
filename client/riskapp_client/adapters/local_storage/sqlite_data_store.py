@@ -718,48 +718,60 @@ class LocalStore:
         outbox_entity: str,
     ) -> None:
         self._assert_scored_table(table)
-        pending_ids = {
-            r["entity_id"]
-            for r in self.conn.execute(
-                "SELECT entity_id FROM outbox WHERE project_id=? AND entity=? "
-                "AND status IN ('pending', 'retry', 'blocked');",
-                (project_id, outbox_entity),
-            ).fetchall()
-        }
-        cur = self.conn.cursor()
-        for ent in server_entities:
-            eid = str(ent["id"])
-            ver = int(ent.get("version") or 0)
-            upd = str(ent.get("updated_at") or "")
-            if eid in pending_ids:
-                # Keep the last acknowledged version while a local write is
-                # pending. The server's newer version belongs in conflict
-                # metadata until the user explicitly resolves the conflict.
-                self._remember_conflict_server_record(
-                    project_id,
-                    outbox_entity,
-                    eid,
-                    ent,
-                )
-                continue
-            meta = {k: ent.get(k) for k in SCORED_ENTITY_META_KEYS}
-            if not meta.get("status"):
-                meta["status"] = "concept"
-            m = self._norm_scored_meta(meta)
-            record: dict[str, Any] = {
-                "id": eid,
-                "project_id": project_id,
-                "title": str(ent.get("title") or ""),
-                "probability": int(ent.get("probability") or 1),
-                "impact": int(ent.get("impact") or 1),
-                **m,
-                "version": ver,
-                "is_deleted": 1 if bool(ent.get("is_deleted")) else 0,
-                "updated_at": upd,
-                "dirty": 0,
+
+        with self.write_transaction():
+            pending_ids = {
+                r["entity_id"]
+                for r in self.conn.execute(
+                    "SELECT entity_id FROM outbox WHERE project_id=? AND entity=? "
+                    "AND status IN ('pending', 'retry', 'blocked');",
+                    (project_id, outbox_entity),
+                ).fetchall()
             }
-            self._upsert_row(table, record, cur)
-        self._commit_if_needed()
+            cur = self.conn.cursor()
+            for ent in server_entities:
+                eid = str(ent["id"])
+                ver = int(ent.get("version") or 0)
+                upd = str(ent.get("updated_at") or "")
+                if eid in pending_ids:
+                    # Keep the last acknowledged version while a local write is
+                    # pending. The server's newer version belongs in conflict
+                    # metadata until the user explicitly resolves the conflict.
+                    self._remember_conflict_server_record(
+                        project_id,
+                        outbox_entity,
+                        eid,
+                        ent,
+                    )
+                    continue
+                meta = {k: ent.get(k) for k in SCORED_ENTITY_META_KEYS}
+                if not meta.get("status"):
+                    meta["status"] = "concept"
+                m = self._norm_scored_meta(meta)
+                record: dict[str, Any] = {
+                    "id": eid,
+                    "project_id": project_id,
+                    "title": str(ent.get("title") or ""),
+                    "probability": int(ent.get("probability") or 1),
+                    "impact": int(ent.get("impact") or 1),
+                    **m,
+                    "version": ver,
+                    "is_deleted": 1 if bool(ent.get("is_deleted")) else 0,
+                    "updated_at": upd,
+                    "dirty": 0,
+                }
+                # Server codes take precedence over provisional offline codes.
+                # Preserve the local row and its exact outbox payload/receipt;
+                # a later accepted push supplies that row's canonical code.
+                cur.execute(
+                    f"UPDATE {table} SET code=NULL "  # noqa: S608
+                    "WHERE project_id=? AND code=? AND id<>? AND version=0 "
+                    "AND id IN (SELECT entity_id FROM outbox "
+                    "WHERE project_id=? AND entity=? "
+                    "AND status IN ('pending', 'retry', 'blocked'));",
+                    (project_id, m.get("code"), eid, project_id, outbox_entity),
+                )
+                self._upsert_row(table, record, cur)
 
     def list_risks(self, project_id: str) -> list[Risk]:
         return self._list_scored_entities(project_id, table="risks", model_cls=Risk)
