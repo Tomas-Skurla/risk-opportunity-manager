@@ -37,11 +37,9 @@ def sync_pull(
     return pull_since(
         db,
         project_id=project_id,
-        since=payload.since,
+        since_sequence=payload.since_sequence,
         limit_per_entity=payload.limit_per_entity,
         cursors=payload.cursors,
-        snapshot_time=payload.snapshot_time,
-        since_sequence=payload.since_sequence,
         snapshot_sequence=payload.snapshot_sequence,
     )
 

@@ -33,7 +33,6 @@ class OpportunitiesTab(ScoredEntitiesTab):
             on_save_item=on_save_opportunity,
             on_delete_item=on_delete_item,
             on_mark_dirty=on_mark_dirty,
-            on_fit_table_card=None,
             parent=parent,
         )
         self.table_card = self.ui.table_card

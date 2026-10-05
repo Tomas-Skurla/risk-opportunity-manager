@@ -57,9 +57,7 @@ def _env_choice(name: str, default: str, choices: set[str]) -> str:
     """Read a case-insensitive setting constrained to explicit values."""
     value = os.getenv(name, default).strip().lower()
     if value not in choices:
-        raise ConfigurationError(
-            f"{name} must be one of: {', '.join(sorted(choices))}"
-        )
+        raise ConfigurationError(f"{name} must be one of: {', '.join(sorted(choices))}")
     return value
 
 
@@ -67,14 +65,13 @@ def _optional_env(name: str) -> str | None:
     value = os.getenv(name, "").strip()
     return value or None
 
+
 RISKAPP_LOG_LEVEL: str = _env_choice(
     "RISKAPP_LOG_LEVEL",
     "info",
     {"critical", "error", "warning", "info", "debug"},
 ).upper()
-RISKAPP_LOG_FORMAT: str = _env_choice(
-    "RISKAPP_LOG_FORMAT", "plain", {"plain", "json"}
-)
+RISKAPP_LOG_FORMAT: str = _env_choice("RISKAPP_LOG_FORMAT", "plain", {"plain", "json"})
 
 ENV: str = _env_choice(
     "ENV",

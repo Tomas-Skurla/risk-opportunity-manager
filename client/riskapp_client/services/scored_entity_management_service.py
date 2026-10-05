@@ -117,7 +117,7 @@ class ScoredEntityService[ModelT]:
                 return None
             try:
                 return existing[key]  # sqlite3.Row
-            except (RuntimeError, ValueError, KeyError):
+            except RuntimeError, ValueError, KeyError:
                 # Mapping[str, Any]
                 return existing.get(key)
 
@@ -194,7 +194,7 @@ class ScoredEntityService[ModelT]:
             if self._w.next_code_fn is not None:
                 try:
                     return self._w.next_code_fn(project_id)
-                except (AttributeError, RuntimeError):
+                except AttributeError, RuntimeError:
                     logging.getLogger(__name__).debug(
                         "Auto-code generation failed", exc_info=True
                     )

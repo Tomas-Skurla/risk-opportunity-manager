@@ -39,12 +39,14 @@ def mergeable_fields(conflict: dict[str, Any]) -> tuple[str, ...]:
     ):
         return ()
     dimensions_active = entity in {"risk", "opportunity"} and any(
-        server.get(key) is not None or local.get(key) is not None
-        for key in _DIMENSIONS
+        server.get(key) is not None or local.get(key) is not None for key in _DIMENSIONS
     )
     return tuple(
-        key for key in MERGE_FIELDS[entity]
-        if key in local and key in server and local[key] != server[key]
+        key
+        for key in MERGE_FIELDS[entity]
+        if key in local
+        and key in server
+        and local[key] != server[key]
         and not (key == "impact" and dimensions_active)
     )
 
@@ -74,9 +76,13 @@ def _validate_selected(entity: str, key: str, value: Any) -> None:
             raise ValueError(f"{key} must be a date and time") from exc
     elif key == "status":
         allowed = (
-            set(ALL_STATUSES) - {"deleted"} if entity in {"risk", "opportunity"}
-            else {"open", "doing", "done"} if entity == "action"
-            else {"open", "in_progress", "resolved", "closed"}
+            set(ALL_STATUSES) - {"deleted"}
+            if entity in {"risk", "opportunity"}
+            else (
+                {"open", "doing", "done"}
+                if entity == "action"
+                else {"open", "in_progress", "resolved", "closed"}
+            )
         )
         if value not in allowed:
             raise ValueError("Invalid status for this entity")
@@ -84,17 +90,23 @@ def _validate_selected(entity: str, key: str, value: Any) -> None:
         raise ValueError("Invalid action kind")
     elif key == "priority" and value not in {"low", "medium", "high", "critical"}:
         raise ValueError("Invalid help-desk priority")
-    elif key == "category" and entity == "helpdesk_ticket" and value not in {
-        "bug", "question", "feature_request", "access", "other"
-    }:
+    elif (
+        key == "category"
+        and entity == "helpdesk_ticket"
+        and value not in {"bug", "question", "feature_request", "access", "other"}
+    ):
         raise ValueError("Invalid help-desk category")
-    elif key == "code" and value is not None and (
-        not isinstance(value, str) or not 1 <= len(value) <= 64
+    elif (
+        key == "code"
+        and value is not None
+        and (not isinstance(value, str) or not 1 <= len(value) <= 64)
     ):
         raise ValueError("code must contain 1 to 64 characters")
     elif (
-        key == "category" and entity != "helpdesk_ticket"
-        and value is not None and len(value) > 200
+        key == "category"
+        and entity != "helpdesk_ticket"
+        and value is not None
+        and len(value) > 200
     ):
         raise ValueError("category is too long")
     elif key == "document_url" and value is not None and len(value) > 2000:

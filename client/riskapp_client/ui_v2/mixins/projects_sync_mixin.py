@@ -70,11 +70,11 @@ class ProjectsSyncMixin:
     _refresh_risks: Callable[..., Any]
     _refresh_top_history: Callable[..., Any]
     _record_automatic_sync_failure: Callable[[], None]
-    #_record_automatic_sync_success: Callable[[object], None]
+    # _record_automatic_sync_success: Callable[[object], None]
     _schedule_automatic_sync: Callable[[], None]
     _start_background_job: Callable[..., bool]
     _start_new_action: Callable[..., Any]
-    #_observe_manual_sync_result: Callable[[object], None]
+    # _observe_manual_sync_result: Callable[[object], None]
 
     # BackgroundJobsMixin supplies these hooks in MainWindow. Declaring them as
     # methods keeps sibling mixin signatures compatible for static analyzers.
@@ -153,8 +153,10 @@ class ProjectsSyncMixin:
                 owner_map[my_uid] = my_email
             for m in getattr(self, "_cached_members", []):
                 owner_map[str(m.user_id)] = m.email
-        except (AttributeError, KeyError, RuntimeError):
-            logging.getLogger(__name__).debug("Failed to build owner map for projects", exc_info=True)
+        except AttributeError, KeyError, RuntimeError:
+            logging.getLogger(__name__).debug(
+                "Failed to build owner map for projects", exc_info=True
+            )
 
         for p in projects:
             display_name = p.name
@@ -216,13 +218,18 @@ class ProjectsSyncMixin:
         self.editor_label.setText("Editor (new risk)")
         self.risk_form.set_values(title="", probability=3, impact=3)
         # Show sync status for local projects when online.
-        if str(self.current_project_id).startswith("local-") and not self._detect_offline_mode():
+        if (
+            str(self.current_project_id).startswith("local-")
+            and not self._detect_offline_mode()
+        ):
             # Distinguish anonymous local projects from syncable ones.
             if self._is_unsyncable_local_project(self.current_project_id):
                 self.sync_status.setText("Sync: local-only project, cannot be synced")
                 self.sync_btn.setEnabled(False)
             else:
-                self.sync_status.setText("Sync: offline project, click Sync Now to upload")
+                self.sync_status.setText(
+                    "Sync: offline project, click Sync Now to upload"
+                )
         self._refresh_all_views()
         self._start_new_action()
 
@@ -246,7 +253,7 @@ class ProjectsSyncMixin:
             QMessageBox.warning(
                 parent,
                 "Duplicate name",
-                f"A project named \"{name}\" already exists.\n"
+                f'A project named "{name}" already exists.\n'
                 "Please choose a different name.",
             )
             return
@@ -274,7 +281,7 @@ class ProjectsSyncMixin:
         reply = QMessageBox.warning(
             parent,
             "Delete project",
-            f"Permanently delete project \"{name}\" and ALL its data?\n\n"
+            f'Permanently delete project "{name}" and ALL its data?\n\n'
             "This cannot be undone. Only superadmins can do this.",
             yes | no,
             no,
@@ -294,7 +301,7 @@ class ProjectsSyncMixin:
             return False
         try:
             project = self.backend.store.get_project(str(project_id))
-        except (AttributeError, RuntimeError):
+        except AttributeError, RuntimeError:
             logging.getLogger(__name__).debug(
                 "Failed to inspect local project sync state", exc_info=True
             )
@@ -334,32 +341,32 @@ class ProjectsSyncMixin:
         if hasattr(self.backend, "pending_count"):
             try:
                 pending = self.backend.pending_count(pid)
-            except (AttributeError, RuntimeError):
+            except AttributeError, RuntimeError:
                 pending = 0
         if hasattr(self.backend, "conflict_count"):
             try:
                 conflicts = self.backend.conflict_count(pid)
-            except (AttributeError, RuntimeError):
+            except AttributeError, RuntimeError:
                 conflicts = 0
         if hasattr(self.backend, "deferred_count"):
             try:
                 deferred = self.backend.deferred_count(pid)
-            except (AttributeError, RuntimeError):
+            except AttributeError, RuntimeError:
                 deferred = 0
         if hasattr(self.backend, "error_count"):
             try:
                 errors = self.backend.error_count(pid)
-            except (AttributeError, RuntimeError):
+            except AttributeError, RuntimeError:
                 errors = 0
         if hasattr(self.backend, "last_sync_time"):
             try:
                 last_sync = self.backend.last_sync_time(pid)
-            except (AttributeError, RuntimeError):
+            except AttributeError, RuntimeError:
                 last_sync = None
         if hasattr(self.backend, "can_sync"):
             try:
                 can_sync = bool(self.backend.can_sync())
-            except (AttributeError, RuntimeError):
+            except AttributeError, RuntimeError:
                 can_sync = False
         self.sync_btn.setEnabled(bool(pid) and can_sync)
         mode = "ONLINE" if can_sync else "OFFLINE"
@@ -567,9 +574,9 @@ class ProjectsSyncMixin:
             selected_project_id = str(migrations[selected_project_id])
 
         visible_projects = summary.pop("_visible_projects", None)
-        if (
-            authenticated_remote is not None or migrations
-        ) and isinstance(visible_projects, list):
+        if (authenticated_remote is not None or migrations) and isinstance(
+            visible_projects, list
+        ):
             self._load_projects(
                 select_project_id=selected_project_id or None,
                 projects=visible_projects,

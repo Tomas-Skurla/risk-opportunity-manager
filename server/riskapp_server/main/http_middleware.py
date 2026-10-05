@@ -89,6 +89,7 @@ class RequestCorrelationMiddleware:
         finally:
             reset_request_id(token)
 
+
 class _RequestBodyTooLarge(Exception):
     pass
 
@@ -124,7 +125,7 @@ class RequestBodyLimitMiddleware:
         if raw_length is not None:
             try:
                 declared_length = int(raw_length)
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 await self._error(scope, receive, send, 400, "Invalid Content-Length")
                 return
             if declared_length < 0:

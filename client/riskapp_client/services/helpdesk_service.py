@@ -70,8 +70,8 @@ class HelpDeskService:
 
     def delete(self, ticket_id: str) -> None:
         with self._store.write_transaction():
-            project_id, version = (
-                self._store.get_helpdesk_ticket_project_and_version(ticket_id)
+            project_id, version = self._store.get_helpdesk_ticket_project_and_version(
+                ticket_id
             )
             # Ticket never reached the server: drop any queued local upsert/delete
             # and remove the row entirely so no stale tombstone remains locally.

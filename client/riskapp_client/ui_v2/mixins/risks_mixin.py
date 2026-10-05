@@ -82,7 +82,7 @@ class RisksMixin(ScoredEntityMixin):
             pid,
             self.backend.list_risks,
             filters.filter_risks,
-            filters.RiskFilterCriteria,
+            filters.ScoredFilterCriteria,
             self.filter_report,
             self.risks_table,
             filters_dict,

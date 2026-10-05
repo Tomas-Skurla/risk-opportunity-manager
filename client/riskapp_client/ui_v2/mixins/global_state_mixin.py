@@ -75,8 +75,8 @@ class CoreMixin:
 
     state: MainWindowState
 
-    # Compatibility aliases keep existing mixins and external callers stable
-    # while new cross-cutting state is made explicit through ``self.state``.
+    # Shorthand properties for the mixins; the state itself lives in
+    # ``self.state``, and some setters keep related fields consistent.
     @property
     def current_project_id(self) -> str | None:
         return self.state.project_id
@@ -209,7 +209,7 @@ class CoreMixin:
         is_super = False
         try:
             is_super = self.backend.is_superuser()
-        except (AttributeError, RuntimeError):
+        except AttributeError, RuntimeError:
             logging.getLogger(__name__).debug("Superuser check failed", exc_info=True)
         display_role = "superadmin" if is_super else self.state.role
         suffix = ""
@@ -448,19 +448,24 @@ class CoreMixin:
             return False
         try:
             return bool(w is container or container.isAncestorOf(w))  # type: ignore[attr-defined]
-        except (AttributeError, RuntimeError):
-            logging.getLogger(__name__).debug("Widget ancestry check failed", exc_info=True)
+        except AttributeError, RuntimeError:
+            logging.getLogger(__name__).debug(
+                "Widget ancestry check failed", exc_info=True
+            )
             return False
 
     def _active_scored_tab_context(
         self,
-    ) -> tuple[
-        QWidget,
-        QTableWidget,
-        QWidget | None,
-        Callable[[], None],
-        Callable[[], None],
-    ] | None:
+    ) -> (
+        tuple[
+            QWidget,
+            QTableWidget,
+            QWidget | None,
+            Callable[[], None],
+            Callable[[], None],
+        ]
+        | None
+    ):
         """Return context for the currently active scored-entity tab.
         Returns:
             (tab_widget, table_widget, editor_card, commit_fn, clear_selection_fn)

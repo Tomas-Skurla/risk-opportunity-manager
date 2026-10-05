@@ -40,12 +40,9 @@ class ScoredEntitiesTab(QWidget):
         on_save_item: Callable[[dict], None],
         on_delete_item: Callable[[], None],
         on_mark_dirty: Callable[..., None],
-        on_fit_table_card: Callable[[], None] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
-        # Retained for compatibility; sizing is managed by the window mixin.
-        _ = on_fit_table_card
         self._on_refresh = on_refresh
         self._on_new_item = on_new_item
         self.ui = Ui_ScoredEntitiesTab()
@@ -60,37 +57,23 @@ class ScoredEntitiesTab(QWidget):
             QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Maximum
         )
         if (header_item := self.ui.table.horizontalHeaderItem(0)) is not None:
-            header_item.setToolTip(
-                "Code: A unique identifier or short reference"
-            )
+            header_item.setToolTip("Code: A unique identifier or short reference")
         if (header_item := self.ui.table.horizontalHeaderItem(1)) is not None:
-            header_item.setToolTip(
-                "Title: The name or brief summary"
-            )
+            header_item.setToolTip("Title: The name or brief summary")
         if (header_item := self.ui.table.horizontalHeaderItem(2)) is not None:
-            header_item.setToolTip(
-                "Category: The classification or grouping"
-            )
+            header_item.setToolTip("Category: The classification or grouping")
         if (header_item := self.ui.table.horizontalHeaderItem(3)) is not None:
-            header_item.setToolTip(
-                "Status: The current lifecycle state"
-            )
+            header_item.setToolTip("Status: The current lifecycle state")
         if (header_item := self.ui.table.horizontalHeaderItem(4)) is not None:
-            header_item.setToolTip(
-                "Owner: The team member assigned to manage this"
-            )
+            header_item.setToolTip("Owner: The team member assigned to manage this")
         if (header_item := self.ui.table.horizontalHeaderItem(5)) is not None:
             header_item.setToolTip(
                 "Probability: The likelihood of this occurring (1-5)"
             )
         if (header_item := self.ui.table.horizontalHeaderItem(6)) is not None:
-            header_item.setToolTip(
-                "Impact: The severity if this occurs (1-5)"
-            )
+            header_item.setToolTip("Impact: The severity if this occurs (1-5)")
         if (header_item := self.ui.table.horizontalHeaderItem(7)) is not None:
-            header_item.setToolTip(
-                "Score: Calculated as Probability × Impact (1-25)"
-            )
+            header_item.setToolTip("Score: Calculated as Probability × Impact (1-25)")
         self.ui.filter_search.setToolTip("Search by Code, Title, or Description")
         self.ui.filter_min_score.setToolTip("Filter by minimum score")
         self.ui.filter_max_score.setToolTip("Filter by maximum score")
@@ -168,6 +151,7 @@ class ScoredEntitiesTab(QWidget):
         _original_retranslate = self.form.ui.retranslateUi
         _btn = self.form.btn
         _label = self._entity_label
+
         # Match the generated Ui_Form callback's keyword parameter name.
         # pylint: disable-next=invalid-name
         def _patched_retranslate(Form: QWidget) -> None:  # noqa: N803
@@ -232,7 +216,7 @@ class ScoredEntitiesTab(QWidget):
         self.filter_owner.addItem("(unassigned)", "__unassigned__")
         try:
             sorted_members = sorted(members or [], key=lambda m: m.email or "")
-        except (AttributeError, TypeError):
+        except AttributeError, TypeError:
             sorted_members = list(members or [])
         for m in sorted_members:
             uid = getattr(m, "user_id", None)

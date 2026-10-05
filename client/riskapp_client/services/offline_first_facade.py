@@ -160,8 +160,7 @@ class OfflineFirstBackend(Backend):
             if str(project.id).startswith("local-") and project.created_by
         ]
         by_id = {
-            str(project.id): project
-            for project in [*remote_projects, *local_projects]
+            str(project.id): project for project in [*remote_projects, *local_projects]
         }
         return list(by_id.values())
 
@@ -309,7 +308,7 @@ class OfflineFirstBackend(Backend):
                     while f"{name} ({n})" in existing_names:
                         n += 1
                     name = f"{name} ({n})"
-            except (AttributeError, KeyError):
+            except AttributeError, KeyError:
                 logging.getLogger(__name__).debug(
                     "Duplicate project name check failed", exc_info=True
                 )
@@ -452,7 +451,7 @@ class OfflineFirstBackend(Backend):
                 probability=probability,
                 impact=impact,
                 meta=meta,
-        )
+            )
             if base_version is not None:
                 # The override belongs to the same unit of work as the local
                 # entity update and outbox replacement.
@@ -472,9 +471,7 @@ class OfflineFirstBackend(Backend):
     def list_opportunities(self, project_id: str) -> list[Opportunity]:
         return self._opps.list(project_id)
 
-    def opportunities_report(
-        self, project_id: str, **filters: Any
-    ) -> dict[str, Any]:
+    def opportunities_report(self, project_id: str, **filters: Any) -> dict[str, Any]:
         report = _optional_callable(
             self._remote_for_project(project_id),
             "opportunities_report",
@@ -541,8 +538,24 @@ class OfflineFirstBackend(Backend):
     def create_action(self, project_id: str, **kwargs: Any) -> Action:
         return self._actions.create(project_id, **kwargs)
 
-    def update_action(self, project_id: str, action_id: str, **kwargs: Any) -> Action:
-        return self._actions.update(action_id, **kwargs)
+    def update_action(
+        self,
+        project_id: str,
+        action_id: str,
+        *,
+        base_version: int | None = None,
+        **kwargs: Any,
+    ) -> Action:
+        with self.store.write_transaction():
+            action = self._actions.update(action_id, **kwargs)
+            if base_version is not None:
+                self.outbox.override_base_version(
+                    project_id,
+                    entity="action",
+                    entity_id=action_id,
+                    base_version=base_version,
+                )
+        return action
 
     # ---- Assessments ----
 

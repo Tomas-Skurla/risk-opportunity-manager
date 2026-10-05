@@ -29,9 +29,7 @@ from riskapp_server.db.session import RiskStatus, Role, User, get_db, utcnow
 from riskapp_server.schemas.models import AssessmentIn, ScoreReportOut
 
 
-def _set_payload_schema(
-    endpoint: Callable[..., Any], schema: type[BaseModel]
-) -> None:
+def _set_payload_schema(endpoint: Callable[..., Any], schema: type[BaseModel]) -> None:
     """Install a concrete request model before FastAPI inspects an endpoint."""
     cast(FunctionType, endpoint).__annotations__["payload"] = schema
 

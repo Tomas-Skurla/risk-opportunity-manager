@@ -37,6 +37,7 @@ class TopHistoryMixin:
         # pylint: disable=unused-argument
         def _dtedit_to_iso_utc_naive(self, w: QDateTimeEdit) -> str:
             return ""
+
         # pylint: enable=unused-argument
 
     def _history_job_payload(self, project_id: str) -> dict[str, object]:

@@ -14,6 +14,7 @@ from PySide6.QtWidgets import QTableWidget, QTableWidgetItem
 if TYPE_CHECKING:
     from riskapp_client.ui_v2.tabs.matrix_tab import MatrixTab
 
+
 class MatrixMixin:
     """MainWindow mixin: MatrixMixin"""
 

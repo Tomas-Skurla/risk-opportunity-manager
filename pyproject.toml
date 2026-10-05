@@ -1,8 +1,13 @@
 [tool.pytest.ini_options]
 minversion = "8.0"
 testpaths = ["tests"]
-pythonpath = ["server", "client"]
-addopts = ["--strict-config", "--strict-markers", "-ra"]
+pythonpath = ["server", "client", "tests"]
+addopts = [
+    "--strict-config",
+    "--strict-markers",
+    "-ra",
+    "--import-mode=importlib",
+]
 qt_api = "pyside6"
 
 [tool.coverage.run]
@@ -14,11 +19,11 @@ omit = [
 
 [tool.pylint.main]
 extension-pkg-allow-list = ["PySide6"]
-init-hook = "import sys; sys.path[:0] = ['client', 'server']"
-source-roots = ["client", "server"]
+init-hook = "import sys; sys.path[:0] = ['client', 'server', 'tests']"
+source-roots = ["client", "server", "tests"]
 
 [tool.pyright]
-extraPaths = ["server", "client"]
+extraPaths = ["server", "client", "tests"]
 
 [tool.coverage.report]
 show_missing = true
@@ -85,8 +90,8 @@ ignore = [
   "S106",
   "S107",
 ]
-"tests/client/test_gui_behavior_coverage.py" = ["S108"]
-"tests/server/test_app_lifespan.py" = ["S104"]
+"tests/client/gui/test_gui_behavior_coverage.py" = ["S108"]
+"tests/server/unit/test_app_lifespan.py" = ["S104"]
 
 "server/riskapp_server/api/routers/**/*.py" = ["B008"]
 "server/riskapp_server/auth/service.py" = ["B008"]

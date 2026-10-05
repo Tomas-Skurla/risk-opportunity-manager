@@ -21,6 +21,7 @@ from riskapp_client.domain.domain_models import Member
 if TYPE_CHECKING:
     from riskapp_client.ui_v2.tabs.members_tab import MembersTab
 
+
 class MembersMixin:
     """MainWindow mixin: MembersMixin"""
 
@@ -91,7 +92,7 @@ class MembersMixin:
         role = "unknown"
         try:
             uid = self.backend.current_user_id()
-        except (AttributeError, RuntimeError):
+        except AttributeError, RuntimeError:
             uid = None
         if members and uid:
             for m in members:
@@ -107,7 +108,7 @@ class MembersMixin:
             try:
                 if self.backend.is_superuser():
                     role = "admin"
-            except (AttributeError, RuntimeError):
+            except AttributeError, RuntimeError:
                 logging.getLogger(__name__).debug(
                     "Failed to resolve role for member", exc_info=True
                 )
@@ -142,7 +143,7 @@ class MembersMixin:
         current_is_super = False
         try:
             current_is_super = self.backend.is_superuser()
-        except (AttributeError, RuntimeError):
+        except AttributeError, RuntimeError:
             logging.getLogger(__name__).debug(
                 "Failed to check superuser status", exc_info=True
             )

@@ -22,11 +22,10 @@ def _accepts_keyword(fn: Callable[..., object], keyword: str) -> bool:
     """Return whether a callable accepts a named keyword argument."""
     try:
         parameters = inspect.signature(fn).parameters.values()
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return False
     return any(
-        parameter.kind is inspect.Parameter.VAR_KEYWORD
-        or parameter.name == keyword
+        parameter.kind is inspect.Parameter.VAR_KEYWORD or parameter.name == keyword
         for parameter in parameters
     )
 

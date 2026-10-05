@@ -28,7 +28,7 @@ fi
 
 cd server
 
-exec uvicorn riskapp_server.main.app:app \
+exec uvicorn riskapp_server.main.app:create_app --factory \
   "${server_env_args[@]}" \
   --reload \
   --host "${RISKAPP_HOST:-127.0.0.1}" \

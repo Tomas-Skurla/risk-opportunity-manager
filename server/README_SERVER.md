@@ -8,7 +8,7 @@ FastAPI backend for RiskApp.
 - Actions and assessments.
 - Matrix, snapshot, and Help Desk endpoints.
 - Offline sync for risks, opportunities, actions, assessments, and Help Desk tickets.
-- Transactional per-project change sequences provide commit-safe incremental pulls; timestamp watermarks remain compatible with older clients.
+- Transactional per-project change sequences provide commit-safe incremental pulls.
 - JWT auth and project/global role checks.
 - Startup bootstrap for a global superadmin.
 

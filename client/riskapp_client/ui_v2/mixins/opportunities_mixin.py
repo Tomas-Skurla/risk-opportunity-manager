@@ -100,7 +100,7 @@ class OpportunitiesMixin(ScoredEntityMixin):
             pid,
             self.backend.list_opportunities,
             filters.filter_opportunities,
-            filters.OpportunityFilterCriteria,
+            filters.ScoredFilterCriteria,
             self.opp_filter_report,
             self.opps_table,
             filters_dict,

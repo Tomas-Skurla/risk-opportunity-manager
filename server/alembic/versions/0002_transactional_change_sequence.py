@@ -77,9 +77,7 @@ def _backfill_change_sequences() -> None:
     )
 
     project_ids = list(bind.execute(sa.select(projects.c.id)).scalars())
-    changes: dict[Any, list[tuple[str, Any, Any, sa.TableClause]]] = defaultdict(
-        list
-    )
+    changes: dict[Any, list[tuple[str, Any, Any, sa.TableClause]]] = defaultdict(list)
 
     for table_name in ("items", "actions", "helpdesk_tickets"):
         table = tables[table_name]
@@ -87,9 +85,7 @@ def _backfill_change_sequences() -> None:
             sa.select(table.c.id, table.c.project_id, table.c.updated_at)
         )
         for entity_id, project_id, updated_at in rows:
-            changes[project_id].append(
-                (table_name, entity_id, updated_at, table)
-            )
+            changes[project_id].append((table_name, entity_id, updated_at, table))
 
     assessments = tables["assessments"]
     items = tables["items"]
@@ -98,14 +94,10 @@ def _backfill_change_sequences() -> None:
             assessments.c.id,
             items.c.project_id,
             assessments.c.updated_at,
-        ).select_from(
-            assessments.join(items, assessments.c.item_id == items.c.id)
-        )
+        ).select_from(assessments.join(items, assessments.c.item_id == items.c.id))
     )
     for entity_id, project_id, updated_at in assessment_rows:
-        changes[project_id].append(
-            ("assessments", entity_id, updated_at, assessments)
-        )
+        changes[project_id].append(("assessments", entity_id, updated_at, assessments))
 
     state_rows: list[dict[str, Any]] = []
     for project_id in project_ids:
@@ -163,9 +155,7 @@ def upgrade() -> None:
         sa.CheckConstraint(
             "last_sequence >= 0", name="ck_sync_project_state_nonnegative"
         ),
-        sa.ForeignKeyConstraint(
-            ["project_id"], ["projects.id"], ondelete="CASCADE"
-        ),
+        sa.ForeignKeyConstraint(["project_id"], ["projects.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("project_id"),
     )
 

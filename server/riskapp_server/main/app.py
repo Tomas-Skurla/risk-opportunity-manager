@@ -156,9 +156,7 @@ def create_app() -> FastAPI:
     if GZIP_ENABLED:
         application.add_middleware(GZipMiddleware, minimum_size=GZIP_MINIMUM_SIZE)
     if ALLOWED_HOSTS:
-        application.add_middleware(
-            TrustedHostMiddleware, allowed_hosts=ALLOWED_HOSTS
-        )
+        application.add_middleware(TrustedHostMiddleware, allowed_hosts=ALLOWED_HOSTS)
     # Added last so rejected requests receive the same defensive headers.
     application.add_middleware(SecurityHeadersMiddleware)
     # Outermost application middleware: early rejections are correlated too.
@@ -181,6 +179,3 @@ def create_app() -> FastAPI:
             )
 
     return application
-
-
-app = create_app()

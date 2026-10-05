@@ -22,7 +22,8 @@ def main() -> int:
     port = int(os.getenv("RISKAPP_PORT", "8000"))
     reload_enabled = _env_flag("RISKAPP_RELOAD", env == "development")
     uvicorn.run(
-        "riskapp_server.main.app:app",
+        "riskapp_server.main.app:create_app",
+        factory=True,
         host=host,
         port=port,
         reload=reload_enabled,

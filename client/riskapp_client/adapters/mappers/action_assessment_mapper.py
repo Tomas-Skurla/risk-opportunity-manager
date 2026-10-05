@@ -40,7 +40,7 @@ def _opt_int(
         return default
     try:
         return int(s)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return default
 
 

@@ -110,6 +110,21 @@ Each step also runs on its own. If Ruff reports safe fixable issues, `bash scrip
 
 The suite includes headless Qt tests. It needs the client dependencies and the OS packages from step 2, but no display.
 
+The tests are grouped by what they exercise:
+
+```text
+tests/
+  server/unit/          server code without HTTP requests
+  server/api/           requests to the API: auth/, projects/, records/, sync/, http/
+  server/migrations/    the Alembic migrations
+  client/unit/          client code: app/, services/, storage/, sync/
+  client/gui/           the desktop UI layer
+  client/integration/   the client and a real server together
+  support/              shared helpers for accounts, projects, items and sync changes
+```
+
+To run one area, pass its folder to pytest, for example `python -m pytest tests/server/api/sync`. Running a single area skips the coverage gates, which only apply to a full run of `bash scripts/check_project.sh`.
+
 Configuration for pytest, mypy, Ruff and Black lives in `pyproject.toml`. Mypy checks every module under `server/riskapp_server` and `client/riskapp_client` with strict function annotations, unreachable-code, extra and unused-ignore checks. Only the generated Qt `ui_*.py` modules have a narrow override, because they are regenerated from Designer forms rather than maintained by hand. Ruff includes its Bandit-derived `S` security rules. The test exceptions cover assertions, obvious fixture credentials and two narrowly scoped platform fixtures; suppressions in application code are line-specific and document why the flagged operation is safe.
 
 ---
@@ -152,7 +167,7 @@ To run the server without the launcher, for example to change uvicorn options:
 ```bash
 source .venv/bin/activate
 cd server
-uvicorn riskapp_server.main.app:app --env-file ../.env --reload --host 127.0.0.1 --port 8000
+uvicorn riskapp_server.main.app:create_app --factory --env-file ../.env --reload --host 127.0.0.1 --port 8000
 ```
 
 Deliberately resetting the development database still requires `RESET_SERVER_DB=1`, which deletes all server data.

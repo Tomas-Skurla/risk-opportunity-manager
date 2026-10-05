@@ -12,7 +12,7 @@ from typing import Any, NotRequired, TypedDict, cast
 
 from fastapi import HTTPException
 from pydantic import BaseModel
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.inspection import inspect as sa_inspect
@@ -110,9 +110,7 @@ ENTITY_REGISTRY: dict[str, EntityConfig] = {
     },
 }
 
-ENTITY_MODELS = {
-    key: config["model"] for key, config in ENTITY_REGISTRY.items()
-}
+ENTITY_MODELS = {key: config["model"] for key, config in ENTITY_REGISTRY.items()}
 OPS = {"upsert", "delete"}
 
 
@@ -188,27 +186,6 @@ def _naive_utc(dt: datetime) -> datetime:
     )
 
 
-def _parse_cursor(
-    cur: str | None, *, default_since: datetime, snapshot_time: datetime
-) -> tuple[datetime, uuid.UUID]:
-    if not cur:
-        return default_since, uuid.UUID(int=0)
-    try:
-        ts_s, id_s = cur.split("|", 1)
-        ts = datetime.fromisoformat(ts_s)
-        if getattr(ts, "tzinfo", None) is not None:
-            ts = ts.astimezone(UTC).replace(tzinfo=None)
-        if ts > snapshot_time:
-            raise ValueError("cursor is beyond snapshot")
-        return ts, uuid.UUID(id_s)
-    except (ValueError, KeyError, TypeError) as exc:
-        raise HTTPException(status_code=400, detail="Invalid cursor") from exc
-
-
-def _encode_cursor(ts: datetime, entity_id: uuid.UUID) -> str:
-    return f"{_naive_utc(ts).isoformat()}|{entity_id}"
-
-
 def _parse_sequence_cursor(
     cur: str | None, *, default_since: int, snapshot_sequence: int
 ) -> int:
@@ -232,14 +209,12 @@ def _encode_sequence_cursor(sequence: int) -> str:
 class _PullContext:
     db: Session
     project_id: uuid.UUID
-    since: datetime
-    snapshot_time: datetime
+    server_time: datetime
     limit: int | None
     hard_cap: int | None
     cursors: dict[str, str]
-    server_sequence: int
-    since_sequence: int | None
-    snapshot_sequence: int | None
+    since_sequence: int
+    snapshot_sequence: int
 
 
 @dataclass(frozen=True)
@@ -252,23 +227,11 @@ class _PullPage:
 def _prepare_pull_context(
     db: Session,
     project_id: uuid.UUID,
-    since: datetime,
     limit_per_entity: int | None,
     cursors: dict[str, str] | None,
-    snapshot_time: datetime | None,
-    since_sequence: int | None,
+    since_sequence: int,
     snapshot_sequence: int | None,
 ) -> _PullContext:
-    request_time = _naive_utc(utcnow())
-    normalized_since = _naive_utc(since)
-    normalized_snapshot = (
-        _naive_utc(snapshot_time) if snapshot_time is not None else request_time
-    )
-    if normalized_snapshot < normalized_since:
-        raise HTTPException(status_code=400, detail="snapshot_time precedes since")
-    if normalized_snapshot > request_time:
-        raise HTTPException(status_code=400, detail="snapshot_time is in the future")
-
     current_sequence_value = db.execute(
         select(SyncProjectState.last_sequence).where(
             SyncProjectState.project_id == project_id
@@ -280,41 +243,31 @@ def _prepare_pull_context(
         )
     current_sequence = int(current_sequence_value)
 
-    normalized_snapshot_sequence: int | None = None
-    if since_sequence is None:
-        if snapshot_sequence is not None:
-            raise HTTPException(
-                status_code=400, detail="snapshot_sequence requires since_sequence"
-            )
-    else:
-        since_sequence = int(since_sequence)
-        if since_sequence < 0:
-            raise HTTPException(
-                status_code=400, detail="since_sequence must be nonnegative"
-            )
-        normalized_snapshot_sequence = (
-            current_sequence if snapshot_sequence is None else int(snapshot_sequence)
+    since_sequence = int(since_sequence)
+    if since_sequence < 0:
+        raise HTTPException(
+            status_code=400, detail="since_sequence must be nonnegative"
         )
-        if normalized_snapshot_sequence < since_sequence:
-            raise HTTPException(
-                status_code=400, detail="snapshot_sequence precedes since_sequence"
-            )
-        if normalized_snapshot_sequence > current_sequence:
-            raise HTTPException(
-                status_code=400, detail="snapshot_sequence is ahead of the server"
-            )
-
+    normalized_snapshot_sequence = (
+        current_sequence if snapshot_sequence is None else int(snapshot_sequence)
+    )
+    if normalized_snapshot_sequence < since_sequence:
+        raise HTTPException(
+            status_code=400, detail="snapshot_sequence precedes since_sequence"
+        )
+    if normalized_snapshot_sequence > current_sequence:
+        raise HTTPException(
+            status_code=400, detail="snapshot_sequence is ahead of the server"
+        )
     hard_cap = MAX_SYNC_PULL_PER_ENTITY if limit_per_entity is None else None
     limit = hard_cap if limit_per_entity is None else limit_per_entity
     return _PullContext(
         db=db,
         project_id=project_id,
-        since=normalized_since,
-        snapshot_time=normalized_snapshot,
+        server_time=_naive_utc(utcnow()),
         limit=limit,
         hard_cap=hard_cap,
         cursors=cursors or {},
-        server_sequence=current_sequence,
         since_sequence=since_sequence,
         snapshot_sequence=normalized_snapshot_sequence,
     )
@@ -323,38 +276,19 @@ def _prepare_pull_context(
 def _pull_window(
     ctx: _PullContext, model: Any, key: str
 ) -> tuple[tuple[Any, ...], tuple[Any, ...], str]:
-    if ctx.since_sequence is not None:
-        if ctx.snapshot_sequence is None:  # pragma: no cover - context invariant
-            raise RuntimeError("Sequence pull is missing its snapshot")
-        sequence = _parse_sequence_cursor(
-            ctx.cursors.get(key),
-            default_since=ctx.since_sequence,
-            snapshot_sequence=ctx.snapshot_sequence,
-        )
-        return (
-            (
-                model.change_sequence > sequence,
-                model.change_sequence <= ctx.snapshot_sequence,
-            ),
-            (model.change_sequence.asc(),),
-            _encode_sequence_cursor(sequence),
-        )
 
-    ts, last_id = _parse_cursor(
+    sequence = _parse_sequence_cursor(
         ctx.cursors.get(key),
-        default_since=ctx.since,
-        snapshot_time=ctx.snapshot_time,
+        default_since=ctx.since_sequence,
+        snapshot_sequence=ctx.snapshot_sequence,
     )
     return (
         (
-            model.updated_at <= ctx.snapshot_time,
-            or_(
-                model.updated_at > ts,
-                (model.updated_at == ts) & (model.id > last_id),
-            ),
+            model.change_sequence > sequence,
+            model.change_sequence <= ctx.snapshot_sequence,
         ),
-        (model.updated_at.asc(), model.id.asc()),
-        _encode_cursor(ts, last_id),
+        (model.change_sequence.asc(),),
+        _encode_sequence_cursor(sequence),
     )
 
 
@@ -372,10 +306,8 @@ def _finish_pull_page(
     last = rows[-1][0] if rows and joined else (rows[-1] if rows else None)
     if last is None:
         cursor = base_cursor
-    elif ctx.since_sequence is not None:
-        cursor = _encode_sequence_cursor(int(last.change_sequence))
     else:
-        cursor = _encode_cursor(last.updated_at, last.id)
+        cursor = _encode_sequence_cursor(int(last.change_sequence))
     return _PullPage(rows=rows, has_more=has_more, cursor=cursor)
 
 
@@ -390,9 +322,11 @@ def _pull_item_page(ctx: _PullContext, item_type: str, key: str) -> _PullPage:
         )
         .order_by(*ordering)
     )
-    rows = ctx.db.execute(
-        query.limit(ctx.limit + 1) if ctx.limit else query
-    ).scalars().all()
+    rows = (
+        ctx.db.execute(query.limit(ctx.limit + 1) if ctx.limit else query)
+        .scalars()
+        .all()
+    )
     return _finish_pull_page(
         list(rows),
         ctx=ctx,
@@ -417,9 +351,7 @@ def _pull_joined_page(
         )
         .order_by(*ordering)
     )
-    rows = ctx.db.execute(
-        query.limit(ctx.limit + 1) if ctx.limit else query
-    ).all()
+    rows = ctx.db.execute(query.limit(ctx.limit + 1) if ctx.limit else query).all()
     return _finish_pull_page(
         list(rows),
         ctx=ctx,
@@ -444,9 +376,11 @@ def _pull_simple_page(
         )
         .order_by(*ordering)
     )
-    rows = ctx.db.execute(
-        query.limit(ctx.limit + 1) if ctx.limit else query
-    ).scalars().all()
+    rows = (
+        ctx.db.execute(query.limit(ctx.limit + 1) if ctx.limit else query)
+        .scalars()
+        .all()
+    )
     return _finish_pull_page(
         list(rows),
         ctx=ctx,
@@ -491,29 +425,23 @@ def _serialize_assessment_rows(rows: list[Any]) -> list[dict[str, Any]]:
 def pull_since(
     db: Session,
     project_id: uuid.UUID,
-    since: datetime,
     *,
+    since_sequence: int,
     limit_per_entity: int | None = None,
     cursors: dict[str, str] | None = None,
-    snapshot_time: datetime | None = None,
-    since_sequence: int | None = None,
     snapshot_sequence: int | None = None,
 ) -> dict[str, Any]:
     ctx = _prepare_pull_context(
         db,
         project_id,
-        since,
         limit_per_entity,
         cursors,
-        snapshot_time,
         since_sequence,
         snapshot_sequence,
     )
     risks = _pull_item_page(ctx, "risk", "risks")
     opportunities = _pull_item_page(ctx, "opportunity", "opportunities")
-    actions = _pull_joined_page(
-        ctx, Action, "actions", Action.project_id == project_id
-    )
+    actions = _pull_joined_page(ctx, Action, "actions", Action.project_id == project_id)
     assessments = _pull_joined_page(
         ctx, Assessment, "assessments", Item.project_id == project_id
     )
@@ -535,12 +463,8 @@ def pull_since(
     has_more = {key: page.has_more for key, page in pages.items()}
 
     out: dict[str, Any] = {
-        "server_time": ctx.snapshot_time,\
-        "server_sequence": (
-            ctx.snapshot_sequence
-            if ctx.snapshot_sequence is not None
-            else ctx.server_sequence
-        ),
+        "server_time": ctx.server_time,
+        "server_sequence": ctx.snapshot_sequence,
         "risks": [model_to_dict(row) for row in risks.rows],
         "opportunities": [model_to_dict(row) for row in opportunities.rows],
         "actions": _serialize_action_rows(actions.rows),
@@ -683,7 +607,7 @@ def _refresh_accepted_replay(
         return replay
     try:
         entity_id = uuid.UUID(str(raw_entity_id))
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return replay
     server_version, server_record = _current_server_state(
         ctx.db,
@@ -717,44 +641,6 @@ def _payload_hash(change: SyncChange) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def _append_legacy_outcome(
-    result: dict[str, Any],
-    conflicts: list[dict[str, Any]],
-    errors: list[dict[str, Any]],
-) -> None:
-    """Populate the original aggregate fields for backwards compatibility."""
-    status = result.get("status")
-    if status == "conflict":
-        conflict = {
-            "change_id": result["change_id"],
-            "entity": result.get("entity"),
-            "id": result.get("entity_id"),
-            "reason": result.get("reason"),
-            "server_version": result.get("server_version"),
-            "server_record": result.get("server_record"),
-            "server_updated_at": result.get("server_updated_at"),
-            "failure_kind": result.get("failure_kind") or "conflict",
-            "retryable": bool(result.get("retryable")),
-        }
-        if result.get("replayed"):
-            conflict["replayed"] = True
-        conflicts.append(conflict)
-    elif status == "error":
-        error = {
-            "change_id": result["change_id"],
-            "entity": result.get("entity"),
-            "op": result.get("op"),
-            "reason": result.get("reason"),
-            "failure_kind": result.get("failure_kind") or "error",
-            "retryable": bool(result.get("retryable")),
-        }
-        if result.get("detail") is not None:
-            error["detail"] = result["detail"]
-        if result.get("replayed"):
-            error["replayed"] = True
-        errors.append(error)
-
-
 @dataclass
 class _PushContext:
     db: Session
@@ -763,11 +649,6 @@ class _PushContext:
     role: str
     existing_receipts: dict[uuid.UUID, SyncReceipt]
     seen_change_ids: set[uuid.UUID]
-    accepted: int = 0
-    duplicates: int = 0
-    duplicate_change_ids: list[str] = field(default_factory=list)
-    conflicts: list[dict[str, Any]] = field(default_factory=list)
-    errors: list[dict[str, Any]] = field(default_factory=list)
     results: list[dict[str, Any]] = field(default_factory=list)
     batch_results: dict[uuid.UUID, dict[str, Any]] = field(default_factory=dict)
     batch_hashes: dict[uuid.UUID, str] = field(default_factory=dict)
@@ -858,14 +739,13 @@ def _record_duplicate(ctx: _PushContext, change: SyncChange) -> None:
             op=change.op,
             entity_id=_maybe_entity_id(change.record),
             response={
-                "reason": reason, "failure_kind": "validation", "retryable": False
+                "reason": reason,
+                "failure_kind": "validation",
+                "retryable": False,
             },
         )
         ctx.results.append(result)
-        _append_legacy_outcome(result, ctx.conflicts, ctx.errors)
         return
-    ctx.duplicates += 1
-    ctx.duplicate_change_ids.append(str(change.change_id))
     replay = (
         _receipt_result(receipt)
         if receipt is not None
@@ -873,7 +753,6 @@ def _record_duplicate(ctx: _PushContext, change: SyncChange) -> None:
     )
     replay = _refresh_accepted_replay(ctx, replay)
     ctx.results.append(replay)
-    _append_legacy_outcome(replay, ctx.conflicts, ctx.errors)
 
 
 def _reject_push_change(
@@ -888,7 +767,6 @@ def _reject_push_change(
 ) -> None:
     result = _receipt_err(
         ctx.db,
-        ctx.errors,
         change,
         ctx.user_id,
         ctx.project_id,
@@ -1013,7 +891,6 @@ def _apply_push_change(
         )
         ctx.db.flush()
 
-    ctx.accepted += 1
     result = _change_result(
         change_id=change.change_id,
         status="accepted",
@@ -1060,7 +937,6 @@ def _record_push_conflict(
         entity_id=conflict.entity_id,
         response=response,
     )
-    _append_legacy_outcome(result, ctx.conflicts, ctx.errors)
     _record_push_result(ctx, change, result, persisted=True)
 
 
@@ -1069,9 +945,7 @@ def _process_new_push_change(ctx: _PushContext, change: SyncChange) -> None:
     op = change.op.strip().lower()
     record = change.record or {}
     if entity not in ENTITY_MODELS:
-        _reject_push_change(
-            ctx, change, "unknown_entity", failure_kind="validation"
-        )
+        _reject_push_change(ctx, change, "unknown_entity", failure_kind="validation")
         return
     if op not in OPS:
         _reject_push_change(ctx, change, "unknown_op", failure_kind="validation")
@@ -1144,11 +1018,6 @@ def _commit_push(ctx: _PushContext) -> None:
 
 def _push_response(ctx: _PushContext) -> dict[str, Any]:
     return {
-        "accepted": ctx.accepted,
-        "duplicates": ctx.duplicates,
-        "duplicate_change_ids": ctx.duplicate_change_ids,
-        "conflicts": ctx.conflicts,
-        "errors": ctx.errors,
         "results": ctx.results,
         "server_time": utcnow(),
     }
@@ -1219,7 +1088,6 @@ def _classify_http_failure(status_code: int) -> tuple[str, bool]:
 
 def _receipt_err(
     db: Session,
-    errors: list[dict[str, Any]],
     ch: SyncChange,
     user_id: uuid.UUID,
     project_id: uuid.UUID,
@@ -1257,7 +1125,7 @@ def _receipt_err(
             )
             db.flush()
 
-    result = _change_result(
+    return _change_result(
         change_id=ch.change_id,
         status="error",
         entity=entity,
@@ -1265,15 +1133,13 @@ def _receipt_err(
         entity_id=entity_id,
         response=resp,
     )
-    _append_legacy_outcome(result, [], errors)
-    return result
 
 
 def _maybe_entity_id(record: dict[str, Any]) -> uuid.UUID | None:
     rid = record.get("id")
     try:
         return uuid.UUID(str(rid)) if rid else None
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         logging.getLogger(__name__).debug("UUID conversion failed", exc_info=True)
         return None
 
@@ -1434,6 +1300,7 @@ def _version_scope(
         where.append(model_cls.project_id == project_id)
     return model_cls, where
 
+
 def _current_server_state(
     db: Session,
     entity: str,
@@ -1444,9 +1311,7 @@ def _current_server_state(
     model_cls, where = _version_scope(entity, entity_id, project_id, user_id)
     obj = (
         db.execute(
-            select(model_cls)
-            .where(*where)
-            .execution_options(populate_existing=True)
+            select(model_cls).where(*where).execution_options(populate_existing=True)
         )
         .scalars()
         .first()
@@ -1497,7 +1362,7 @@ def _validate_existing_obj(
     obj: Any,
     entity: str,
     entity_id: uuid.UUID,
-    project_id: uuid.UUID, # pylint: disable=unused-argument
+    project_id: uuid.UUID,  # pylint: disable=unused-argument
     user_id: uuid.UUID,
     base_version: Any,
 ) -> int:
@@ -1709,7 +1574,7 @@ def _create_new(
 
 def _update_existing(
     db: Session,
-    user_id: uuid.UUID, # pylint: disable=unused-argument
+    user_id: uuid.UUID,  # pylint: disable=unused-argument
     project_id: uuid.UUID,
     entity: str,
     obj: Any,

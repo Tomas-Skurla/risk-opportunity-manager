@@ -32,7 +32,7 @@ def _opt_int(value: Any) -> int | None:
         return None
     try:
         return int(s)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
 
 

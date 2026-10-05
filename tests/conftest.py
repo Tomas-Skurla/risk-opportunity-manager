@@ -2,8 +2,15 @@ from __future__ import annotations
 
 import importlib
 import os
+import secrets
+from collections.abc import Iterator
 
 import pytest
+from fastapi.testclient import TestClient
+from riskapp_client.adapters.local_storage.sqlite_data_store import LocalStore
+
+# Pytest passes fixtures to tests and other fixtures by parameter name.
+# pylint: disable=redefined-outer-name
 
 # Qt must be configured before pytest-qt imports the application classes.
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -22,10 +29,10 @@ def isolated_app_factory(monkeypatch: pytest.MonkeyPatch):
     ):
         settings = {
             "ENV": "test",
-            "SECRET_KEY": "riskapp-test-secret-key-that-is-not-used-in-production",
-            "TOKEN_HASH_KEY": (
-                "riskapp-test-token-hash-key-that-is-not-used-in-production"
-            ),
+            # Fresh random keys for every app; monkeypatch restores the
+            # environment after each test.
+            "SECRET_KEY": secrets.token_hex(32),
+            "TOKEN_HASH_KEY": secrets.token_hex(32),
             "DATABASE_URL": db_url,
             "AUTO_CREATE_SCHEMA": "1",
             "LOGIN_RATE_LIMIT_PER_MINUTE": "2",
@@ -53,6 +60,7 @@ def isolated_app_factory(monkeypatch: pytest.MonkeyPatch):
         session.engine.dispose()
         importlib.reload(session)
         import riskapp_server.auth.service as auth_service
+
         created_engines.append(session.engine)
         importlib.reload(auth_service)
 
@@ -121,3 +129,18 @@ def isolated_app_factory(monkeypatch: pytest.MonkeyPatch):
     # never enter TestClient, so the FastAPI lifespan cannot perform cleanup.
     for engine in reversed(created_engines):
         engine.dispose()
+
+
+@pytest.fixture
+def api(tmp_path, isolated_app_factory) -> Iterator[TestClient]:
+    """A client for a fresh app with its own temporary database and generated keys."""
+    app = isolated_app_factory(f"sqlite+pysqlite:///{tmp_path / 'api.db'}")
+    with TestClient(app) as client:
+        yield client
+
+
+@pytest.fixture
+def local_store(tmp_path) -> Iterator[LocalStore]:
+    """A client store with its own temporary database, closed after the test."""
+    with LocalStore(str(tmp_path / "local.db")) as store:
+        yield store

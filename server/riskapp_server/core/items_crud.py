@@ -54,9 +54,7 @@ def claim_base_version(
 
     return (
         db.execute(
-            select(model)
-            .where(*where)
-            .execution_options(populate_existing=True)
+            select(model).where(*where).execution_options(populate_existing=True)
         )
         .scalars()
         .one()

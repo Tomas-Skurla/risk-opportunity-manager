@@ -27,7 +27,7 @@ def verify_pw(password: str, stored_hash: str) -> bool:
     """Verify a password against a stored Argon2 hash."""
     try:
         return _PASSWORD_HASHER.verify(stored_hash, password)
-    except (InvalidHashError, VerificationError):
+    except InvalidHashError, VerificationError:
         return False
 
 
