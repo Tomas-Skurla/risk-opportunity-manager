@@ -143,3 +143,22 @@ def test_disabled_scheduler_never_starts(qtbot) -> None:
 
     assert not scheduler.is_running
     start_job.assert_not_called()
+
+
+def test_request_soon_never_postpones_an_earlier_run(qtbot) -> None:
+    """A later request keeps the run already scheduled; a sooner one brings it forward."""
+    del qtbot  # only needed for the Qt application that QTimer requires
+    scheduler = AutomaticSyncScheduler(
+        Mock(return_value=True),
+        interval_seconds=60,
+        initial_delay_seconds=5,
+    )
+    scheduler.start()
+    assert scheduler.last_delay_ms == 5_000
+
+    scheduler.request_soon(delay_seconds=30)
+    assert scheduler.last_delay_ms == 5_000
+
+    scheduler.request_soon(delay_seconds=1)
+    assert scheduler.last_delay_ms == 1_000
+    scheduler.stop()

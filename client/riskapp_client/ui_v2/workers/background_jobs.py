@@ -6,20 +6,26 @@ import inspect
 import logging
 import threading
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 
 from PySide6.QtCore import QObject, Qt, QThread, Signal, Slot
 
+from riskapp_client.domain.background_job_contracts import (
+    BackendFactory,
+    BackgroundJobBackend,
+    SyncCallbacks,
+)
+from riskapp_client.domain.domain_models import Project
+
 logger = logging.getLogger(__name__)
 
-BackendFactory = Callable[[], Any]
 SuccessCallback = Callable[[object], None]
 FailureCallback = Callable[[str], None]
 CancelledCallback = Callable[[], None]
 
 
 def _accepts_keyword(fn: Callable[..., object], keyword: str) -> bool:
-    """Return whether a callable accepts a named keyword argument."""
+    """Preserve legacy/test backends whose sync method omits worker callbacks."""
     try:
         parameters = inspect.signature(fn).parameters.values()
     except TypeError, ValueError:
@@ -58,9 +64,11 @@ class _BackgroundJobWorker(QObject):
     def _is_cancelled(self) -> bool:
         return self._cancel_event.is_set()
 
-    def _sync_project(self, backend: Any, project_id: str) -> dict[str, Any]:
+    def _sync_project(
+        self, backend: BackgroundJobBackend, project_id: str
+    ) -> dict[str, Any]:
         method = backend.sync_project
-        kwargs: dict[str, object] = {}
+        kwargs: SyncCallbacks = {}
         if _accepts_keyword(method, "should_cancel"):
             kwargs["should_cancel"] = self._is_cancelled
         if _accepts_keyword(method, "progress"):
@@ -70,7 +78,7 @@ class _BackgroundJobWorker(QObject):
             raise RuntimeError("Synchronization returned an invalid result")
         return result
 
-    def _run_sync(self, backend: Any) -> dict[str, Any]:
+    def _run_sync(self, backend: BackgroundJobBackend) -> dict[str, Any]:
         result = self._sync_project(
             backend,
             str(self._payload["project_id"]),
@@ -89,15 +97,29 @@ class _BackgroundJobWorker(QObject):
                     "Could not refresh projects after synchronization",
                     exc_info=True,
                 )
+        self._export_authenticated_remote(backend, result)
         return result
 
-    def _run_automatic_sync(self, backend: Any) -> dict[str, Any]:
+    def _export_authenticated_remote(
+        self, backend: BackgroundJobBackend, result: dict[str, Any]
+    ) -> None:
+        if not self._payload.get("export_remote") or result.get("state") in {
+            "authentication_required",
+            "cancelled",
+        }:
+            return
+        export_remote = getattr(backend, "export_authenticated_remote", None)
+        if callable(export_remote):
+            authenticated_remote = cast(Callable[[], object | None], export_remote)()
+            if authenticated_remote is not None:
+                result["_authenticated_remote"] = authenticated_remote
+
+    def _run_automatic_sync(self, backend: BackgroundJobBackend) -> dict[str, Any]:
         """Synchronize every visible, syncable project in one worker session."""
         self.progress.emit("Checking projects for automatic sync")
-        list_projects = getattr(
-            backend,
-            "list_sync_projects",
-            backend.list_projects,
+        list_projects = cast(
+            Callable[[], list[Project]],
+            getattr(backend, "list_sync_projects", backend.list_projects),
         )
         projects = list(list_projects() or [])
         syncable = [
@@ -189,15 +211,10 @@ class _BackgroundJobWorker(QObject):
             "next_retry_at": retry_values[0] if retry_values else None,
             "_visible_projects": projects,
         }
-        if self._payload.get("export_remote") and state != "authentication_required":
-            export_remote = getattr(backend, "export_authenticated_remote", None)
-            if callable(export_remote):
-                authenticated_remote = export_remote()
-                if authenticated_remote is not None:
-                    result["_authenticated_remote"] = authenticated_remote
+        self._export_authenticated_remote(backend, result)
         return result
 
-    def _run_history(self, backend: Any) -> dict[str, Any]:
+    def _run_history(self, backend: BackgroundJobBackend) -> dict[str, Any]:
         self.progress.emit("Loading snapshot history")
         project_id = str(self._payload["project_id"])
         request = dict(self._payload.get("history") or {})
@@ -212,7 +229,7 @@ class _BackgroundJobWorker(QObject):
             "display": dict(self._payload.get("display") or {}),
         }
 
-    def _run_snapshot(self, backend: Any) -> dict[str, Any]:
+    def _run_snapshot(self, backend: BackgroundJobBackend) -> dict[str, Any]:
         self.progress.emit("Creating snapshot")
         project_id = str(self._payload["project_id"])
         kind = self._payload.get("kind")
@@ -238,7 +255,7 @@ class _BackgroundJobWorker(QObject):
                 result["history_error"] = str(exc)
         return result
 
-    def _execute(self, backend: Any) -> object:
+    def _execute(self, backend: BackgroundJobBackend) -> object:
         if self._kind == "sync":
             return self._run_sync(backend)
         if self._kind == "automatic_sync":
@@ -252,7 +269,7 @@ class _BackgroundJobWorker(QObject):
     @Slot()
     def run(self) -> None:
         """Create worker-owned dependencies, execute, and release them."""
-        backend: Any | None = None
+        backend: BackgroundJobBackend | None = None
         try:
             if self._is_cancelled():
                 self.cancelled.emit(self._kind)
@@ -277,7 +294,9 @@ class _BackgroundJobWorker(QObject):
                 close = getattr(store, "close", None)
                 if callable(close):
                     try:
-                        close()  # pylint: disable=not-callable
+                        # Store cleanup is optional and outside the job protocol.
+                        # pylint: disable-next=not-callable
+                        close()
                     # Store cleanup is best-effort after the job result is known.
                     # pylint: disable-next=broad-exception-caught
                     except Exception:  # noqa: BLE001 - best-effort cleanup

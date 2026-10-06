@@ -21,24 +21,41 @@ ROOT = REPO_ROOT
 
 @pytest.fixture
 def launcher(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    tmp_path = tmp_path / "launcher project"
+    tmp_path.mkdir()
     scripts = tmp_path / "scripts"
     scripts.mkdir()
-    shutil.copy2(ROOT / "scripts/run_server_dev.sh", scripts / "run_server_dev.sh")
+    (scripts / "run_server_dev.sh").write_text(
+        (ROOT / "scripts/run_server_dev.sh").read_text(encoding="utf-8"),
+        encoding="utf-8",
+        newline="\n",
+    )
     (tmp_path / "server").mkdir()
     binaries = tmp_path / ".venv/bin"
     binaries.mkdir(parents=True)
-    (binaries / "activate").write_text("# Test environment already configured.\n")
+    (binaries / "activate").write_text(
+        "# Test environment already configured.\n", encoding="utf-8", newline="\n"
+    )
     stub = binaries / "uvicorn"
     stub.write_text(
-        f"#!{sys.executable}\n"
+        "#!/usr/bin/env bash\n"
+        'exec "$RISKAPP_LAUNCH_PYTHON" "$RISKAPP_LAUNCH_STUB" "$@"\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    stub.chmod(0o755)
+    capture_script = binaries / "capture_launch.py"
+    capture_script.write_text(
         "import json, os, sys\n"
         "from pathlib import Path\n"
         "names = ['SECRET_KEY', 'TOKEN_HASH_KEY', "
         "'INITIAL_SUPERUSER_EMAIL', 'INITIAL_SUPERUSER_PASSWORD']\n"
         "Path(os.environ['RISKAPP_LAUNCH_CAPTURE']).write_text(json.dumps({"
-        "'args': sys.argv[1:], 'env': {name: os.getenv(name) for name in names}}))\n"
+        "'args': sys.argv[1:], 'env': {name: os.getenv(name) for name in names}}))\n",
+        encoding="utf-8",
     )
-    stub.chmod(0o755)
+    monkeypatch.setenv("RISKAPP_LAUNCH_PYTHON", Path(sys.executable).as_posix())
+    monkeypatch.setenv("RISKAPP_LAUNCH_STUB", capture_script.as_posix())
     monkeypatch.setenv("PATH", str(binaries) + os.pathsep + os.environ["PATH"])
     monkeypatch.setenv("RISKAPP_LAUNCH_CAPTURE", str(tmp_path / "capture.json"))
     for name in (

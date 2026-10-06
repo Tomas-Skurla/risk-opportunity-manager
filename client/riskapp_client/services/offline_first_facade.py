@@ -7,6 +7,7 @@ from typing import Any
 
 from riskapp_client.adapters.local_storage.sqlite_data_store import LocalStore
 from riskapp_client.adapters.local_storage.sync_outbox_queue import OutboxStore
+from riskapp_client.domain.background_job_contracts import BackgroundJobBackend
 from riskapp_client.domain.domain_models import (
     Action,
     Assessment,
@@ -98,7 +99,7 @@ class OfflineFirstBackend(Backend):
             release_authentication_blocks=release_authentication_blocks,
         )
 
-    def create_background_backend(self) -> OfflineFirstBackend:
+    def create_background_backend(self) -> BackgroundJobBackend:
         """Build a worker-owned facade with its own SQLite connection."""
         remote = self.remote
         release_authentication_blocks = False

@@ -55,6 +55,8 @@ def test_worker_dispatches_sync_progress_and_project_migration(qtbot) -> None:
     assert result["_visible_projects"] == [Project("project-1", "Published")]
 
 
+# The qtbot fixture initializes Qt before this direct QObject signal test.
+# pylint: disable-next=unused-argument
 def test_worker_automatic_sync_isolates_project_failure(qtbot, caplog) -> None:
     calls: list[str] = []
     outcomes: list[object] = []
@@ -573,3 +575,54 @@ def test_offline_facade_worker_recovers_remote_then_main_adopts_it(local_store) 
         assert calls == ["reconnect", "fork"]
     finally:
         worker_backend.store.close()
+
+
+def test_results_arriving_during_shutdown_are_ignored(qtbot) -> None:
+    """Once the window is closing, late job results must not touch the UI."""
+    del qtbot  # only needed for the Qt application the runner requires
+    runner = BackgroundJobRunner(Mock(), owns_backend=False)
+    on_success, on_failure, on_cancelled = Mock(), Mock(), Mock()
+    # The race this pins down (a result landing mid-shutdown) cannot be
+    # triggered reliably through the public API, so drive the slots directly.
+    # pylint: disable=protected-access
+    runner._on_success = on_success
+    runner._on_failure = on_failure
+    runner._on_cancelled = on_cancelled
+    runner._shutting_down = True
+
+    runner._handle_success("sync", object())
+    runner._handle_failure("sync", "late failure")
+    runner._handle_cancelled("sync")
+    # pylint: enable=protected-access
+
+    on_success.assert_not_called()
+    on_failure.assert_not_called()
+    on_cancelled.assert_not_called()
+
+
+def test_shutdown_waits_for_a_running_job_and_drops_its_result(qtbot) -> None:
+    """Shutdown waits for the worker; the result it then delivers is not used."""
+    started = threading.Event()
+    release = threading.Event()
+    results: list[object] = []
+
+    class Backend:
+        def sync_project(self, _project_id):
+            started.set()
+            assert release.wait(timeout=5)
+            return {"state": "complete"}
+
+    runner = BackgroundJobRunner(Backend, owns_backend=False)
+    assert runner.start(
+        "sync",
+        {"project_id": "project-1"},
+        on_success=results.append,
+    )
+    qtbot.waitUntil(started.is_set)
+
+    # The job finishes while shutdown is waiting for its thread.
+    threading.Timer(0.05, release.set).start()
+    assert runner.shutdown(timeout_ms=5_000)
+    qtbot.wait(50)  # deliver any queued result signal
+
+    assert not results

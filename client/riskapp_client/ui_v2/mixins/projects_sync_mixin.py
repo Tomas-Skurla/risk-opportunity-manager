@@ -368,7 +368,9 @@ class ProjectsSyncMixin:
                 can_sync = bool(self.backend.can_sync())
             except AttributeError, RuntimeError:
                 can_sync = False
-        self.sync_btn.setEnabled(bool(pid) and can_sync)
+        reconnect_available = getattr(self.backend, "can_auto_sync", None)
+        can_reconnect = callable(reconnect_available) and bool(reconnect_available())
+        self.sync_btn.setEnabled(bool(pid) and (can_sync or can_reconnect))
         mode = "ONLINE" if can_sync else "OFFLINE"
         formatted_last_sync = self._format_last_sync_time(last_sync)
         self.sync_status.setText(
@@ -379,8 +381,7 @@ class ProjectsSyncMixin:
         if hasattr(self, "conflicts_btn"):
             self.conflicts_btn.setText(f"Conflicts ({conflicts})")
             self.conflicts_btn.setEnabled(bool(pid) and conflicts > 0)
-        can_auto_sync = getattr(self.backend, "can_auto_sync", None)
-        if pending > 0 and callable(can_auto_sync) and bool(can_auto_sync()):
+        if pending > 0 and can_reconnect:
             self._schedule_automatic_sync()
 
     def _open_conflict_center(self) -> None:
@@ -442,9 +443,14 @@ class ProjectsSyncMixin:
                 "This backend does not support sync.",
             )
             return
+        can_sync = getattr(self.backend, "can_sync", None)
+        export_remote = callable(can_sync) and not bool(can_sync())
+        payload: dict[str, Any] = {"project_id": str(pid)}
+        if export_remote:
+            payload["export_remote"] = True
         if not self._start_background_job(
             "sync",
-            {"project_id": str(pid)},
+            payload,
             on_success=self._sync_succeeded,
             on_failure=self._sync_failed,
             on_cancelled=self._sync_cancelled,
@@ -460,6 +466,7 @@ class ProjectsSyncMixin:
             self._sync_failed("Synchronization returned an invalid result")
             return
         summary = dict(result)
+        self._adopt_worker_remote(summary)
         self._observe_manual_sync_result(summary)
         # If the sync promoted a local-only project to a server project,
         # reload project list and keep the user on the migrated project.
@@ -548,14 +555,8 @@ class ProjectsSyncMixin:
             on_cancelled=self._automatic_sync_cancelled,
         )
 
-    def _automatic_sync_succeeded(self, result: object) -> None:
-        """Adopt reconnect state and refresh local views without modal dialogs."""
-        if not isinstance(result, dict):
-            self._automatic_sync_failed(
-                "Automatic synchronization returned an invalid result"
-            )
-            return
-        summary = dict(result)
+    def _adopt_worker_remote(self, summary: dict[str, Any]) -> bool:
+        """Adopt a recovered session from either manual or automatic sync."""
         authenticated_remote = summary.pop("_authenticated_remote", None)
         if authenticated_remote is not None:
             adopt_remote = getattr(
@@ -567,6 +568,18 @@ class ProjectsSyncMixin:
                 adopt_remote(authenticated_remote)
                 self._offline_mode = False
                 self._role_assumed = False
+                return True
+        return False
+
+    def _automatic_sync_succeeded(self, result: object) -> None:
+        """Adopt reconnect state and refresh local views without modal dialogs."""
+        if not isinstance(result, dict):
+            self._automatic_sync_failed(
+                "Automatic synchronization returned an invalid result"
+            )
+            return
+        summary = dict(result)
+        recovered = self._adopt_worker_remote(summary)
 
         migrations = summary.get("project_id_migrations")
         selected_project_id = str(self.current_project_id or "")
@@ -574,9 +587,7 @@ class ProjectsSyncMixin:
             selected_project_id = str(migrations[selected_project_id])
 
         visible_projects = summary.pop("_visible_projects", None)
-        if (authenticated_remote is not None or migrations) and isinstance(
-            visible_projects, list
-        ):
+        if (recovered or migrations) and isinstance(visible_projects, list):
             self._load_projects(
                 select_project_id=selected_project_id or None,
                 projects=visible_projects,

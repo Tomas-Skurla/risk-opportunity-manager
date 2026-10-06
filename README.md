@@ -46,7 +46,7 @@ bash scripts/run_client_dev.sh     # desktop client, in a second terminal
 
 Log in with `INITIAL_SUPERUSER_EMAIL` and `INITIAL_SUPERUSER_PASSWORD` from `.env`. The interactive API documentation is at `http://127.0.0.1:8000/docs`. These commands keep existing data; the reset options in the [setup guide](docs/SETUP_GUIDE.md) delete it. The guide also explains each step and what the check runs.
 
-CI runs the same check on every push and pull request. It pins third-party actions by full commit SHA, keeps security-event write access on the container job only, and uses Trivy to block actionable image vulnerabilities and exposed secrets. Trivy's image findings are also uploaded as SARIF when GitHub permits the event to write to code scanning.
+CI runs the same check on every push and pull request. It pins third-party actions by full commit SHA and uses Trivy to block actionable image vulnerabilities and exposed secrets. The separate CodeQL workflow analyzes Python source. Security-event write access is scoped to the container and CodeQL analysis jobs, which publish their findings to code scanning when GitHub permits the event.
 
 ## Run the development API with Docker
 
@@ -121,6 +121,10 @@ docs/         Setup, testing and architecture guides
 - [Server](server/README_SERVER.md): authentication, endpoints and administration
 - [Client](client/README_CLIENT.md): using the desktop app, offline modes and resolving conflicts
 - [Test guide](docs/TEST_GUIDE.md): the manual verification checklist
+- [Backup and recovery](docs/BACKUP_RESTORE.md): verified SQLite snapshots, recovery drills and client reconciliation limits
+- [Demo rehearsal](docs/DEMO_REHEARSAL.md): isolated Windows walkthrough for offline edits, reconnect, conflicts and recovery
+- [CodeQL](docs/CODEQL.md): Python source analysis and reviewing GitHub findings
+- [Worker/backend contract](docs/WORKER_BACKEND_CONTRACT.md): the typed boundary used by desktop background jobs
 
 ## License
 
