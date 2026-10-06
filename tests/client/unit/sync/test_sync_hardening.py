@@ -57,7 +57,7 @@ def test_malformed_conflict_version_is_blocked_instead_of_crashing() -> None:
     }
     remote.sync_push.return_value = {"results": [conflict]}
 
-    processed, conflicts, errors = service._process_push(
+    processed, conflicts, errors, _acknowledged = service._process_push(
         "project-1", [{"change_id": "bad-version"}]
     )
 

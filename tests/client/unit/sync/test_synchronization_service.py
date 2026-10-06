@@ -197,7 +197,9 @@ def test_process_push_removes_successes_and_blocks_failures() -> None:
         {},
     ]
 
-    processed, conflicts, errors = service._process_push("project-1", changes)
+    processed, conflicts, errors, _acknowledged = service._process_push(
+        "project-1", changes
+    )
 
     assert processed == 2
     assert conflicts[0]["change_id"] == "conflict-1"
@@ -220,6 +222,69 @@ def test_process_push_removes_successes_and_blocks_failures() -> None:
     assert outbox.block_outbox_id.call_args_list[1].kwargs == {
         "failure_kind": "validation"
     }
+
+
+def test_process_push_reports_the_version_each_accepted_change_produced() -> None:
+    remote = Mock()
+    remote.sync_push.return_value = {
+        "results": [
+            {
+                "change_id": "update-1",
+                "status": "accepted",
+                "entity": "risk",
+                "entity_id": "risk-1",
+                "server_version": 4,
+            },
+            {"change_id": "create-1", "status": "accepted", "server_version": 1},
+            {
+                "change_id": "replay-1",
+                "status": "accepted",
+                "replayed": True,
+                "entity": "risk",
+                "entity_id": "risk-2",
+                "server_version": 7,
+                "receipt_server_version": 5,
+            },
+            {"change_id": "conflict-1", "status": "conflict", "server_version": 9},
+        ],
+    }
+    service, _store, _outbox = _service(remote=remote)
+    changes = [
+        {"change_id": "update-1", "base_version": 3, "record": {"id": "risk-1"}},
+        {
+            "change_id": "create-1",
+            "entity": "action",
+            "base_version": None,
+            "record": {"id": "action-1"},
+        },
+        {"change_id": "replay-1", "base_version": 4, "record": {"id": "risk-2"}},
+        {"change_id": "conflict-1", "base_version": 8, "record": {"id": "risk-3"}},
+    ]
+
+    *_, acknowledged = service._process_push("project-1", changes)
+
+    assert acknowledged == [
+        {
+            "entity": "risk",
+            "entity_id": "risk-1",
+            "base_version": 3,
+            "server_version": 4,
+        },
+        # Entity and ID fall back to the sent change.
+        {
+            "entity": "action",
+            "entity_id": "action-1",
+            "base_version": None,
+            "server_version": 1,
+        },
+        # A replay reports the version its first acceptance produced.
+        {
+            "entity": "risk",
+            "entity_id": "risk-2",
+            "base_version": 4,
+            "server_version": 5,
+        },
+    ]
 
 
 @pytest.mark.parametrize(
@@ -247,7 +312,7 @@ def test_push_request_failures_follow_retry_state_machine(
     remote.sync_push.side_effect = RequestError(status)
     service, _store, outbox = _service(remote=remote)
 
-    processed, conflicts, errors = service._process_push(
+    processed, conflicts, errors, _acknowledged = service._process_push(
         "project-1", [{"change_id": "change-1"}]
     )
 
@@ -281,7 +346,7 @@ def test_retryable_per_change_result_is_deferred_not_blocked() -> None:
     }
     service, _store, outbox = _service(remote=remote)
 
-    processed, conflicts, errors = service._process_push(
+    processed, conflicts, errors, _acknowledged = service._process_push(
         "project-1", [{"change_id": "change-1"}]
     )
 
@@ -326,7 +391,7 @@ def test_push_response_without_results_is_retried_not_trusted() -> None:
     remote.sync_push.return_value = {"accepted": 1, "conflicts": [], "errors": []}
     service, _store, outbox = _service(remote=remote)
 
-    processed, conflicts, errors = service._process_push(
+    processed, conflicts, errors, _acknowledged = service._process_push(
         "project-1", [{"change_id": "ok-1"}]
     )
 
@@ -345,7 +410,7 @@ def test_process_push_blocks_conflicts_for_explicit_resolution() -> None:
     }
     service, _store, outbox = _service(remote=remote)
 
-    processed, _conflicts, _errors = service._process_push(
+    processed, _conflicts, _errors, _acknowledged = service._process_push(
         "project-1", [{"change_id": "conflict-1"}]
     )
 
@@ -383,7 +448,7 @@ def test_process_push_uses_replayed_receipt_status_not_duplicate_flag() -> None:
     }
     service, _store, outbox = _service(remote=remote)
 
-    processed, conflicts, errors = service._process_push(
+    processed, conflicts, errors, _acknowledged = service._process_push(
         "project-1",
         [
             {"change_id": "accepted-1"},

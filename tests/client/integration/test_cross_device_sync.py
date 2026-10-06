@@ -370,6 +370,56 @@ def test_two_local_creates_accept_server_code_reallocation_as_one_batch(
             second.store.close()
 
 
+def test_codes_swapped_on_the_server_reach_another_device(
+    tmp_path,
+    isolated_app_factory,
+) -> None:
+    app = isolated_app_factory(f"sqlite+pysqlite:///{tmp_path / 'server.db'}")
+    with TestClient(app) as client:
+        project_id, headers = _server_project(client)
+        ids = {}
+        for code in ("R-001", "R-002"):
+            created = client.post(
+                f"/projects/{project_id}/risks",
+                json={
+                    "type": "risk",
+                    "code": code,
+                    "title": code,
+                    "probability": 2,
+                    "impact": 2,
+                },
+                headers=headers,
+            )
+            assert created.status_code == 201, created.text
+            ids[code] = created.json()["id"]
+        first, second = ids["R-001"], ids["R-002"]
+        remote = _InProcessRemote(client, project_id, headers)
+        device = _backend(tmp_path / "device.db", project_id, remote)
+        try:
+            assert device.sync_project(project_id)["state"] == "complete"
+
+            # Swapping two codes takes a temporary third code on the server.
+            for item_id, code, base_version in (
+                (first, "R-999", 1),
+                (second, "R-001", 1),
+                (first, "R-002", 2),
+            ):
+                response = client.patch(
+                    f"/projects/{project_id}/risks/{item_id}",
+                    json={"code": code, "base_version": base_version},
+                    headers=headers,
+                )
+                assert response.status_code == 200, response.text
+
+            assert device.sync_project(project_id)["state"] == "complete"
+            first_row = device.store.get_risk_row(first)
+            second_row = device.store.get_risk_row(second)
+            assert first_row is not None and first_row["code"] == "R-002"
+            assert second_row is not None and second_row["code"] == "R-001"
+        finally:
+            device.store.close()
+
+
 def test_pull_rows_and_watermark_are_one_local_transaction(local_store) -> None:
     project = local_store.create_local_project(name="Project", project_id="project-1")
     local_store.upsert_local_risk(

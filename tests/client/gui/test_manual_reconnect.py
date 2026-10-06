@@ -15,27 +15,10 @@ from riskapp_client.services.offline_first_facade import OfflineFirstBackend
 from riskapp_client.ui_v2.mixins.projects_sync_mixin import ProjectsSyncMixin
 from riskapp_client.ui_v2.workers import BackgroundJobRunner
 from riskapp_client.ui_v2.workers import background_jobs as jobs
-from support import create_project, pull, push, register_user
+from support import InProcessRemote, create_project, register_user
 
 # Exercise the real mixin/runner boundary without unrelated editor widgets.
 # pylint: disable=protected-access
-
-
-class _Remote:
-    def __init__(self, client, user) -> None:
-        self.client = client
-        self.user = user
-
-    @staticmethod
-    def _body(response):
-        assert response.status_code == 200, response.text
-        return response.json()
-
-    def sync_push(self, project_id, changes):
-        return self._body(push(self.client, project_id, self.user, *changes))
-
-    def sync_pull(self, project_id, **options):
-        return self._body(pull(self.client, project_id, self.user, **options))
 
 
 class _SyncHost(QWidget, ProjectsSyncMixin):
@@ -93,7 +76,7 @@ def _reconnect_case(tmp_path, local_store, isolated_app_factory):
         project = create_project(client, user, name="Manual reconnect")
         local_store.upsert_projects([Project(project.id, "Manual reconnect")])
         local_store.set_meta("user_id", user.id)
-        remote = _Remote(client, user)
+        remote = InProcessRemote(client, user)
         online = OfflineFirstBackend(local_store, remote)
         risk = online.create_risk(
             project.id, title="Before restart", probability=2, impact=3

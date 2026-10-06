@@ -760,16 +760,16 @@ class LocalStore:
                     "updated_at": upd,
                     "dirty": 0,
                 }
-                # Server codes take precedence over provisional offline codes.
-                # Preserve the local row and its exact outbox payload/receipt;
-                # a later accepted push supplies that row's canonical code.
+                # Codes are unique per project on the server, so another cached
+                # row holding this code is stale: a provisional offline code, or
+                # a record whose code has since changed on the server (codes can
+                # be swapped). Release it instead of failing the pull; that
+                # row's own server state brings its current code. The local row
+                # and its exact outbox payload/receipt are preserved.
                 cur.execute(
                     f"UPDATE {table} SET code=NULL "  # noqa: S608
-                    "WHERE project_id=? AND code=? AND id<>? AND version=0 "
-                    "AND id IN (SELECT entity_id FROM outbox "
-                    "WHERE project_id=? AND entity=? "
-                    "AND status IN ('pending', 'retry', 'blocked'));",
-                    (project_id, m.get("code"), eid, project_id, outbox_entity),
+                    "WHERE project_id=? AND code=? AND id<>?;",
+                    (project_id, m.get("code"), eid),
                 )
                 self._upsert_row(table, record, cur)
 

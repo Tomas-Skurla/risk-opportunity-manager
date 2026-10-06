@@ -117,6 +117,7 @@ tests/
   server/unit/          server code without HTTP requests
   server/api/           requests to the API: auth/, projects/, records/, sync/, http/
   server/migrations/    the Alembic migrations
+  server/ops/           the SQLite backup and restore tool
   client/unit/          client code: app/, services/, storage/, sync/
   client/gui/           the desktop UI layer
   client/integration/   the client and a real server together
@@ -234,7 +235,7 @@ bash scripts/setup_python_env.sh --recreate
 
 ## 9. Reset local dev state
 
-**Destructive:** resetting deletes the server database and the client database,including unsynced client changes. Normal startup in steps 6 and 7 preserves existing data. Use a reset only when you deliberately want an empty database.
+**Destructive:** resetting deletes the server database and the client database, including unsynced client changes. Normal startup in steps 6 and 7 preserves existing data. Use a reset only when you deliberately want an empty database.
 
 Interactive:
 

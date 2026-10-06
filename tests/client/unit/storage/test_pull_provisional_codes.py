@@ -1,6 +1,5 @@
-"""Pulls must preserve blocked offline creates when server codes collide."""
+"""Server codes win on pull: colliding cached codes are released, local work kept."""
 
-import sqlite3
 from unittest.mock import Mock
 
 import pytest
@@ -109,30 +108,30 @@ def test_failed_pull_rolls_back_provisional_code_release(tmp_path) -> None:
         assert backend.outbox.get_pending_changes(project.id) == before
 
 
-def test_pull_does_not_clear_an_acknowledged_records_code(tmp_path) -> None:
-    with LocalStore(str(tmp_path / "canonical.db")) as store:
+@pytest.mark.parametrize("one_page", [True, False], ids=["one-page", "two-pages"])
+def test_pull_applies_codes_swapped_on_the_server(tmp_path, one_page) -> None:
+    """A code moved to another record frees it; the record's own update follows."""
+    with LocalStore(str(tmp_path / "swap.db")) as store:
         project = store.create_local_project(name="Project", project_id="project-1")
         store.apply_pull_risks(
             project.id,
             [
-                {
-                    "id": "acknowledged",
-                    "code": "R-001",
-                    "version": 1,
-                }
+                {"id": "a", "code": "R-001", "version": 1},
+                {"id": "b", "code": "R-002", "version": 1},
             ],
         )
-        with pytest.raises(sqlite3.IntegrityError):
-            store.apply_pull_risks(
-                project.id,
-                [
-                    {
-                        "id": "different",
-                        "code": "R-001",
-                        "version": 1,
-                    }
-                ],
-            )
-        acknowledged = store.get_risk_row("acknowledged")
-        assert acknowledged is not None
-        assert acknowledged["code"] == "R-001"
+        # The server applied a -> R-999, b -> R-001, a -> R-002, so a pull
+        # delivers b before a, possibly on separate pages.
+        b_update = {"id": "b", "code": "R-001", "version": 2}
+        a_update = {"id": "a", "code": "R-002", "version": 3}
+        if one_page:
+            store.apply_pull_risks(project.id, [b_update, a_update])
+        else:
+            store.apply_pull_risks(project.id, [b_update])
+            released = store.get_risk_row("a")
+            assert released is not None and released["code"] is None
+            store.apply_pull_risks(project.id, [a_update])
+
+        a, b = store.get_risk_row("a"), store.get_risk_row("b")
+        assert a is not None and (a["code"], a["version"]) == ("R-002", 3)
+        assert b is not None and (b["code"], b["version"]) == ("R-001", 2)

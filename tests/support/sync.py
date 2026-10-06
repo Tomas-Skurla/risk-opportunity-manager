@@ -68,3 +68,22 @@ def newly_accepted(body: dict[str, Any]) -> list[dict[str, Any]]:
 def replayed(body: dict[str, Any]) -> list[dict[str, Any]]:
     """Results answered from an earlier receipt instead of being applied again."""
     return [result for result in body["results"] if result["replayed"]]
+
+
+class InProcessRemote:
+    """The client's push/pull interface, served by the in-process API."""
+
+    def __init__(self, client: TestClient, user: User) -> None:
+        self.client = client
+        self.user = user
+
+    @staticmethod
+    def _body(response: Any) -> Any:
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    def sync_push(self, project_id: str, changes: list[dict[str, Any]]) -> Any:
+        return self._body(push(self.client, project_id, self.user, *changes))
+
+    def sync_pull(self, project_id: str, **options: Any) -> Any:
+        return self._body(pull(self.client, project_id, self.user, **options))

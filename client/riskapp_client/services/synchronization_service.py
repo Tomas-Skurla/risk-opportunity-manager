@@ -425,9 +425,40 @@ class SyncService:
             )
         return self._remote.sync_push(project_id, changes)
 
+    @staticmethod
+    def _acknowledged_versions(
+        changes: list[dict[str, Any]], accepted: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Pair each accepted change's base version with the version it produced.
+
+        Open editors use this to follow their own saves. A replay reports the
+        version produced when the change was first accepted.
+        """
+        sent = {str(change.get("change_id") or ""): change for change in changes}
+        acknowledged: list[dict[str, Any]] = []
+        for item in accepted:
+            version = item.get("server_version")
+            receipt_version = item.get("receipt_server_version")
+            if item.get("replayed") and isinstance(receipt_version, int):
+                version = receipt_version
+            if not isinstance(version, int) or isinstance(version, bool):
+                continue
+            change = sent.get(str(item["change_id"]), {})
+            record = change.get("record")
+            record_id = record.get("id") if isinstance(record, dict) else None
+            acknowledged.append(
+                {
+                    "entity": str(item.get("entity") or change.get("entity") or ""),
+                    "entity_id": str(item.get("entity_id") or record_id or ""),
+                    "base_version": change.get("base_version"),
+                    "server_version": version,
+                }
+            )
+        return acknowledged
+
     def _process_push(
         self, project_id: str, changes: list[dict[str, Any]]
-    ) -> tuple[int, list[dict[str, Any]], list[dict[str, Any]]]:
+    ) -> tuple[int, list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
         sent_ids = [
             str(c.get("change_id") or "") for c in changes if c.get("change_id")
         ]
@@ -441,7 +472,7 @@ class SyncService:
         # shared failure normalizer re-raises exceptions it cannot classify.
         except Exception as exc:  # noqa: BLE001  # pylint: disable=W0718
             failure = self._request_failure(exc, phase="push")
-            return 0, [], self._record_request_failure(sent_ids, failure)
+            return 0, [], self._record_request_failure(sent_ids, failure), []
 
         raw_results = resp.get("results") if isinstance(resp, dict) else None
         results = (
@@ -467,7 +498,7 @@ class SyncService:
                 "request_failed": True,
             }
 
-            return 0, [], self._record_request_failure(sent_ids, failure)
+            return 0, [], self._record_request_failure(sent_ids, failure), []
 
         conflicts = [item for item in results if item["status"] == "conflict"]
         errors = [
@@ -510,7 +541,12 @@ class SyncService:
                         failure_kind=str(e.get("failure_kind") or "error"),
                     )
 
-        return (len(processed), conflicts, errors)
+        return (
+            len(processed),
+            conflicts,
+            errors,
+            self._acknowledged_versions(changes, accepted),
+        )
 
     def sync_project(
         self,
@@ -571,9 +607,11 @@ class SyncService:
                 progress,
                 f"Pushing {len(changes)} pending change(s)",
             )
-            pushed, conflicts, errors = self._process_push(
+            pushed, conflicts, errors, acknowledged = self._process_push(
                 effective_project_id, changes
             )
+            if acknowledged:
+                summary["acknowledged"] = acknowledged
             summary["pushed"] += pushed
             summary["conflicts"] += len(self._extract_change_ids(conflicts))
             deferred_errors = [e for e in errors if bool(e.get("retryable"))]

@@ -19,6 +19,7 @@ from support.api import (
 from support.credentials import new_email, new_password
 from support.paths import REPO_ROOT
 from support.sync import (
+    InProcessRemote,
     new_change,
     newly_accepted,
     pull,
@@ -28,6 +29,7 @@ from support.sync import (
 )
 
 __all__ = [
+    "InProcessRemote",
     "Item",
     "Project",
     "REPO_ROOT",

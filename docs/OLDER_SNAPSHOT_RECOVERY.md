@@ -45,7 +45,7 @@ Follow [backup and restore](BACKUP_RESTORE.md) for the server commands.
 
    ```bash
    mkdir -p ../riskapp-backups
-   export RISKAPP_LOCAL_DB="$(python -c 'from pathlib import Path; print((Path.cwd().parent / "riskapp-backups/client-recovered.qlite3").as_posix())')"
+   export RISKAPP_LOCAL_DB="$(python -c 'from pathlib import Path; print((Path.cwd().parent / "riskapp-backups/client-recovered.sqlite3").as_posix())')"
    export RISKAPP_AUTO_SYNC_INTERVAL_SECONDS=0
    bash scripts/run_client_dev.sh
    ```
@@ -68,7 +68,7 @@ Follow [backup and restore](BACKUP_RESTORE.md) for the server commands.
 
 The automatic tests exercise one risk edit, a later cached risk, and cursor rollback. They do not claim automated recovery of every entity, attachment, local project, or dependency. Actions and assessments require checking their parent relationships when manually recovering selected work.
 
-## Limits to explain in an interview
+## Known limits
 
 - The snapshot is the server's recovery boundary: later acknowledged server writes are absent unless recovered separately.
 - The outbox contains pending work, not a complete history of all acknowledged changes. Later data may also survive only in the original client cache.

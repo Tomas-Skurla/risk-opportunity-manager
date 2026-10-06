@@ -6,7 +6,7 @@ The rehearsal has its own server database, port `8001`, and separate client cach
 
 ## 1. Prepare an isolated session
 
-Apply the CodeQL, typed-worker, manual-reconnect, and rehearsal patches first. From the repository root in Git Bash, with the Windows environment active:
+Run the project checks first. From the repository root in Git Bash, with the Windows environment active:
 
 ```bash
 source .venv/Scripts/activate
@@ -22,10 +22,10 @@ python -m pytest tests/client/gui/test_manual_reconnect.py \
   tests/server/ops/test_sqlite_backup.py -q
 ```
 
-Use PowerShell for the following launch and recovery commands. They call the Windows Python executable directly, so activating the environment is unnecessary. Open each terminal at the repository root. The example checkout is:
+Use PowerShell for the following launch and recovery commands. They call the Windows Python executable directly, so activating the environment is unnecessary. Open each terminal at the repository root:
 
 ```powershell
-Set-Location "C:\Users\zemep\Desktop\Risk-App Upgrade\risk-opportunity-manager"
+Set-Location "<your checkout path here>"
 ```
 
 In a **control terminal**, create a new folder for this run:

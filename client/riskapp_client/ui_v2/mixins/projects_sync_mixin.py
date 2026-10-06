@@ -33,6 +33,13 @@ if TYPE_CHECKING:
 
 _PROJECT_NAME_ROLE = int(Qt.ItemDataRole.UserRole) + 1
 
+# Each editor's open record and the server version its content is based on.
+_EDITOR_BASES = (
+    ("risk", "current_risk_id", "_risk_editor_base_version"),
+    ("opportunity", "current_opportunity_id", "_opportunity_editor_base_version"),
+    ("action", "current_action_id", "_action_editor_base_version"),
+)
+
 
 class ProjectsSyncMixin:
     """MainWindow mixin: ProjectsSyncMixin"""
@@ -103,6 +110,33 @@ class ProjectsSyncMixin:
                 line += f" (server version: {server_version})"
             lines.append(line)
         return "\n".join(lines)
+
+    def _follow_own_saves(self, summaries: Iterable[dict[str, Any]]) -> None:
+        """Move open editors onto the versions their own accepted saves produced.
+
+        An editor queues its saves against the version it loaded, so editing
+        after another device's update conflicts instead of overwriting it. The
+        server accepting this editor's own save is not such an update.
+        """
+        acknowledged = [
+            ack
+            for summary in summaries
+            for ack in summary.get("acknowledged") or []
+            if isinstance(ack, dict)
+        ]
+        for entity, id_attr, base_attr in _EDITOR_BASES:
+            editor_id = getattr(self, id_attr, None)
+            if not editor_id:
+                continue
+            base = getattr(self, base_attr, None) or 0
+            for ack in acknowledged:
+                if (
+                    ack.get("entity") == entity
+                    and ack.get("entity_id") == editor_id
+                    and (ack.get("base_version") or 0) == base
+                ):
+                    setattr(self, base_attr, int(ack["server_version"]))
+                    break
 
     def _refresh_all_views(
         self,
@@ -467,6 +501,7 @@ class ProjectsSyncMixin:
             return
         summary = dict(result)
         self._adopt_worker_remote(summary)
+        self._follow_own_saves([summary])
         self._observe_manual_sync_result(summary)
         # If the sync promoted a local-only project to a server project,
         # reload project list and keep the user on the migrated project.
@@ -580,6 +615,9 @@ class ProjectsSyncMixin:
             return
         summary = dict(result)
         recovered = self._adopt_worker_remote(summary)
+        projects = summary.get("projects")
+        if isinstance(projects, list):
+            self._follow_own_saves(p for p in projects if isinstance(p, dict))
 
         migrations = summary.get("project_id_migrations")
         selected_project_id = str(self.current_project_id or "")
