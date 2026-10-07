@@ -46,7 +46,7 @@ bash scripts/run_client_dev.sh     # desktop client, in a second terminal
 
 Log in with `INITIAL_SUPERUSER_EMAIL` and `INITIAL_SUPERUSER_PASSWORD` from `.env`. The interactive API documentation is at `http://127.0.0.1:8000/docs`. These commands keep existing data; the reset options in the [setup guide](docs/SETUP_GUIDE.md) delete it. The guide also explains each step and what the check runs.
 
-CI runs the same check on every push and pull request. It pins third-party actions by full commit SHA and uses Trivy to block actionable image vulnerabilities and exposed secrets. The separate CodeQL workflow analyzes Python source. Security-event write access is scoped to the container and CodeQL analysis jobs, which publish their findings to code scanning when GitHub permits the event.
+CI runs the same check alongside a Trivy scan of the repository for secrets. When both pass, it builds and starts the API image, checks `/health` and scans the image: secrets and fixable high or critical vulnerabilities fail the run, and every fixable finding is reported to code scanning. CI runs on every push, on pull requests from forks and weekly. Actions are pinned by commit SHA, and a separate CodeQL workflow analyzes the Python source.
 
 ## Run the development API with Docker
 

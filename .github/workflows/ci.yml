@@ -3,6 +3,10 @@ name: CI
 on:
   push:
   pull_request:
+  # Trivy's vulnerability data changes even when the code does not.
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -11,8 +15,29 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # Read by every Trivy step in this workflow. On startup Trivy calls
+  # check.trivy.dev to announce newer releases, and sends anonymous usage
+  # data unless telemetry is disabled. Disabling telemetry alone still makes
+  # that call, so the version check is skipped as well: the Trivy release is
+  # pinned in each step and bumped by hand, so the notice would change nothing.
+  TRIVY_DISABLE_TELEMETRY: "true"
+  TRIVY_SKIP_VERSION_CHECK: "true"
+
+# quality ───┐
+#            ├──► image: build, start, /health, vulnerability scan
+# secrets ───┘
+# The image job runs only when both gates pass, so a broken build or a leaked
+# secret stops the run before anything is built.
+
 jobs:
   quality:
+    name: Quality checks
+    # A pull request from this repository is already covered by the push run
+    # of its branch; only pull requests from forks need a run of their own.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -50,13 +75,13 @@ jobs:
       - name: Run project checks
         run: bash scripts/check_project.sh
 
-  container:
-    name: Container image
+  secrets:
+    name: Secret scan
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-latest
-    timeout-minutes: 25
-    permissions:
-      contents: read
-      security-events: write
+    timeout-minutes: 10
 
     steps:
       - name: Check out repository
@@ -75,8 +100,20 @@ jobs:
           exit-code: "1"
           format: table
 
-      - name: Build test target
-        run: docker build --target test -t riskapp:test .
+  image:
+    name: Image build, run and vulnerability scan
+    needs: [quality, secrets]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Build development API image
         id: build_api
@@ -106,7 +143,7 @@ jobs:
 
       - name: Wait for healthy API
         run: |
-          for attempt in $(seq 1 30); do
+          for _ in $(seq 1 30); do
             if curl --fail --silent http://127.0.0.1:8000/health; then
               exit 0
             fi
@@ -131,7 +168,9 @@ jobs:
       # permanently red and therefore ignored. The build fails only on issues
       # that can actually be acted on by rebuilding.
       #
-      # Dependabot tracks this repository's full-length action SHA.
+      # Dependabot updates the trivy-action commit SHA below. The Trivy release
+      # in `version:` is an action input, not an action reference, so Dependabot
+      # does not see it; bump it by hand.
       - name: Scan image for known vulnerabilities
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
@@ -144,10 +183,13 @@ jobs:
           exit-code: "1"
           format: table
 
-      # Second pass: report everything, block nothing, and publish to the
-      # repository's Security tab so findings are visible over time rather
-      # than only in a failed log.
-      - name: Report actionable findings to code scanning
+      # Report fixable vulnerabilities of every severity, plus image secrets.
+      # Unfixed vulnerabilities stay out, as in the gate above: most are
+      # Debian base-image CVEs that no rebuild can fix, and they would bury
+      # the alerts that can be acted on. The same expiring, package-scoped
+      # exceptions apply to both scans. Findings do not fail this reporting
+      # pass; scanner and upload errors still fail the job.
+      - name: Report fixable image findings to code scanning
         id: trivy_report
         if: always() && steps.build_api.outcome == 'success'
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
@@ -156,9 +198,9 @@ jobs:
           trivyignores: .trivyignore.yaml
           image-ref: riskapp-api:ci
           scanners: vuln,secret
-          severity: CRITICAL,HIGH
+          severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
           ignore-unfixed: true
-          limit-severities-for-sarif: true
+          limit-severities-for-sarif: false
           format: sarif
           output: trivy-results.sarif
           exit-code: "0"
