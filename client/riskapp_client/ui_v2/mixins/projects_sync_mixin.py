@@ -33,6 +33,13 @@ if TYPE_CHECKING:
 
 _PROJECT_NAME_ROLE = int(Qt.ItemDataRole.UserRole) + 1
 
+# Each editor's open record and the server version its content is based on.
+_EDITOR_BASES = (
+    ("risk", "current_risk_id", "_risk_editor_base_version"),
+    ("opportunity", "current_opportunity_id", "_opportunity_editor_base_version"),
+    ("action", "current_action_id", "_action_editor_base_version"),
+)
+
 
 class ProjectsSyncMixin:
     """MainWindow mixin: ProjectsSyncMixin"""
@@ -70,11 +77,11 @@ class ProjectsSyncMixin:
     _refresh_risks: Callable[..., Any]
     _refresh_top_history: Callable[..., Any]
     _record_automatic_sync_failure: Callable[[], None]
-    #_record_automatic_sync_success: Callable[[object], None]
+    # _record_automatic_sync_success: Callable[[object], None]
     _schedule_automatic_sync: Callable[[], None]
     _start_background_job: Callable[..., bool]
     _start_new_action: Callable[..., Any]
-    #_observe_manual_sync_result: Callable[[object], None]
+    # _observe_manual_sync_result: Callable[[object], None]
 
     # BackgroundJobsMixin supplies these hooks in MainWindow. Declaring them as
     # methods keeps sibling mixin signatures compatible for static analyzers.
@@ -103,6 +110,33 @@ class ProjectsSyncMixin:
                 line += f" (server version: {server_version})"
             lines.append(line)
         return "\n".join(lines)
+
+    def _follow_own_saves(self, summaries: Iterable[dict[str, Any]]) -> None:
+        """Move open editors onto the versions their own accepted saves produced.
+
+        An editor queues its saves against the version it loaded, so editing
+        after another device's update conflicts instead of overwriting it. The
+        server accepting this editor's own save is not such an update.
+        """
+        acknowledged = [
+            ack
+            for summary in summaries
+            for ack in summary.get("acknowledged") or []
+            if isinstance(ack, dict)
+        ]
+        for entity, id_attr, base_attr in _EDITOR_BASES:
+            editor_id = getattr(self, id_attr, None)
+            if not editor_id:
+                continue
+            base = getattr(self, base_attr, None) or 0
+            for ack in acknowledged:
+                if (
+                    ack.get("entity") == entity
+                    and ack.get("entity_id") == editor_id
+                    and (ack.get("base_version") or 0) == base
+                ):
+                    setattr(self, base_attr, int(ack["server_version"]))
+                    break
 
     def _refresh_all_views(
         self,
@@ -153,8 +187,10 @@ class ProjectsSyncMixin:
                 owner_map[my_uid] = my_email
             for m in getattr(self, "_cached_members", []):
                 owner_map[str(m.user_id)] = m.email
-        except (AttributeError, KeyError, RuntimeError):
-            logging.getLogger(__name__).debug("Failed to build owner map for projects", exc_info=True)
+        except AttributeError, KeyError, RuntimeError:
+            logging.getLogger(__name__).debug(
+                "Failed to build owner map for projects", exc_info=True
+            )
 
         for p in projects:
             display_name = p.name
@@ -216,13 +252,18 @@ class ProjectsSyncMixin:
         self.editor_label.setText("Editor (new risk)")
         self.risk_form.set_values(title="", probability=3, impact=3)
         # Show sync status for local projects when online.
-        if str(self.current_project_id).startswith("local-") and not self._detect_offline_mode():
+        if (
+            str(self.current_project_id).startswith("local-")
+            and not self._detect_offline_mode()
+        ):
             # Distinguish anonymous local projects from syncable ones.
             if self._is_unsyncable_local_project(self.current_project_id):
                 self.sync_status.setText("Sync: local-only project, cannot be synced")
                 self.sync_btn.setEnabled(False)
             else:
-                self.sync_status.setText("Sync: offline project, click Sync Now to upload")
+                self.sync_status.setText(
+                    "Sync: offline project, click Sync Now to upload"
+                )
         self._refresh_all_views()
         self._start_new_action()
 
@@ -246,7 +287,7 @@ class ProjectsSyncMixin:
             QMessageBox.warning(
                 parent,
                 "Duplicate name",
-                f"A project named \"{name}\" already exists.\n"
+                f'A project named "{name}" already exists.\n'
                 "Please choose a different name.",
             )
             return
@@ -274,7 +315,7 @@ class ProjectsSyncMixin:
         reply = QMessageBox.warning(
             parent,
             "Delete project",
-            f"Permanently delete project \"{name}\" and ALL its data?\n\n"
+            f'Permanently delete project "{name}" and ALL its data?\n\n'
             "This cannot be undone. Only superadmins can do this.",
             yes | no,
             no,
@@ -294,7 +335,7 @@ class ProjectsSyncMixin:
             return False
         try:
             project = self.backend.store.get_project(str(project_id))
-        except (AttributeError, RuntimeError):
+        except AttributeError, RuntimeError:
             logging.getLogger(__name__).debug(
                 "Failed to inspect local project sync state", exc_info=True
             )
@@ -334,34 +375,36 @@ class ProjectsSyncMixin:
         if hasattr(self.backend, "pending_count"):
             try:
                 pending = self.backend.pending_count(pid)
-            except (AttributeError, RuntimeError):
+            except AttributeError, RuntimeError:
                 pending = 0
         if hasattr(self.backend, "conflict_count"):
             try:
                 conflicts = self.backend.conflict_count(pid)
-            except (AttributeError, RuntimeError):
+            except AttributeError, RuntimeError:
                 conflicts = 0
         if hasattr(self.backend, "deferred_count"):
             try:
                 deferred = self.backend.deferred_count(pid)
-            except (AttributeError, RuntimeError):
+            except AttributeError, RuntimeError:
                 deferred = 0
         if hasattr(self.backend, "error_count"):
             try:
                 errors = self.backend.error_count(pid)
-            except (AttributeError, RuntimeError):
+            except AttributeError, RuntimeError:
                 errors = 0
         if hasattr(self.backend, "last_sync_time"):
             try:
                 last_sync = self.backend.last_sync_time(pid)
-            except (AttributeError, RuntimeError):
+            except AttributeError, RuntimeError:
                 last_sync = None
         if hasattr(self.backend, "can_sync"):
             try:
                 can_sync = bool(self.backend.can_sync())
-            except (AttributeError, RuntimeError):
+            except AttributeError, RuntimeError:
                 can_sync = False
-        self.sync_btn.setEnabled(bool(pid) and can_sync)
+        reconnect_available = getattr(self.backend, "can_auto_sync", None)
+        can_reconnect = callable(reconnect_available) and bool(reconnect_available())
+        self.sync_btn.setEnabled(bool(pid) and (can_sync or can_reconnect))
         mode = "ONLINE" if can_sync else "OFFLINE"
         formatted_last_sync = self._format_last_sync_time(last_sync)
         self.sync_status.setText(
@@ -372,8 +415,7 @@ class ProjectsSyncMixin:
         if hasattr(self, "conflicts_btn"):
             self.conflicts_btn.setText(f"Conflicts ({conflicts})")
             self.conflicts_btn.setEnabled(bool(pid) and conflicts > 0)
-        can_auto_sync = getattr(self.backend, "can_auto_sync", None)
-        if pending > 0 and callable(can_auto_sync) and bool(can_auto_sync()):
+        if pending > 0 and can_reconnect:
             self._schedule_automatic_sync()
 
     def _open_conflict_center(self) -> None:
@@ -435,9 +477,14 @@ class ProjectsSyncMixin:
                 "This backend does not support sync.",
             )
             return
+        can_sync = getattr(self.backend, "can_sync", None)
+        export_remote = callable(can_sync) and not bool(can_sync())
+        payload: dict[str, Any] = {"project_id": str(pid)}
+        if export_remote:
+            payload["export_remote"] = True
         if not self._start_background_job(
             "sync",
-            {"project_id": str(pid)},
+            payload,
             on_success=self._sync_succeeded,
             on_failure=self._sync_failed,
             on_cancelled=self._sync_cancelled,
@@ -453,6 +500,8 @@ class ProjectsSyncMixin:
             self._sync_failed("Synchronization returned an invalid result")
             return
         summary = dict(result)
+        self._adopt_worker_remote(summary)
+        self._follow_own_saves([summary])
         self._observe_manual_sync_result(summary)
         # If the sync promoted a local-only project to a server project,
         # reload project list and keep the user on the migrated project.
@@ -541,14 +590,8 @@ class ProjectsSyncMixin:
             on_cancelled=self._automatic_sync_cancelled,
         )
 
-    def _automatic_sync_succeeded(self, result: object) -> None:
-        """Adopt reconnect state and refresh local views without modal dialogs."""
-        if not isinstance(result, dict):
-            self._automatic_sync_failed(
-                "Automatic synchronization returned an invalid result"
-            )
-            return
-        summary = dict(result)
+    def _adopt_worker_remote(self, summary: dict[str, Any]) -> bool:
+        """Adopt a recovered session from either manual or automatic sync."""
         authenticated_remote = summary.pop("_authenticated_remote", None)
         if authenticated_remote is not None:
             adopt_remote = getattr(
@@ -560,6 +603,21 @@ class ProjectsSyncMixin:
                 adopt_remote(authenticated_remote)
                 self._offline_mode = False
                 self._role_assumed = False
+                return True
+        return False
+
+    def _automatic_sync_succeeded(self, result: object) -> None:
+        """Adopt reconnect state and refresh local views without modal dialogs."""
+        if not isinstance(result, dict):
+            self._automatic_sync_failed(
+                "Automatic synchronization returned an invalid result"
+            )
+            return
+        summary = dict(result)
+        recovered = self._adopt_worker_remote(summary)
+        projects = summary.get("projects")
+        if isinstance(projects, list):
+            self._follow_own_saves(p for p in projects if isinstance(p, dict))
 
         migrations = summary.get("project_id_migrations")
         selected_project_id = str(self.current_project_id or "")
@@ -567,9 +625,7 @@ class ProjectsSyncMixin:
             selected_project_id = str(migrations[selected_project_id])
 
         visible_projects = summary.pop("_visible_projects", None)
-        if (
-            authenticated_remote is not None or migrations
-        ) and isinstance(visible_projects, list):
+        if (recovered or migrations) and isinstance(visible_projects, list):
             self._load_projects(
                 select_project_id=selected_project_id or None,
                 projects=visible_projects,

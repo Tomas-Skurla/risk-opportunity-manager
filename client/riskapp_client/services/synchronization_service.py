@@ -58,11 +58,8 @@ class SyncService:
             raise _SyncCancelled
 
     @staticmethod
-    def _validated_server_sequence(response: dict[str, Any]) -> int | None:
+    def _validated_server_sequence(response: dict[str, Any]) -> int:
         raw = response.get("server_sequence")
-        if raw is None:
-            # Compatibility with servers predating the sequence protocol.
-            return None
         if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
             raise RuntimeError("Synchronization returned an invalid server_sequence")
         return raw
@@ -130,9 +127,7 @@ class SyncService:
             raise RuntimeError("The conflicted item belongs to another project")
         return int(version)
 
-    def _normalize_server_record(
-        self, conflict: dict[str, Any]
-    ) -> dict[str, Any]:
+    def _normalize_server_record(self, conflict: dict[str, Any]) -> dict[str, Any]:
         raw = conflict.get("server_record")
         if not isinstance(raw, dict) or not raw:
             raise RuntimeError(
@@ -296,12 +291,17 @@ class SyncService:
                 self._outbox.delete_outbox_ids([str(change_id)])
                 self._apply_server_record(conflict, server_record)
                 self._store.apply_merged_fields(
-                    str(conflict["entity"]), project_id,
-                    str(conflict["entity_id"]), record,
+                    str(conflict["entity"]),
+                    project_id,
+                    str(conflict["entity_id"]),
+                    record,
                 )
                 replacement_id = self._outbox.queue_merged_upsert(
-                    project_id, str(conflict["entity"]),
-                    str(conflict["entity_id"]), version, record,
+                    project_id,
+                    str(conflict["entity"]),
+                    str(conflict["entity_id"]),
+                    version,
+                    record,
                 )
                 self._store.reset_sync_watermark(project_id, _SYNC_EPOCH)
                 return {
@@ -418,18 +418,47 @@ class SyncService:
                 )
         return errors
 
-    def _push_once(
-        self, project_id: str, changes: list[dict[str, Any]]
-    ) -> object:
+    def _push_once(self, project_id: str, changes: list[dict[str, Any]]) -> object:
         if not self._remote:
             raise RuntimeError(
                 "No server configured (start the app online at least once)."
             )
         return self._remote.sync_push(project_id, changes)
 
+    @staticmethod
+    def _acknowledged_versions(
+        changes: list[dict[str, Any]], accepted: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Pair each accepted change's base version with the version it produced.
+
+        Open editors use this to follow their own saves. A replay reports the
+        version produced when the change was first accepted.
+        """
+        sent = {str(change.get("change_id") or ""): change for change in changes}
+        acknowledged: list[dict[str, Any]] = []
+        for item in accepted:
+            version = item.get("server_version")
+            receipt_version = item.get("receipt_server_version")
+            if item.get("replayed") and isinstance(receipt_version, int):
+                version = receipt_version
+            if not isinstance(version, int) or isinstance(version, bool):
+                continue
+            change = sent.get(str(item["change_id"]), {})
+            record = change.get("record")
+            record_id = record.get("id") if isinstance(record, dict) else None
+            acknowledged.append(
+                {
+                    "entity": str(item.get("entity") or change.get("entity") or ""),
+                    "entity_id": str(item.get("entity_id") or record_id or ""),
+                    "base_version": change.get("base_version"),
+                    "server_version": version,
+                }
+            )
+        return acknowledged
+
     def _process_push(
         self, project_id: str, changes: list[dict[str, Any]]
-    ) -> tuple[int, list[dict[str, Any]], list[dict[str, Any]]]:
+    ) -> tuple[int, list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
         sent_ids = [
             str(c.get("change_id") or "") for c in changes if c.get("change_id")
         ]
@@ -443,21 +472,10 @@ class SyncService:
         # shared failure normalizer re-raises exceptions it cannot classify.
         except Exception as exc:  # noqa: BLE001  # pylint: disable=W0718
             failure = self._request_failure(exc, phase="push")
-            return 0, [], self._record_request_failure(sent_ids, failure)
-        if not isinstance(resp, dict):
-            failure = {
-                "status": "error",
-                "reason": "push_invalid_response",
-                "detail": "Server returned an invalid synchronization response",
-                "http_status": 0,
-                "failure_kind": "transient",
-                "retryable": True,
-                "request_failed": True,
-            }
-            return 0, [], self._record_request_failure(sent_ids, failure)
+            return 0, [], self._record_request_failure(sent_ids, failure), []
 
-        raw_results = resp.get("results")
-        canonical_results = (
+        raw_results = resp.get("results") if isinstance(resp, dict) else None
+        results = (
             [
                 item
                 for item in raw_results
@@ -468,70 +486,49 @@ class SyncService:
             if isinstance(raw_results, list)
             else []
         )
-        canonical_accepts: list[dict[str, Any]]
-        canonical_ids: set[str]
-        if canonical_results:
-            conflicts = [
-                item for item in canonical_results if item["status"] == "conflict"
-            ]
-            errors = [
-                self._normalize_error(item)
-                for item in canonical_results
-                if item["status"] == "error"
-            ]
-            processed = {
-                str(item["change_id"])
-                for item in canonical_results
-                if item["status"] == "accepted"
-            }
-            accepted_results = [
-                item
-                for item in canonical_results
-                if item["status"] == "accepted"
-            ]
-            canonical_accepts = [
-                item
-                for item in accepted_results
-                if isinstance(item.get("server_record"), dict)
-                or (
-                    isinstance(item.get("server_version"), int)
-                    and not isinstance(item.get("server_version"), bool)
-                )
-            ]
-            canonical_ids = {
-                str(item["change_id"]) for item in canonical_accepts
-            }
-        else:
-            # Compatibility with servers predating per-change receipt results.
-            conflicts = list(resp.get("conflicts") or [])
-            errors = [
-                self._normalize_error(item)
-                for item in list(resp.get("errors") or [])
-                if isinstance(item, dict)
-            ]
-            dup_ids = [
-                str(x) for x in (resp.get("duplicate_change_ids") or []) if x
-            ]
-            conflict_ids = set(self._extract_change_ids(conflicts))
-            error_ids = set(self._extract_change_ids(errors))
-            processed = (set(sent_ids) - conflict_ids - error_ids) | set(dup_ids)
-            canonical_accepts = []
-            canonical_ids = set()
 
-        if canonical_accepts:
-            self._outbox.acknowledge_accepted_results(
-                project_id, canonical_accepts
+        if not results:
+            failure = {
+                "status": "error",
+                "reason": "push_invalid_response",
+                "detail": "Server returned an invalid synchronization response",
+                "http_status": 0,
+                "failure_kind": "transient",
+                "retryable": True,
+                "request_failed": True,
+            }
+
+            return 0, [], self._record_request_failure(sent_ids, failure), []
+
+        conflicts = [item for item in results if item["status"] == "conflict"]
+        errors = [
+            self._normalize_error(item) for item in results if item["status"] == "error"
+        ]
+        accepted = [item for item in results if item["status"] == "accepted"]
+        processed = {str(item["change_id"]) for item in accepted}
+        with_server_state = [
+            item
+            for item in accepted
+            if isinstance(item.get("server_record"), dict)
+            or (
+                isinstance(item.get("server_version"), int)
+                and not isinstance(item.get("server_version"), bool)
             )
-        legacy_processed = processed - canonical_ids
-        if legacy_processed:
-            self._outbox.delete_outbox_ids(list(legacy_processed))
+        ]
+        if with_server_state:
+            self._outbox.acknowledge_accepted_results(project_id, with_server_state)
+        # An accepted result without server state, such as a replay whose
+        # record no longer exists, only needs its outbox entry removed.
+        without_server_state = processed - {
+            str(item["change_id"]) for item in with_server_state
+        }
+        if without_server_state:
+            self._outbox.delete_outbox_ids(list(without_server_state))
 
         for c in conflicts:
             cid = str(c.get("change_id") or "")
             if cid:
-                self._outbox.block_outbox_id(
-                    cid, c, failure_kind="conflict"
-                )
+                self._outbox.block_outbox_id(cid, c, failure_kind="conflict")
         for e in errors:
             cid = str(e.get("change_id") or "")
             if cid:
@@ -544,7 +541,12 @@ class SyncService:
                         failure_kind=str(e.get("failure_kind") or "error"),
                     )
 
-        return (len(processed), conflicts, errors)
+        return (
+            len(processed),
+            conflicts,
+            errors,
+            self._acknowledged_versions(changes, accepted),
+        )
 
     def sync_project(
         self,
@@ -605,9 +607,11 @@ class SyncService:
                 progress,
                 f"Pushing {len(changes)} pending change(s)",
             )
-            pushed, conflicts, errors = self._process_push(
+            pushed, conflicts, errors, acknowledged = self._process_push(
                 effective_project_id, changes
             )
+            if acknowledged:
+                summary["acknowledged"] = acknowledged
             summary["pushed"] += pushed
             summary["conflicts"] += len(self._extract_change_ids(conflicts))
             deferred_errors = [e for e in errors if bool(e.get("retryable"))]
@@ -629,7 +633,6 @@ class SyncService:
             except _SyncCancelled:
                 return cancelled()
 
-        since = self._store.get_last_server_time(effective_project_id)
         since_sequence = self._store.get_last_server_sequence(effective_project_id)
 
         self._notify_progress(progress, "Pulling server changes")
@@ -637,7 +640,6 @@ class SyncService:
             self._check_cancel(should_cancel)
             pull = self._remote.sync_pull(
                 effective_project_id,
-                since,
                 since_sequence=since_sequence,
             )
             self._check_cancel(should_cancel)
@@ -651,7 +653,6 @@ class SyncService:
                 try:
                     pull = self._pull_paginated(
                         effective_project_id,
-                        since,
                         since_sequence,
                         should_cancel=should_cancel,
                         progress=progress,
@@ -660,9 +661,7 @@ class SyncService:
                     return cancelled()
                 # Paginated adapters share the same status-based failure contract.
                 except Exception as page_exc:  # noqa: BLE001  # pylint: disable=W0718
-                    failure = self._request_failure(
-                        page_exc, phase="pull"
-                    )
+                    failure = self._request_failure(page_exc, phase="pull")
                     summary["state"] = self._state_for_failure_kind(
                         str(failure["failure_kind"])
                     )
@@ -746,7 +745,7 @@ class SyncService:
                 while f"{name} ({n})" in existing_names:
                     n += 1
                 name = f"{name} ({n})"
-        except (AttributeError, RuntimeError):
+        except AttributeError, RuntimeError:
             logging.getLogger(__name__).debug(
                 "Server-side name collision check failed", exc_info=True
             )
@@ -773,7 +772,6 @@ class SyncService:
     def _pull_paginated(
         self,
         project_id: str,
-        since: str,
         since_sequence: int = 0,
         *,
         should_cancel: Callable[[], bool] | None = None,
@@ -787,9 +785,7 @@ class SyncService:
 
         limit = 2000
         cursors: dict[str, str] = {}
-        snapshot_time: str | None = None
         snapshot_sequence: int | None = None
-        sequence_snapshot_initialized = False
 
         merged: dict[str, Any] = {
             "server_time": None,
@@ -811,28 +807,18 @@ class SyncService:
             )
             resp = remote.sync_pull(
                 project_id,
-                since,
                 since_sequence=since_sequence,
                 limit_per_entity=limit,
                 cursors=cursors or None,
-                snapshot_time=snapshot_time,
                 snapshot_sequence=snapshot_sequence,
             )
             self._check_cancel(should_cancel)
-            page_snapshot = str(resp.get("server_time") or "")
-            if not page_snapshot:
-                raise RuntimeError("Sync pagination response omitted server_time")
-            if snapshot_time is None:
-                snapshot_time = page_snapshot
-                merged["server_time"] = page_snapshot
-            elif page_snapshot != snapshot_time:
-                raise RuntimeError("Sync pagination snapshot changed between pages")
-
             page_sequence = self._validated_server_sequence(resp)
-            if not sequence_snapshot_initialized:
+            if snapshot_sequence is None:
+                # The first page fixes the snapshot every later page must match.
                 snapshot_sequence = page_sequence
                 merged["server_sequence"] = page_sequence
-                sequence_snapshot_initialized = True
+                merged["server_time"] = resp.get("server_time")
             elif page_sequence != snapshot_sequence:
                 raise RuntimeError(
                     "Sync pagination sequence snapshot changed between pages"

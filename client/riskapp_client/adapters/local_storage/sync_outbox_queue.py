@@ -128,7 +128,7 @@ class OutboxStore:
             return {}
         try:
             parsed = json.loads(raw)
-        except (KeyError, TypeError, ValueError):
+        except KeyError, TypeError, ValueError:
             return {"detail": str(raw)}
         return parsed if isinstance(parsed, dict) else {"detail": str(parsed)}
 
@@ -333,7 +333,7 @@ class OutboxStore:
             return
         try:
             bv_raw = int(base_version)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             return
         bv: int | None = bv_raw if bv_raw >= 1 else None
 
@@ -680,13 +680,11 @@ class OutboxStore:
                 if row is not None:
                     entity = str(row["entity"])
                     entity_id = str(row["entity_id"])
-                    if (
-                        result_entity not in {"", entity}
-                        or result_entity_id not in {"", entity_id}
-                    ):
-                        raise RuntimeError(
-                            "Push acknowledgement does not match outbox"
-                        )
+                    if result_entity not in {"", entity} or result_entity_id not in {
+                        "",
+                        entity_id,
+                    }:
+                        raise RuntimeError("Push acknowledgement does not match outbox")
                 else:
                     # A newer local edit can replace a sent receipt. The result
                     # still advances that replacement's base version, but must
@@ -793,9 +791,7 @@ class OutboxStore:
     def _encode_failure(
         self, err: str | dict[str, Any]
     ) -> tuple[dict[str, Any], str, str]:
-        outcome = (
-            dict(err) if isinstance(err, dict) else self._safe_json_loads(err)
-        )
+        outcome = dict(err) if isinstance(err, dict) else self._safe_json_loads(err)
         result_json = json.dumps(outcome, default=str, separators=(",", ":"))
         summary = str(
             outcome.get("reason")

@@ -60,8 +60,10 @@ class AssessmentsMixin:
                 if item_id
                 else "Target: (none)"
             )
-        except (AttributeError, RuntimeError):
-            logging.getLogger(__name__).debug("Failed to refresh assessments header", exc_info=True)
+        except AttributeError, RuntimeError:
+            logging.getLogger(__name__).debug(
+                "Failed to refresh assessments header", exc_info=True
+            )
         tab.assessments_table.setRowCount(0)
         if not pid or not item_id:
             self._reset_assessment_form()
@@ -75,7 +77,7 @@ class AssessmentsMixin:
         if hasattr(self.backend, "current_user_id"):
             try:
                 my_uid = self.backend.current_user_id()
-            except (AttributeError, RuntimeError):
+            except AttributeError, RuntimeError:
                 my_uid = None
         my_row: Assessment | None = None
         # Build uid→email lookup from cached members.
@@ -86,7 +88,9 @@ class AssessmentsMixin:
             row = tab.assessments_table.rowCount()
             tab.assessments_table.insertRow(row)
             assessor = a.assessor_user_id or ""
-            assessor_display = email_by_uid.get(assessor, assessor[:8] if assessor else "")
+            assessor_display = email_by_uid.get(
+                assessor, assessor[:8] if assessor else ""
+            )
             tab.assessments_table.setItem(row, 0, self._mk_item(assessor_display))
             tab.assessments_table.setItem(
                 row, 1, self._mk_item(str(a.probability), align_center=True)

@@ -12,6 +12,7 @@ from riskapp_client.domain.domain_models import HelpDeskTicket
 if TYPE_CHECKING:
     from riskapp_client.ui_v2.tabs.helpdesk_tab import HelpDeskTab
 
+
 class HelpDeskMixin:
     """MainWindow mixin: HelpDeskMixin
 
@@ -58,7 +59,11 @@ class HelpDeskMixin:
             table.setItem(row, 2, self._mk_item(ticket.priority, align_center=True))
             table.setItem(row, 3, self._mk_item(ticket.status, align_center=True))
             table.setItem(row, 4, self._mk_item(ticket.reporter_email))
-            table.setItem(row, 5, self._mk_item(ticket.created_at[:16] if ticket.created_at else ""))
+            table.setItem(
+                row,
+                5,
+                self._mk_item(ticket.created_at[:16] if ticket.created_at else ""),
+            )
             table.setItem(row, 6, self._mk_item(ticket.id))
 
         if self._current_ticket_id:

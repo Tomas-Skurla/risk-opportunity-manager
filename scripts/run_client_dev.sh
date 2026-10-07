@@ -13,7 +13,6 @@ source .venv/bin/activate
 
 export RISKAPP_ALLOW_HTTP="${RISKAPP_ALLOW_HTTP:-1}"
 export RISKAPP_URL="${RISKAPP_URL:-http://127.0.0.1:8000}"
-export RISKAPP_API_BASE_URL="${RISKAPP_API_BASE_URL:-$RISKAPP_URL}"
 
 if [[ "${RESET_CLIENT_DB:-0}" == "1" ]]; then
   echo "Removing ~/.riskapp/client.sqlite3..."

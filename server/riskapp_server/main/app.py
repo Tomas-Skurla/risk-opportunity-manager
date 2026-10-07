@@ -16,6 +16,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from riskapp_server import __version__
 from riskapp_server.api.routers.actions import router as actions_router
+from riskapp_server.api.routers.admin import router as admin_router
 from riskapp_server.api.routers.auth_routes import router as auth_router
 from riskapp_server.api.routers.helpdesk import router as helpdesk_router
 from riskapp_server.api.routers.items import router as items_router
@@ -24,7 +25,7 @@ from riskapp_server.api.routers.projects import router as projects_router
 from riskapp_server.api.routers.snapshots import router as snapshots_router
 from riskapp_server.api.routers.sync_routes import router as sync_router
 from riskapp_server.api.routers.users import router as users_router
-from riskapp_server.auth.service import hash_pw
+from riskapp_server.auth.passwords import hash_pw
 from riskapp_server.core.config import (
     ALLOWED_HOSTS,
     CORS_ORIGINS,
@@ -60,6 +61,7 @@ ROUTERS = (
     snapshots_router,
     helpdesk_router,
     sync_router,
+    admin_router,
 )
 
 
@@ -154,9 +156,7 @@ def create_app() -> FastAPI:
     if GZIP_ENABLED:
         application.add_middleware(GZipMiddleware, minimum_size=GZIP_MINIMUM_SIZE)
     if ALLOWED_HOSTS:
-        application.add_middleware(
-            TrustedHostMiddleware, allowed_hosts=ALLOWED_HOSTS
-        )
+        application.add_middleware(TrustedHostMiddleware, allowed_hosts=ALLOWED_HOSTS)
     # Added last so rejected requests receive the same defensive headers.
     application.add_middleware(SecurityHeadersMiddleware)
     # Outermost application middleware: early rejections are correlated too.
@@ -179,6 +179,3 @@ def create_app() -> FastAPI:
             )
 
     return application
-
-
-app = create_app()

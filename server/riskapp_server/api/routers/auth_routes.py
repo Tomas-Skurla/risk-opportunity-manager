@@ -8,13 +8,11 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from riskapp_server.auth.passwords import hash_pw, password_needs_rehash, verify_pw
 from riskapp_server.auth.service import (
     create_access_token,
-    hash_pw,
     issue_refresh_token,
-    password_needs_rehash,
     rotate_refresh_token,
-    verify_pw,
 )
 from riskapp_server.core.config import (
     ACCESS_TOKEN_MINUTES,
@@ -140,8 +138,8 @@ def login(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials"
         )
 
-    # PBKDF2 hashes and Argon2 hashes with obsolete parameters are upgraded
-    # only after the password has been verified successfully.
+    # Hashes created with older Argon2 parameters are upgraded only after the
+    # password has been verified successfully.
     if password_needs_rehash(user.password_hash):
         user.password_hash = hash_pw(form.password)
 

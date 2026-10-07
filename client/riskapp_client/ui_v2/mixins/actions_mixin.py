@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
 
-from PySide6.QtCore import Qt  # pylint: disable=no-name-in-module
+from PySide6.QtCore import QSignalBlocker, Qt  # pylint: disable=no-name-in-module
 from PySide6.QtWidgets import (  # pylint: disable=no-name-in-module
     QComboBox,
     QMessageBox,
@@ -26,6 +26,7 @@ class ActionsMixin:
     actions_tab: ActionsTab
     current_project_id: str | None
     current_action_id: str | None
+    _action_editor_base_version: int | None
     _risk_title_by_id: dict[str, str]
     _opp_title_by_id: dict[str, str]
 
@@ -46,19 +47,20 @@ class ActionsMixin:
         fetch_method: Callable[..., Any],
         cache_attr: str,
     ) -> None:
-        combo.setCurrentIndex(-1)
+        selected_id = combo.currentData()
         pid = self.current_project_id
-        if not pid:
-            return
-        items = self._call_backend("Backend error", fetch_method, pid)
+        items = self._call_backend("Backend error", fetch_method, pid) if pid else []
         if items is None:
             return
         setattr(self, cache_attr, {item.id: item.title for item in items})
-        combo.blockSignals(True)
-        combo.clear()
-        for item in items:
-            combo.addItem(item.title, item.id)
-        combo.blockSignals(False)
+        with QSignalBlocker(combo):
+            combo.clear()
+            for item in items:
+                combo.addItem(item.title, item.id)
+            # A removed parent must not silently become another record.
+            combo.setCurrentIndex(
+                combo.findData(selected_id) if selected_id is not None else -1
+            )
 
     def _refresh_action_risk_combo(self) -> None:
         self._refresh_target_combo(
@@ -109,17 +111,16 @@ class ActionsMixin:
         if not a:
             return
         self.current_action_id = a.id
+        self._action_editor_base_version = int(a.version)
         tab.action_editor_label.setText(f"Editor (editing: {a.title})")
         if a.risk_id:
             tab.action_target_type.setCurrentText("risk")
             idx = tab.action_risk_combo.findData(a.risk_id)
-            if idx >= 0:
-                tab.action_risk_combo.setCurrentIndex(idx)
+            tab.action_risk_combo.setCurrentIndex(idx)
         else:
             tab.action_target_type.setCurrentText("opportunity")
             idx = tab.action_opp_combo.findData(a.opportunity_id)
-            if idx >= 0:
-                tab.action_opp_combo.setCurrentIndex(idx)
+            tab.action_opp_combo.setCurrentIndex(idx)
         tab.action_kind.setCurrentText(a.kind)
         tab.action_status.setCurrentText(a.status)
         tab.action_title.setText(a.title)
@@ -182,6 +183,7 @@ class ActionsMixin:
                 self.backend.update_action,
                 pid,
                 self.current_action_id,
+                base_version=self._action_editor_base_version,
                 **kwargs,
             )
         else:
@@ -190,5 +192,8 @@ class ActionsMixin:
             )
         if a is None:
             return
+        if self.current_action_id is None:
+            self.current_action_id = a.id
+            self._action_editor_base_version = int(a.version)
         self._refresh_actions(select_action_id=a.id)
         self._update_sync_status()

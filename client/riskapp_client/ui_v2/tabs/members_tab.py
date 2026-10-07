@@ -59,14 +59,8 @@ class MembersTab(QWidget):
         self.member_remove_btn = self.ui.member_remove_btn
         self.member_refresh_btn = self.ui.member_refresh_btn
         self.members_table = self.ui.members_table
-        self.member_email.setToolTip(
-            "Email to add or update"
-        )
-        self.member_role.setToolTip(
-            "Role to assign"
-        )
-        self.member_add_btn.setToolTip(
-            "Add member or update role"
-        )
+        self.member_email.setToolTip("Email to add or update")
+        self.member_role.setToolTip("Role to assign")
+        self.member_add_btn.setToolTip("Add member or update role")
         self.member_remove_btn.setToolTip("Remove selected member")
         self.member_refresh_btn.setToolTip("Reload members")

@@ -184,7 +184,9 @@ class LocalStore:
             if outermost:
                 if self._rollback_only:
                     self.conn.rollback()
-                    raise RuntimeError("Nested local write failed; transaction rolled back")
+                    raise RuntimeError(
+                        "Nested local write failed; transaction rolled back"
+                    )
                 try:
                     self.conn.commit()
                 except BaseException:
@@ -419,14 +421,12 @@ class LocalStore:
             return
         try:
             parsed = json.loads(str(row["result_json"] or "{}"))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             parsed = {}
         outcome = parsed if isinstance(parsed, dict) else {}
         outcome["server_version"] = int(server_record.get("version") or 0)
         outcome["server_record"] = dict(server_record)
-        outcome["server_updated_at"] = str(
-            server_record.get("updated_at") or ""
-        )
+        outcome["server_updated_at"] = str(server_record.get("updated_at") or "")
         self.conn.execute(
             "UPDATE outbox SET result_json=? WHERE change_id=?;",
             (
@@ -477,9 +477,7 @@ class LocalStore:
                 "description": description or "",
                 "status": status or "open",
                 "owner_user_id": owner_user_id,
-                "version": int(
-                    _value_or_existing(version, existing, "version", 0)
-                ),
+                "version": int(_value_or_existing(version, existing, "version", 0)),
                 "is_deleted": int(
                     _value_or_existing(is_deleted, existing, "is_deleted", False)
                 ),
@@ -525,9 +523,7 @@ class LocalStore:
     def apply_pull_actions(
         self, project_id: str, server_actions: list[dict[str, Any]]
     ) -> None:
-        def build_record(
-            action: Action, _raw: dict[str, Any]
-        ) -> dict[str, Any]:
+        def build_record(action: Action, _raw: dict[str, Any]) -> dict[str, Any]:
             return {
                 "risk_id": action.risk_id,
                 "opportunity_id": action.opportunity_id,
@@ -683,9 +679,7 @@ class LocalStore:
         existing = self._get_scored_row(table, entity_id)
 
         v = int(_value_or_existing(version, existing, "version", 0))
-        is_del = int(
-            _value_or_existing(is_deleted, existing, "is_deleted", False)
-        )
+        is_del = int(_value_or_existing(is_deleted, existing, "is_deleted", False))
         upd = str(_value_or_existing(updated_at, existing, "updated_at", ""))
 
         m = self._norm_scored_meta(meta)
@@ -724,48 +718,60 @@ class LocalStore:
         outbox_entity: str,
     ) -> None:
         self._assert_scored_table(table)
-        pending_ids = {
-            r["entity_id"]
-            for r in self.conn.execute(
-                "SELECT entity_id FROM outbox WHERE project_id=? AND entity=? "
-                "AND status IN ('pending', 'retry', 'blocked');",
-                (project_id, outbox_entity),
-            ).fetchall()
-        }
-        cur = self.conn.cursor()
-        for ent in server_entities:
-            eid = str(ent["id"])
-            ver = int(ent.get("version") or 0)
-            upd = str(ent.get("updated_at") or "")
-            if eid in pending_ids:
-                # Keep the last acknowledged version while a local write is
-                # pending. The server's newer version belongs in conflict
-                # metadata until the user explicitly resolves the conflict.
-                self._remember_conflict_server_record(
-                    project_id,
-                    outbox_entity,
-                    eid,
-                    ent,
-                )
-                continue
-            meta = {k: ent.get(k) for k in SCORED_ENTITY_META_KEYS}
-            if not meta.get("status"):
-                meta["status"] = "concept"
-            m = self._norm_scored_meta(meta)
-            record: dict[str, Any] = {
-                "id": eid,
-                "project_id": project_id,
-                "title": str(ent.get("title") or ""),
-                "probability": int(ent.get("probability") or 1),
-                "impact": int(ent.get("impact") or 1),
-                **m,
-                "version": ver,
-                "is_deleted": 1 if bool(ent.get("is_deleted")) else 0,
-                "updated_at": upd,
-                "dirty": 0,
+
+        with self.write_transaction():
+            pending_ids = {
+                r["entity_id"]
+                for r in self.conn.execute(
+                    "SELECT entity_id FROM outbox WHERE project_id=? AND entity=? "
+                    "AND status IN ('pending', 'retry', 'blocked');",
+                    (project_id, outbox_entity),
+                ).fetchall()
             }
-            self._upsert_row(table, record, cur)
-        self._commit_if_needed()
+            cur = self.conn.cursor()
+            for ent in server_entities:
+                eid = str(ent["id"])
+                ver = int(ent.get("version") or 0)
+                upd = str(ent.get("updated_at") or "")
+                if eid in pending_ids:
+                    # Keep the last acknowledged version while a local write is
+                    # pending. The server's newer version belongs in conflict
+                    # metadata until the user explicitly resolves the conflict.
+                    self._remember_conflict_server_record(
+                        project_id,
+                        outbox_entity,
+                        eid,
+                        ent,
+                    )
+                    continue
+                meta = {k: ent.get(k) for k in SCORED_ENTITY_META_KEYS}
+                if not meta.get("status"):
+                    meta["status"] = "concept"
+                m = self._norm_scored_meta(meta)
+                record: dict[str, Any] = {
+                    "id": eid,
+                    "project_id": project_id,
+                    "title": str(ent.get("title") or ""),
+                    "probability": int(ent.get("probability") or 1),
+                    "impact": int(ent.get("impact") or 1),
+                    **m,
+                    "version": ver,
+                    "is_deleted": 1 if bool(ent.get("is_deleted")) else 0,
+                    "updated_at": upd,
+                    "dirty": 0,
+                }
+                # Codes are unique per project on the server, so another cached
+                # row holding this code is stale: a provisional offline code, or
+                # a record whose code has since changed on the server (codes can
+                # be swapped). Release it instead of failing the pull; that
+                # row's own server state brings its current code. The local row
+                # and its exact outbox payload/receipt are preserved.
+                cur.execute(
+                    f"UPDATE {table} SET code=NULL "  # noqa: S608
+                    "WHERE project_id=? AND code=? AND id<>?;",
+                    (project_id, m.get("code"), eid),
+                )
+                self._upsert_row(table, record, cur)
 
     def list_risks(self, project_id: str) -> list[Risk]:
         return self._list_scored_entities(project_id, table="risks", model_cls=Risk)
@@ -866,7 +872,8 @@ class LocalStore:
             return
 
         if server_version is None:
-            # Compatibility with servers that predate canonical push results.
+            # Nothing to update: the caller only removes the outbox entry for
+            # accepted results that carry no server state.
             return
         table_by_entity = {
             "risk": "risks",
@@ -1190,8 +1197,10 @@ class LocalStore:
     ) -> None:
         """Mark a server-based merge dirty while preserving its version."""
         tables = {
-            "risk": "risks", "opportunity": "opportunities",
-            "action": "actions", "assessment": "assessments",
+            "risk": "risks",
+            "opportunity": "opportunities",
+            "action": "actions",
+            "assessment": "assessments",
             "helpdesk_ticket": "helpdesk_tickets",
         }
         if entity not in tables:
@@ -1239,9 +1248,7 @@ class LocalStore:
     def apply_pull_assessments(
         self, project_id: str, server_assessments: list[dict[str, Any]]
     ) -> None:
-        def build_record(
-            assessment: Assessment, raw: dict[str, Any]
-        ) -> dict[str, Any]:
+        def build_record(assessment: Assessment, raw: dict[str, Any]) -> dict[str, Any]:
             item_id = str(assessment.item_id)
             item_type = self._infer_assessment_item_type(project_id, item_id, raw)
             risk_id = item_id if item_type == "risk" else None

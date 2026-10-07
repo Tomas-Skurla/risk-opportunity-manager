@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
@@ -129,9 +128,7 @@ class ServerDownDialog(QDialog):
             layout.addWidget(sync_btn)
 
         local_btn = QPushButton("Work Fully Local (no account, no sync)")
-        local_btn.setToolTip(
-            "Work offline without any account. Data stays local only."
-        )
+        local_btn.setToolTip("Work offline without any account. Data stays local only.")
         local_btn.clicked.connect(self._choose_fully_local)
         layout.addWidget(local_btn)
 
@@ -206,9 +203,7 @@ class RegisterDialog(QDialog):
         # Client-side password-policy check.
         issues = self._check_password_policy(password)
         if issues:
-            QMessageBox.warning(
-                self, "Password policy", "\n".join(issues)
-            )
+            QMessageBox.warning(self, "Password policy", "\n".join(issues))
             return
 
         self.accept()
@@ -417,9 +412,7 @@ def setup_readonly_table(table: QTableWidget, *, excel_delegate: bool = False) -
     table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
     table.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
     table.horizontalHeader().setStretchLastSection(False)
-    table.horizontalHeader().setSectionResizeMode(
-        QHeaderView.ResizeMode.Stretch
-    )
+    table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
     if excel_delegate:
         table.setItemDelegate(ExcelSelectionDelegate(table))
 
@@ -651,7 +644,7 @@ class RiskForm(QWidget):
                 role = getattr(m, "role", None) or (
                     m.get("role") if isinstance(m, dict) else None
                 )
-            except (AttributeError, TypeError, KeyError):
+            except AttributeError, TypeError, KeyError:
                 continue
             if not uid:
                 continue

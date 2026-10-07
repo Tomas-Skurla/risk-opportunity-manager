@@ -408,7 +408,7 @@ class ApiBackend:
                         auth=auth,
                         _retry_on_401=False,
                     )
-                except (ValueError, TypeError):
+                except ValueError, TypeError:
                     pass
             raise ApiError(exc.code, _http_error_detail(exc)) from exc
         except urllib.error.URLError as exc:
@@ -475,7 +475,7 @@ class ApiBackend:
             j = self._req("GET", "/users/me")
             if j and isinstance(j, dict):
                 self.is_superuser = bool(j.get("is_superuser", False))
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             self.is_superuser = False
 
     def _to_project(self, j: dict[str, Any]) -> Project:
@@ -542,8 +542,7 @@ class ApiBackend:
     def list_projects(self) -> list[Project]:
         payload = self._req("GET", "/projects")
         return [
-            self._to_project(item)
-            for item in _require_object_list(payload, "project")
+            self._to_project(item) for item in _require_object_list(payload, "project")
         ]
 
     def create_project(self, *, name: str, description: str | None = "") -> Project:
@@ -558,7 +557,7 @@ class ApiBackend:
 
     def delete_project(self, project_id: str) -> None:
         """Permanently delete a project on the server (superadmin only)."""
-        self._req("DELETE", f"/projects/{project_id}")
+        self._req("DELETE", f"/admin/projects/{project_id}")
 
     def _to_assessment(self, j: dict[str, Any]) -> Assessment:
         return assessment_from_mapping(j)
@@ -813,28 +812,23 @@ class ApiBackend:
     def sync_pull(
         self,
         project_id: str,
-        since_iso: str,
         *,
-        since_sequence: int | None = None,
+        since_sequence: int,
         limit_per_entity: int | None = None,
         cursors: dict[str, str] | None = None,
-        snapshot_time: str | None = None,
         snapshot_sequence: int | None = None,
     ) -> dict[str, Any]:
-        body: dict[str, object] = {"project_id": project_id, "since": since_iso}
-        if since_sequence is not None:
-            body["since_sequence"] = int(since_sequence)
-        if snapshot_time is not None:
-            body["snapshot_time"] = snapshot_time
+        body: dict[str, object] = {
+            "project_id": project_id,
+            "since_sequence": int(since_sequence),
+        }
         if snapshot_sequence is not None:
             body["snapshot_sequence"] = int(snapshot_sequence)
         if limit_per_entity is not None:
             body["limit_per_entity"] = int(limit_per_entity)
             if cursors:
                 body["cursors"] = cursors
-        payload = self._req(
-            "POST", f"/projects/{project_id}/sync/pull", json_body=body
-        )
+        payload = self._req("POST", f"/projects/{project_id}/sync/pull", json_body=body)
         return _require_object(payload, "synchronization pull")
 
     def sync_push(

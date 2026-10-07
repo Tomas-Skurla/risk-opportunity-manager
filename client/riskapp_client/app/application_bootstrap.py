@@ -151,9 +151,7 @@ def build_main_window(config: AppConfig) -> MainWindow:
             base_url=base_url,
             email=email,
             password=password,
-            url_policy=UrlPolicy(
-                allow_http_anywhere=config.allow_http_anywhere
-            ),
+            url_policy=UrlPolicy(allow_http_anywhere=config.allow_http_anywhere),
         )
 
     # Try to connect.
@@ -172,9 +170,7 @@ def build_main_window(config: AppConfig) -> MainWindow:
         # credentials and authorization failures require explicit user action
         # instead of an automatic login loop.
         api_status = (
-            int(getattr(exc, "status", 0) or 0)
-            if isinstance(exc, ApiError)
-            else 0
+            int(getattr(exc, "status", 0) or 0) if isinstance(exc, ApiError) else 0
         )
         reconnect = remote_factory if api_status == 0 else None
         # Offer offline options.

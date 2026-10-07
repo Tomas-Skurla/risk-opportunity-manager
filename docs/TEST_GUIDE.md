@@ -1,68 +1,25 @@
 # RiskApp — Test Guide
 
-This guide verifies a clean local setup, automated checks, GUI startup, core functionality, RBAC, offline work, and sync.
+This guide is a manual checklist for core functionality, RBAC, offline work, and sync on a clean install.
 
-**Prerequisite:** complete [`SETUP_GUIDE.md`](SETUP_GUIDE.md), or run the commands below from the repository root.
-
----
-
-## 1. Clean automated setup
-
-```bash
-bash scripts/setup_os_prereqs.sh --desktop
-bash scripts/setup_python_env.sh
-bash scripts/diagnose_qt_runtime.sh
-bash scripts/check_project.sh
-```
-
-If OS prerequisites are already installed:
-
-```bash
-bash scripts/bootstrap_dev.sh --skip-os-prereqs
-```
-
-Expected:
-
-```text
-All checks passed.
-```
+It uses two accounts. `<your admin email here>` and `<your admin password here>` are the superadmin credentials from `.env`. `<your user email here>` and `<your user password here>` are the regular user you register in section 3.
 
 ---
 
-## 2. Clean runtime start
+## 1. Set up and start
 
-Terminal 1:
+Follow the [setup guide](SETUP_GUIDE.md) through step 7. Normal startup preserves existing data.
 
-```bash
-./scripts/dev-init.sh
-RESET_SERVER_DB=1 bash scripts/run_server_dev.sh
-```
+This manual checklist assumes empty development databases. If you need to reset an existing installation, stop both applications and use the [deliberate reset procedure](SETUP_GUIDE.md#9-reset-local-dev-state) before starting them again. **This deletes server data and all client data, including unsynced changes.**
 
-Terminal 2:
+Before continuing, confirm that:
 
-```bash
-RESET_CLIENT_DB=1 bash scripts/run_client_dev.sh
-```
+- `bash scripts/check_project.sh` ends with `All checks passed.` ([step 5](SETUP_GUIDE.md#5-run-automated-checks))
+- the health check in [step 6](SETUP_GUIDE.md#6-start-the-server) returns `HTTP 200` and `{"status":"ok","db":"ok"}`
 
 ---
 
-## 3. Health check
-
-```bash
-curl -s -o /tmp/riskapp-health.json -w "HTTP %{http_code}\n" http://127.0.0.1:8000/health
-cat /tmp/riskapp-health.json
-```
-
-Verify:
-
-```text
-HTTP 200
-{"status":"ok","db":"ok"}
-```
-
----
-
-## 4. Superadmin login and project creation
+## 2. Superadmin login and project creation
 
 1. Login dialog → use `INITIAL_SUPERUSER_EMAIL` and `INITIAL_SUPERUSER_PASSWORD` from `.env` → **OK**.
 2. Verify the app enters online mode.
@@ -72,40 +29,40 @@ HTTP 200
 
 ---
 
-## 5. Register a new user
+## 3. Register a new user
 
 1. Close and restart the client.
 2. Click **Register new account…**.
 3. Fill in:
    - Server URL: `http://127.0.0.1:8000`
-   - Email: `user@example.com`
-   - Password: `UserHeslo123!`
+   - Email: `<your user email here>`
+   - Password: `<your user password here>`
 4. Confirm.
 5. Verify registration succeeds and the user logs in.
 6. Verify the sidebar is empty because the user is not yet a project member.
 
 ---
 
-## 6. Add user to project
+## 4. Add user to project
 
-1. Log in as `admin@example.com`.
+1. Log in as `<your admin email here>`.
 2. Select `Test Project` → **Members** tab.
-3. Enter `user@example.com`, role `member` → **Add/Update**.
-4. Verify the table shows `user@example.com` with role `member`.
+3. Enter `<your user email here>`, role `member` → **Add/Update**.
+4. Verify the table shows `<your user email here>` with role `member`.
 5. Verify the superadmin can see both themselves and the regular user.
 
 ---
 
-## 7. Superadmin invisibility for regular users
+## 5. Superadmin invisibility for regular users
 
-1. Log in as `user@example.com`.
+1. Log in as `<your user email here>`.
 2. Select `Test Project` → **Members** tab.
 3. Verify the regular user does not see the superadmin in the members list.
 4. Verify the user has the expected project role.
 
 ---
 
-## 8. Superadmin protection through API
+## 6. Superadmin protection through API
 
 A regular user must not be able to change a superadmin's role.
 
@@ -114,7 +71,8 @@ BASE=http://127.0.0.1:8000
 
 LOGIN=$(curl -s -X POST "$BASE/login" \
   -H 'Content-Type: application/x-www-form-urlencoded' \
-  -d 'username=user@example.com&password=UserHeslo123%21')
+  --data-urlencode 'username=<your user email here>' \
+  --data-urlencode 'password=<your user password here>')
 TOKEN=$(echo "$LOGIN" | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
 
 PID=$(curl -s "$BASE/projects" \
@@ -125,17 +83,17 @@ curl -s -o /tmp/riskapp-superadmin-protection.json -w "HTTP %{http_code}\n" \
   -X POST "$BASE/projects/$PID/members" \
   -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
-  -d '{"user_email":"admin@example.com","role":"viewer"}'
+  -d '{"user_email":"<your admin email here>","role":"viewer"}'
 cat /tmp/riskapp-superadmin-protection.json
 ```
 
-Verify HTTP `403` and an error explaining that only a superadmin can change another superadmin's role.
+Verify HTTP `403`. As a project member, the user gets `Insufficient permissions`, because members cannot manage members at all. A project admin trying the same gets `Only a superadmin can change another superadmin's role`.
 
 ---
 
-## 9. RBAC: member cannot delete
+## 7. RBAC: member cannot delete
 
-1. Log in as `user@example.com`.
+1. Log in as `<your user email here>`.
 2. Select `Test Project` → **Risks** tab → **New**.
 3. Fill in a risk and save.
 4. Verify the risk appears.
@@ -143,9 +101,9 @@ Verify HTTP `403` and an error explaining that only a superadmin can change anot
 
 ---
 
-## 10. Risks
+## 8. Risks
 
-1. Log in as `admin@example.com`.
+1. Log in as `<your admin email here>`.
 2. `Test Project` → **Risks** tab → **New**.
 3. Fill in:
    - Title: `Server outage`
@@ -166,7 +124,7 @@ The code field is unique per project; duplicates should trigger an error.
 
 ---
 
-## 11. Opportunities
+## 9. Opportunities
 
 1. Open **Opportunities** → **New**.
 2. Title: `New market`, Probability: `3`, Impact: `4` → Save.
@@ -175,7 +133,7 @@ The code field is unique per project; duplicates should trigger an error.
 
 ---
 
-## 12. Matrix
+## 10. Matrix
 
 1. Open **Matrix**.
 2. Verify a 5×5 table appears.
@@ -185,7 +143,7 @@ The code field is unique per project; duplicates should trigger an error.
 
 ---
 
-## 13. Actions
+## 11. Actions
 
 1. Open **Actions** → **New**.
 2. Target: risk `Server outage`.
@@ -196,7 +154,7 @@ The code field is unique per project; duplicates should trigger an error.
 
 ---
 
-## 14. Assessments
+## 12. Assessments
 
 1. Open **Risks** → select `Server outage`.
 2. Open **Assessments**.
@@ -206,7 +164,7 @@ The code field is unique per project; duplicates should trigger an error.
 
 ---
 
-## 15. Help Desk
+## 13. Help Desk
 
 1. Open **Help Desk** → **New ticket**.
 2. Title: `Export does not work`, Category: `bug`, Priority: `high` → Save.
@@ -224,7 +182,7 @@ In server-backed projects, Help Desk tickets participate in sync. In **Work Full
 
 ---
 
-## 16. Work Fully Local
+## 14. Work Fully Local
 
 1. Start the client, then click **Work Fully Local** in the login dialog.
 2. Verify the sidebar contains a local-only project or allows you to create one.
@@ -232,19 +190,19 @@ In server-backed projects, Help Desk tickets participate in sync. In **Work Full
 4. Close the client.
 5. Start it again and choose **Work Fully Local**.
 6. Verify the risk still exists.
-7. Log in online as `admin@example.com`.
+7. Log in online as `<your admin email here>`.
 8. Verify the anonymous local project is not visible.
 
 ---
 
-## 17. Work Offline as user, then sync later
+## 15. Work Offline as user, then sync later
 
-1. Start the client and log in as `admin@example.com` while the server is running.
+1. Start the client and log in as `<your admin email here>` while the server is running.
 2. Close the client.
 3. Stop the server with `Ctrl+C`.
 4. Start the client again.
-5. Enter `admin@example.com` and password → **OK**.
-6. In the server-unavailable dialog, click **Work Offline as <admin@example.com> (will sync later)**.
+5. Enter `<your admin email here>` and `<your admin password here>` → **OK**.
+6. In the server-unavailable dialog, click **Work Offline as `<your admin email here>` (will sync later)**.
 7. Verify the sidebar shows projects with `(offline, will sync)` where applicable.
 8. Create project `Offline Test` and add risks.
 9. Start the server again.
@@ -256,7 +214,7 @@ To verify backoff, stop the server again after a successful login, save another 
 
 ---
 
-## 18. Project isolation
+## 16. Project isolation
 
 1. Log in online and create project `Online A`.
 2. Start a local-only session and create project `Local B`.
@@ -265,7 +223,7 @@ To verify backoff, stop the server again after a successful login, save another 
 
 ---
 
-## 19. Duplicate project name
+## 17. Duplicate project name
 
 1. Log in online and create `Test`.
 2. Create another project named `Test`.
@@ -276,7 +234,7 @@ To verify backoff, stop the server again after a successful login, save another 
 
 ---
 
-## 20. Sync and conflict resolution
+## 18. Sync and conflict resolution
 
 ### Online sync
 
@@ -350,7 +308,7 @@ curl -s -X POST "$BASE/projects/$PID/sync/push" \
 
 ---
 
-## 21. Delete project
+## 19. Delete project
 
 1. Log in as superadmin.
 2. Select a project → **Delete Project** → confirm.
@@ -360,7 +318,7 @@ curl -s -X POST "$BASE/projects/$PID/sync/push" \
 
 ---
 
-## 22. Rate limiting
+## 20. Rate limiting
 
 ```bash
 BASE=http://127.0.0.1:8000
@@ -369,7 +327,7 @@ for i in $(seq 1 6); do
   CODE=$(curl -s -o /dev/null -w "%{http_code}" \
     -X POST "$BASE/register" \
     -H 'Content-Type: application/json' \
-    -d "{\"email\":\"test${i}@example.com\",\"password\":\"TestHeslo1234!\"}")
+    -d "{\"email\":\"test${i}@example.com\",\"password\":\"<your password here>\"}")
   echo "Register attempt $i: HTTP $CODE"
 done
 
@@ -382,11 +340,11 @@ for i in $(seq 1 11); do
 done
 ```
 
-Expect a `429` after the configured limit is exceeded.
+Replace `<your password here>` with any password that meets the policy. Expect a `429` after the configured limit is exceeded.
 
 ---
 
-## 23. Request body size limit
+## 21. Request body size limit
 
 ```bash
 python3 -c "print('{\"email\":\"x@x.com\",\"password\":\"' + 'A'*3000000 + '\"}')" > /tmp/riskapp-big.json
@@ -402,7 +360,7 @@ Expected: `HTTP 413`.
 
 ---
 
-## 24. Password policy
+## 22. Password policy
 
 ```bash
 BASE=http://127.0.0.1:8000
@@ -422,17 +380,17 @@ cat /tmp/riskapp-pw-upper.json
 curl -s -o /tmp/riskapp-pw-valid.json -w "HTTP %{http_code}\n" \
   -X POST "$BASE/register" \
   -H 'Content-Type: application/json' \
-  -d '{"email":"valid@example.com","password":"ValidHeslo123!"}'
+  -d '{"email":"valid@example.com","password":"<your password here>"}'
 cat /tmp/riskapp-pw-valid.json
 ```
 
-Expected invalid-password cases return HTTP `400`; valid registration returns HTTP `201` unless the email already exists.
+Replace `<your password here>` with any password that meets the policy. The two invalid passwords return HTTP `400`, and the valid registration returns HTTP `201` unless the email already exists.
 
 ---
 
-## 25. Top history / snapshots
+## 23. Top history / snapshots
 
-1. Log in as admin or manager-level user.
+1. Log in as any user with at least the member role.
 2. Create several risks with different scores.
 3. Open **Top history** → **Snapshot now**.
 4. Verify a snapshot appears.
@@ -443,32 +401,11 @@ Snapshots require a server-backed/synced project.
 
 ---
 
-## 26. CSV export
+## 24. CSV export
 
 1. Open **Risks**.
 2. Click **Export CSV**.
 3. Verify a CSV file is created and includes the visible filtered risk list.
 
-If your OS lacks a spreadsheet viewer, install LibreOffice Calc through OS packages or run:
-
-```bash
-bash scripts/setup_os_prereqs.sh --all
-```
-
----
-
-## 27. Automated tests and lint
-
-```bash
-bash scripts/check_project.sh
-```
-
-Or directly:
-
-```bash
-bash scripts/test.sh
-bash scripts/lint.sh
-python -m pip check
-```
-
-Coverage includes registration, login, password policy, rate limiting, RBAC, refresh-token grace recovery, family reuse detection, concurrent rotation, sync push/pull, conflict detection, assessments, search escaping, password reset, SQLite migrations, outbox queue, and Help Desk sync/version behavior.
+If you have no spreadsheet application, open the file in a text editor or install
+LibreOffice Calc with `sudo apt install -y libreoffice-calc`.

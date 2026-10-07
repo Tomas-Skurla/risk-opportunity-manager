@@ -25,9 +25,6 @@ def parse_date(value: str) -> datetime | None:
 ANY_STATUS = "(any)"
 MAX_SCORE = 999_999
 
-# Backwards-compat alias for older internal callsites
-_parse_date = parse_date
-
 
 @dataclass(frozen=True)
 class ScoredFilterCriteria:
@@ -38,19 +35,11 @@ class ScoredFilterCriteria:
     max_score: int = MAX_SCORE
     status: str = ANY_STATUS
     category_contains: str = ""
-    # Preferred owner filtering (exact match/unassigned).
+    # Owner filtering: an exact owner, or only unassigned items.
     owner_user_id: str | None = None
     owner_unassigned: bool = False
-
-    # Back-compat: older UI used substring matches against owner_user_id.
-    owner_contains: str = ""
     identified_from: datetime | None = None
     identified_to: datetime | None = None
-
-
-# Backward-compatible names
-RiskFilterCriteria = ScoredFilterCriteria
-OpportunityFilterCriteria = ScoredFilterCriteria
 
 
 def filter_scored[TScored: ScoredEntity](
@@ -66,7 +55,6 @@ def filter_scored[TScored: ScoredEntity](
 
     st = (criteria.status or ANY_STATUS).strip().lower()
     cat = (criteria.category_contains or "").strip().lower()
-    owner = (criteria.owner_contains or "").strip().lower()
     owner_id = (criteria.owner_user_id or "").strip().lower() or None
     owner_unassigned = bool(criteria.owner_unassigned)
 
@@ -95,10 +83,7 @@ def filter_scored[TScored: ScoredEntity](
         if owner_unassigned:
             if (it.owner_user_id or "").strip() != "":
                 continue
-        elif owner_id:
-            if (it.owner_user_id or "").strip().lower() != owner_id:
-                continue
-        elif owner and owner not in (it.owner_user_id or "").lower():
+        elif owner_id and (it.owner_user_id or "").strip().lower() != owner_id:
             continue
 
         if dt_from or dt_to:
@@ -114,11 +99,11 @@ def filter_scored[TScored: ScoredEntity](
     return out
 
 
-def filter_risks(risks: list[Risk], criteria: RiskFilterCriteria) -> list[Risk]:
+def filter_risks(risks: list[Risk], criteria: ScoredFilterCriteria) -> list[Risk]:
     return filter_scored(risks, criteria)
 
 
 def filter_opportunities(
-    opps: list[Opportunity], criteria: OpportunityFilterCriteria
+    opps: list[Opportunity], criteria: ScoredFilterCriteria
 ) -> list[Opportunity]:
     return filter_scored(opps, criteria)

@@ -130,7 +130,7 @@ def _migrate_assessments_table(conn: sqlite3.Connection) -> None:
         """
         try:
             return row[key]
-        except (IndexError, sqlite3.Error):
+        except IndexError, sqlite3.Error:
             return default
 
     for r in rows:

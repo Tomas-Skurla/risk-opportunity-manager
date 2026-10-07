@@ -14,6 +14,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
+    Engine,
     ForeignKey,
     Index,
     Integer,
@@ -49,49 +50,53 @@ class Base(DeclarativeBase):
     )
 
 
-_engine_kwargs: dict = {"pool_pre_ping": True}
+def _enable_sqlite_foreign_keys(dbapi_conn: Any, _: Any) -> None:
+    """Enable SQLite foreign-key enforcement for each connection."""
+    cursor = dbapi_conn.cursor()
+    cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.close()
 
-if DATABASE_URL.startswith("sqlite"):
-    # SQLite needs this with the FastAPI/Uvicorn threading model.
-    _engine_kwargs["connect_args"] = {"check_same_thread": False}
-else:
-    _engine_kwargs.update(
-        {
-            "pool_recycle": DB_POOL_RECYCLE,
-            "pool_size": DB_POOL_SIZE,
-            "max_overflow": DB_MAX_OVERFLOW,
-        }
-    )
-    if DB_STATEMENT_TIMEOUT_MS and "postgresql" in DATABASE_URL:
-        _engine_kwargs.setdefault("connect_args", {})
-        _engine_kwargs["connect_args"].update(
-            {"options": f"-c statement_timeout={DB_STATEMENT_TIMEOUT_MS}"}
+
+def _set_statement_timeout(dbapi_conn: Any, _: Any) -> None:
+    # Apply the timeout per connection.
+    cur = dbapi_conn.cursor()
+    cur.execute("SET statement_timeout = %s", (int(DB_STATEMENT_TIMEOUT_MS),))
+    cur.close()
+
+
+def create_db_engine(url: str) -> Engine:
+    """Create the engine for ``url`` with RiskApp's connection settings."""
+    kwargs: dict[str, Any] = {"pool_pre_ping": True}
+    if url.startswith("sqlite"):
+        # SQLite needs this with the FastAPI/Uvicorn threading model.
+        kwargs["connect_args"] = {"check_same_thread": False}
+    else:
+        kwargs.update(
+            {
+                "pool_recycle": DB_POOL_RECYCLE,
+                "pool_size": DB_POOL_SIZE,
+                "max_overflow": DB_MAX_OVERFLOW,
+            }
         )
+        if DB_STATEMENT_TIMEOUT_MS and "postgresql" in url:
+            kwargs.setdefault("connect_args", {})
+            kwargs["connect_args"].update(
+                {"options": f"-c statement_timeout={DB_STATEMENT_TIMEOUT_MS}"}
+            )
 
-engine = create_engine(DATABASE_URL, **_engine_kwargs)
-
-if DATABASE_URL.startswith("sqlite"):
-
-    @event.listens_for(engine, "connect")
-    def _enable_sqlite_foreign_keys(dbapi_conn: Any, _: Any) -> None:
-        """Enable SQLite foreign-key enforcement for each connection."""
-        cursor = dbapi_conn.cursor()
-        cursor.execute("PRAGMA foreign_keys=ON")
-        cursor.close()
+    new_engine = create_engine(url, **kwargs)
+    if url.startswith("sqlite"):
+        event.listen(new_engine, "connect", _enable_sqlite_foreign_keys)
+    if "postgresql" in url and DB_STATEMENT_TIMEOUT_MS:
+        event.listen(new_engine, "connect", _set_statement_timeout)
+    return new_engine
 
 
-if "postgresql" in DATABASE_URL and DB_STATEMENT_TIMEOUT_MS:
-
-    @event.listens_for(engine, "connect")
-    def _set_statement_timeout(dbapi_conn: Any, _: Any) -> None:
-        # Apply the timeout per connection.
-        cur = dbapi_conn.cursor()
-        cur.execute("SET statement_timeout = %s", (int(DB_STATEMENT_TIMEOUT_MS),))
-        cur.close()
+engine = create_db_engine(DATABASE_URL)
 
 
 # Keep ORM objects usable after commit in request handlers.
-SessionLocal = sessionmaker( # pylint: disable=invalid-name
+SessionLocal = sessionmaker(  # pylint: disable=invalid-name
     bind=engine, autoflush=False, autocommit=False, expire_on_commit=False
 )
 
@@ -140,9 +145,7 @@ class SyncMixin:
     )
     # Assigned from SyncProjectState in the same transaction as every write.
     # Pull synchronization uses this value instead of wall-clock timestamps.
-    change_sequence: Mapped[int] = mapped_column(
-        BigInteger, default=0, nullable=False
-    )
+    change_sequence: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
 
     def soft_delete(self, now: datetime) -> None:
         self.is_deleted = True
@@ -313,9 +316,7 @@ class SyncProjectState(Base):
 
     __tablename__ = "sync_project_state"
     __table_args__ = (
-        CheckConstraint(
-            "last_sequence >= 0", name="ck_sync_project_state_nonnegative"
-        ),
+        CheckConstraint("last_sequence >= 0", name="ck_sync_project_state_nonnegative"),
     )
 
     id = None  # type: ignore[assignment]  # project_id is the sole primary key
@@ -324,9 +325,7 @@ class SyncProjectState(Base):
         ForeignKey("projects.id", ondelete="CASCADE"),
         primary_key=True,
     )
-    last_sequence: Mapped[int] = mapped_column(
-        BigInteger, default=0, nullable=False
-    )
+    last_sequence: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
 
 
 class ProjectMember(Base):
@@ -450,9 +449,7 @@ class Assessment(Base, AssessmentMixin):
         UniqueConstraint("item_id", "assessor_user_id", name="uq_item_assessor"),
         Index("ix_assessments_item_updated", "item_id", "updated_at"),
         Index("ix_assessments_assessor_updated", "assessor_user_id", "updated_at"),
-        Index(
-            "ix_assessments_item_change_sequence", "item_id", "change_sequence"
-        ),
+        Index("ix_assessments_item_change_sequence", "item_id", "change_sequence"),
     )
     item_id: Mapped[uuid.UUID] = mapped_column(
         SAUuid(as_uuid=True),
@@ -590,9 +587,7 @@ class Action(Base, SyncMixin):
             "updated_at",
         ),
         Index("ix_actions_project_item", "project_id", "item_id"),
-        Index(
-            "ix_actions_project_change_sequence", "project_id", "change_sequence"
-        ),
+        Index("ix_actions_project_change_sequence", "project_id", "change_sequence"),
     )
     project_id: Mapped[uuid.UUID] = mapped_column(
         SAUuid(as_uuid=True),

@@ -19,7 +19,7 @@ def _int_or_none(value: Any) -> int | None:
         return None
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
 
 
@@ -151,15 +151,6 @@ class Assessment:
         """Recompute derived fields after initialization."""
         self.score = int(self.probability) * int(self.impact)
 
-    # Backward-compatible aliases (risk-only older code paths).
-    @property
-    def risk_id(self) -> str:
-        return self.item_id
-
-    @property
-    def opportunity_id(self) -> str:
-        return self.item_id
-
 
 TICKET_STATUSES = ("open", "in_progress", "resolved", "closed")
 TICKET_PRIORITIES = ("low", "medium", "high", "critical")
@@ -196,9 +187,7 @@ class Backend(Protocol):
     # --- Risks ---
     def list_risks(self, project_id: str) -> list[Risk]: ...
 
-    def risks_report(
-        self, project_id: str, **filters: Any
-    ) -> dict[str, Any]: ...
+    def risks_report(self, project_id: str, **filters: Any) -> dict[str, Any]: ...
 
     def create_risk(
         self,

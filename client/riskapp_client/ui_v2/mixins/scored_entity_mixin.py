@@ -102,7 +102,7 @@ class ScoredEntityMixin:
                     from_date=(dt_from.date().isoformat() if dt_from else None),
                     to_date=(dt_to.date().isoformat() if dt_to else None),
                 )
-            except (AttributeError, RuntimeError):
+            except AttributeError, RuntimeError:
                 server_report = None
         self._update_scored_filter_report(
             report_widget, len(full), list(filtered), server_report=server_report
@@ -121,14 +121,11 @@ class ScoredEntityMixin:
             if data:
                 return str(data), False
             return None, False
-        except (AttributeError, RuntimeError):
-            # Back-compat if widget is a QLineEdit.
-            try:
-                text = (owner_widget.text() or "").strip()
-                return (text or None), False
-            except (AttributeError, RuntimeError):
-                logging.getLogger(__name__).debug("Could not read owner filter widget", exc_info=True)
-                return None, False
+        except AttributeError, RuntimeError:
+            logging.getLogger(__name__).debug(
+                "Could not read owner filter widget", exc_info=True
+            )
+            return None, False
 
     def _on_entity_clicked(
         self,
@@ -192,7 +189,7 @@ class ScoredEntityMixin:
                         "Only managers (or admins) can mark an item as deleted.",
                     )
                     return False
-            except (AttributeError, RuntimeError, ValueError):
+            except AttributeError, RuntimeError, ValueError:
                 logging.getLogger(__name__).debug("Editor commit failed", exc_info=True)
                 return False
         if (
@@ -294,8 +291,10 @@ class ScoredEntityMixin:
                         "Only managers (or admins) can mark an item as deleted.",
                     )
                     return None
-            except (AttributeError, RuntimeError):
-                logging.getLogger(__name__).debug("Deletion permission check failed", exc_info=True)
+            except AttributeError, RuntimeError:
+                logging.getLogger(__name__).debug(
+                    "Deletion permission check failed", exc_info=True
+                )
                 return None
         if current_id:
             if (

@@ -43,9 +43,7 @@ class MatrixTab(QWidget):
             table.setFrameShape(QFrame.Shape.Box)
             table.setFrameShadow(QFrame.Shadow.Plain)
             table.setLineWidth(0)
-            table.setHorizontalHeader(
-                CrispHeader(Qt.Orientation.Horizontal, table)
-            )
+            table.setHorizontalHeader(CrispHeader(Qt.Orientation.Horizontal, table))
             hh, vh = table.horizontalHeader(), table.verticalHeader()
             hh.setSectionsClickable(False)
             hh.setHighlightSections(False)
@@ -60,9 +58,7 @@ class MatrixTab(QWidget):
             table.setSizeAdjustPolicy(
                 QAbstractScrollArea.SizeAdjustPolicy.AdjustToContents
             )
-            table.setSizePolicy(
-                QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Maximum
-            )
+            table.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Maximum)
             table.setCornerButtonEnabled(True)
             table.setShowGrid(True)
 

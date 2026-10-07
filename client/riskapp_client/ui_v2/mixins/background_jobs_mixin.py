@@ -7,6 +7,10 @@ from typing import TYPE_CHECKING, Any, cast
 
 from PySide6.QtCore import QObject
 from PySide6.QtWidgets import QLabel, QListWidget, QProgressBar, QPushButton
+from riskapp_client.domain.background_job_contracts import (
+    BackendFactory,
+    BackgroundJobBackend,
+)
 from riskapp_client.ui_v2.workers import (
     AutomaticSyncScheduler,
     BackgroundJobRunner,
@@ -41,10 +45,10 @@ class BackgroundJobsMixin:
         auto_sync_initial_delay_seconds: int = 5,
     ) -> None:
         candidate_factory = getattr(self.backend, "create_background_backend", None)
-        factory: Callable[[], Any]
+        factory: BackendFactory
         if callable(candidate_factory):
             owns_backend = True
-            factory = cast(Callable[[], Any], candidate_factory)
+            factory = cast(BackendFactory, candidate_factory)
         else:
             owns_backend = False
             # Test or alternate backends without SQLite can still run outside
@@ -52,8 +56,8 @@ class BackgroundJobsMixin:
             # factory which constructs a worker-owned LocalStore.
             shared_backend = self.backend
 
-            def shared_backend_factory() -> Any:
-                return shared_backend
+            def shared_backend_factory() -> BackgroundJobBackend:
+                return cast(BackgroundJobBackend, shared_backend)
 
             factory = shared_backend_factory
 

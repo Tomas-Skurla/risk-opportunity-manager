@@ -15,6 +15,7 @@ class MainWindowState:
     opportunity_id: str | None = None
     opportunity_editor_base_version: int | None = None
     action_id: str | None = None
+    action_editor_base_version: int | None = None
     assessment_item_type: str = "risk"
     assessment_item_id: str | None = None
     role: str = "unknown"

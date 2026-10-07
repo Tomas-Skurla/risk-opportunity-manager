@@ -70,12 +70,16 @@ class HelpDeskService:
 
     def delete(self, ticket_id: str) -> None:
         with self._store.write_transaction():
-            project_id, version = (
-                self._store.get_helpdesk_ticket_project_and_version(ticket_id)
+            project_id, version = self._store.get_helpdesk_ticket_project_and_version(
+                ticket_id
             )
-            # Ticket never reached the server: drop any queued local upsert/delete
-            # and remove the row entirely so no stale tombstone remains locally.
-            if int(version) < 1:
+            # Only an unsent create can be discarded. Version zero can also
+            # mean the server committed the create but its response was lost.
+            if int(version) < 1 and not self._outbox.remote_create_may_exist(
+                project_id,
+                entity="helpdesk_ticket",
+                entity_id=ticket_id,
+            ):
                 self._store.delete_helpdesk_ticket(ticket_id)
                 self._outbox.discard_entity_changes(
                     project_id,

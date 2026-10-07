@@ -23,9 +23,7 @@ from riskapp_client.ui_v2.ui.ui_conflict_field_merge_dialog import (
 class ConflictFieldMergeDialog(QDialog):
     """Present the differing fields of one selected conflict."""
 
-    def __init__(
-        self, conflict: dict[str, Any], parent: QWidget | None = None
-    ) -> None:
+    def __init__(self, conflict: dict[str, Any], parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.fields = mergeable_fields(conflict)
         if not self.fields:

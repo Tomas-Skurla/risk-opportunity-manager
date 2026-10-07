@@ -81,7 +81,7 @@ class ConflictCenterDialog(QDialog):
             return "Server copy unavailable for this conflict."
         try:
             return json.dumps(value, indent=2, sort_keys=True, default=str)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             return str(value)
 
     def _populate_table(self) -> None:
@@ -119,9 +119,7 @@ class ConflictCenterDialog(QDialog):
 
     def _set_action_state(self, conflict: dict[str, Any] | None) -> None:
         displayed_version = self._displayed_server_version(conflict)
-        self.keep_mine_btn.setEnabled(
-            bool(conflict and displayed_version is not None)
-        )
+        self.keep_mine_btn.setEnabled(bool(conflict and displayed_version is not None))
         self.use_server_btn.setEnabled(
             bool(
                 conflict

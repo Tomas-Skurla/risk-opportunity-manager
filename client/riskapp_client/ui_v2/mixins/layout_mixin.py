@@ -66,7 +66,7 @@ def _set_titlebar_dark(window: QMainWindow, dark: bool) -> None:
                 scheme = Qt.ColorScheme.Dark if dark else Qt.ColorScheme.Light
                 hints.setColorScheme(scheme)
                 return
-    except (AttributeError, ImportError, RuntimeError):
+    except AttributeError, ImportError, RuntimeError:
         logger.debug("Qt ColorScheme API unavailable", exc_info=True)
 
     # Windows DWM API
@@ -76,11 +76,13 @@ def _set_titlebar_dark(window: QMainWindow, dark: bool) -> None:
             dark_mode_attribute = 20
             value = ctypes.c_int(1 if dark else 0)
             ctypes.windll.dwmapi.DwmSetWindowAttribute(
-                hwnd, dark_mode_attribute,
-                ctypes.byref(value), ctypes.sizeof(value),
+                hwnd,
+                dark_mode_attribute,
+                ctypes.byref(value),
+                ctypes.sizeof(value),
             )
             return
-    except (AttributeError, ImportError, OSError):
+    except AttributeError, ImportError, OSError:
         logger.debug("DWM title bar API unavailable", exc_info=True)
 
 
@@ -100,7 +102,6 @@ class LayoutMixin:
     _delete_helpdesk_ticket: Callable[..., Any]
     _export_opportunities_csv: Callable[..., Any]
     _export_risks_csv: Callable[..., Any]
-    _fit_table_card: Callable[..., Any]
     _mark_editor_dirty: Callable[..., Any]
     _mark_opp_editor_dirty: Callable[..., Any]
     _maybe_auto_snapshot: Callable[..., Any]
@@ -237,7 +238,6 @@ class LayoutMixin:
                 self._start_new_risk,
             ),
             on_mark_dirty=self._mark_editor_dirty,
-            on_fit_table_card=self._fit_table_card,
         )
         self.ui.main_stacked_widget.addWidget(self.risks_tab)
         bind(

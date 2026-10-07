@@ -22,7 +22,6 @@ class RisksTab(ScoredEntitiesTab):
         on_save_risk: Callable[[dict], None],
         on_delete_item: Callable[[], None],
         on_mark_dirty: Callable[..., None],
-        on_fit_table_card: Callable[[], None],
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(
@@ -34,7 +33,6 @@ class RisksTab(ScoredEntitiesTab):
             on_save_item=on_save_risk,
             on_delete_item=on_delete_item,
             on_mark_dirty=on_mark_dirty,
-            on_fit_table_card=on_fit_table_card,
             parent=parent,
         )
         self.table_card = self.ui.table_card

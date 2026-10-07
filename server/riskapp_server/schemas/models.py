@@ -415,29 +415,19 @@ class TopBatch(BaseModel):
 class SyncPullRequest(BaseModel):
 
     project_id: uuid.UUID
-    since: datetime
-    # Sequence fields are additive so older clients can continue using time-based pulls.
-    since_sequence: int | None = Field(default=None, ge=0)
+    # The last change_sequence the client applied; 0 pulls the whole project.
+    since_sequence: int = Field(ge=0)
     # Optional per-entity pagination.
     limit_per_entity: int | None = Field(default=None, ge=1, le=50000)
     cursors: dict[str, str] | None = None
-    snapshot_time: datetime | None = None
     snapshot_sequence: int | None = Field(default=None, ge=0)
 
     @model_validator(mode="after")
     def _validate_pagination_snapshot(self) -> Self:
         if self.cursors and self.limit_per_entity is None:
             raise ValueError("cursors require limit_per_entity")
-        if self.cursors and self.snapshot_time is None:
-            raise ValueError("cursors require snapshot_time")
-        if self.snapshot_sequence is not None and self.since_sequence is None:
-            raise ValueError("snapshot_sequence requires since_sequence")
-        if (
-            self.cursors
-            and self.since_sequence is not None
-            and self.snapshot_sequence is None
-        ):
-            raise ValueError("sequence cursors require snapshot_sequence")
+        if self.cursors and self.snapshot_sequence is None:
+            raise ValueError("cursors require snapshot_sequence")
         return self
 
 
@@ -484,25 +474,24 @@ class SyncChangeResult(BaseModel):
     receipt_server_version: int | None = None
     server_record: dict[str, object] | None = None
     server_updated_at: str | None = None
-    failure_kind: Literal[
-        "conflict",
-        "validation",
-        "permission",
-        "authentication",
-        "transient",
-        "error",
-    ] | None = None
+    failure_kind: (
+        Literal[
+            "conflict",
+            "validation",
+            "permission",
+            "authentication",
+            "transient",
+            "error",
+        ]
+        | None
+    ) = None
     retryable: bool = False
 
 
 class SyncPushResponse(BaseModel):
 
-    accepted: int
-    duplicates: int = 0
-    duplicate_change_ids: list[str] = Field(default_factory=list)
-    conflicts: list[dict] = Field(default_factory=list)
-    errors: list[dict] = Field(default_factory=list)
-    results: list[SyncChangeResult] = Field(default_factory=list)
+    # One result per pushed change, in request order.
+    results: list[SyncChangeResult]
     server_time: datetime
 
 

@@ -17,7 +17,7 @@ from sqlalchemy import select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
-from riskapp_server.auth import passwords as password_hashing
+from riskapp_server.auth.passwords import hash_pw
 from riskapp_server.core.config import (
     ACCESS_TOKEN_MINUTES,
     ALGORITHM,
@@ -25,18 +25,12 @@ from riskapp_server.core.config import (
     REFRESH_TOKEN_REUSE_GRACE_SECONDS,
     SECRET_KEY,
     TOKEN_HASH_KEY,
-    validate_runtime_config,
 )
+from riskapp_server.core.password_policy import validate_password
 from riskapp_server.db.session import RefreshToken, User, get_db, utcnow
 
 logger = logging.getLogger("riskapp_server.auth")
 
-# Backward-compatible exports for existing callers of auth.service.
-hash_pw = password_hashing.hash_pw
-verify_pw = password_hashing.verify_pw
-password_needs_rehash = password_hashing.password_needs_rehash
-
-validate_runtime_config()
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/login")
 
@@ -70,9 +64,7 @@ def hash_bearer_secret(raw: str) -> str:
     ).hexdigest()
 
 
-def _new_refresh_token(
-    user_id: uuid.UUID, now: datetime
-) -> tuple[str, RefreshToken]:
+def _new_refresh_token(user_id: uuid.UUID, now: datetime) -> tuple[str, RefreshToken]:
     """Build a refresh-token row whose id is available before it is flushed."""
     raw = secrets.token_urlsafe(48)
     return raw, RefreshToken(
@@ -84,6 +76,7 @@ def _new_refresh_token(
         revoked_at=None,
         replaced_by_id=None,
     )
+
 
 def issue_refresh_token(db: Session, user_id: uuid.UUID, *, commit: bool = True) -> str:
     raw, rt = _new_refresh_token(user_id, utcnow())
@@ -126,14 +119,11 @@ def _claim_refresh_token(
             .values(revoked_at=now, replaced_by_id=replacement_id)
             .execution_options(synchronize_session=False)
         ),
-
     )
     return result.rowcount == 1
 
 
-def _locked_user_refresh_tokens(
-    db: Session, user_id: uuid.UUID
-) -> list[RefreshToken]:
+def _locked_user_refresh_tokens(db: Session, user_id: uuid.UUID) -> list[RefreshToken]:
     """Load one user's token graph in deterministic lock order."""
     tokens = list(
         db.execute(
@@ -176,8 +166,7 @@ def _locked_user_refresh_tokens(
         missing_ids = {
             token.replaced_by_id
             for token in linked_tokens
-            if token.replaced_by_id is not None
-            and token.replaced_by_id not in by_id
+            if token.replaced_by_id is not None and token.replaced_by_id not in by_id
         }
     return list(by_id.values())
 
@@ -230,9 +219,7 @@ def _recover_or_revoke_refresh_family(
         return None
 
     replacement_id = token.replaced_by_id
-    replacement = (
-        by_id.get(replacement_id) if replacement_id is not None else None
-    )
+    replacement = by_id.get(replacement_id) if replacement_id is not None else None
     grace_age = (now - token.revoked_at).total_seconds()
     grace_eligible = (
         REFRESH_TOKEN_REUSE_GRACE_SECONDS > 0
@@ -291,9 +278,7 @@ def rotate_refresh_token(db: Session, raw_refresh_token: str) -> tuple[str, uuid
             _invalid_refresh_token(db)
 
         if rt.revoked_at is not None:
-            recovered = _recover_or_revoke_refresh_family(
-                db, rt.id, rt.user_id, now
-            )
+            recovered = _recover_or_revoke_refresh_family(db, rt.id, rt.user_id, now)
             if recovered is not None:
                 return recovered
             continue
@@ -357,3 +342,24 @@ def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
     return user
+
+
+def require_superuser(user: User = Depends(get_current_user)) -> User:
+    """Dependency for global administration: only superusers may continue."""
+    if not user.is_superuser:
+        raise HTTPException(status_code=403, detail="Superadmin privileges required")
+    return user
+
+
+def set_user_password(
+    db: Session, user: User, new_password: str, *, commit: bool = True
+) -> None:
+    """Replace a user's password after a policy check and end their sessions."""
+    issues = validate_password(new_password)
+    if issues:
+        raise HTTPException(status_code=400, detail={"password": issues})
+    user.password_hash = hash_pw(new_password)
+    revoke_user_refresh_tokens(db, user.id)
+    db.add(user)
+    if commit:
+        db.commit()
