@@ -31,7 +31,7 @@ class GetFallbackMapping(Mapping[str, object]):
         self._items = values
 
     def __getitem__(self, key: str) -> object:
-        raise ValueError(key)
+        raise KeyError(key)
 
     def __iter__(self) -> Iterator[str]:
         return iter(self._items)

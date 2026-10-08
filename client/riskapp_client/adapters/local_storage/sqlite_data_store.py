@@ -112,7 +112,8 @@ def _value_or_existing[ValueT](
         return value
     if existing is None:
         return default
-    return cast(ValueT, existing[key])
+    # Quoted so the type parameter is not evaluated at runtime.
+    return cast("ValueT", existing[key])
 
 
 class LocalStore:

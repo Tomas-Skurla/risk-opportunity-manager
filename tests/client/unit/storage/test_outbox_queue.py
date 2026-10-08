@@ -118,8 +118,7 @@ def test_complete_conflict_payload_survives_database_restart(tmp_path) -> None:
     """Conflict records are stored losslessly instead of in the 500-char summary."""
 
     db_file = tmp_path / "persistent-conflict.db"
-    store = LocalStore(str(db_file))
-    try:
+    with LocalStore(str(db_file)) as store:
         project = store.create_local_project(name="P", project_id="p1")
         store.upsert_local_risk(
             risk_id="r1",
@@ -157,8 +156,6 @@ def test_complete_conflict_payload_survives_database_restart(tmp_path) -> None:
             },
             failure_kind="conflict",
         )
-    finally:
-        store.close()
 
     with LocalStore(str(db_file)) as reopened:
         blocked = OutboxStore(reopened).get_blocked_changes("p1")

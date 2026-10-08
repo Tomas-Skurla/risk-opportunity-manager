@@ -106,12 +106,10 @@ def test_item_validation_reports_and_status_transitions(api) -> None:
     assert deleted.status_code == 200, deleted.text
     assert deleted.json()["is_deleted"] is True
 
-    assert (
-        api.delete(
-            f"/projects/{project_id}/risks/{missing_id}", headers=user.headers
-        ).status_code
-        == 404
+    missing_delete = api.delete(
+        f"/projects/{project_id}/risks/{missing_id}", headers=user.headers
     )
+    assert missing_delete.status_code == 404
     report = api.get(f"/projects/{project_id}/risks/report", headers=user.headers)
     assert report.status_code == 200, report.text
     assert report.json()["total"] == 1

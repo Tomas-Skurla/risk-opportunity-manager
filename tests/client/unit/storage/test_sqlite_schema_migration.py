@@ -71,8 +71,7 @@ def test_assessment_fk_migration_removes_risks_fk_and_adds_opportunity_id(
     _create_legacy_db(str(db_file))
     # Opening LocalStore triggers ensure_schema() and runs the migration.
 
-    store = LocalStore(str(db_file))
-    try:
+    with LocalStore(str(db_file)) as store:
         cols = store.conn.execute("PRAGMA table_info(assessments);").fetchall()
         col_names = {str(c[1]) for c in cols}
         assert "opportunity_id" in col_names
@@ -90,8 +89,6 @@ def test_assessment_fk_migration_removes_risks_fk_and_adds_opportunity_id(
         assert row["risk_id"] == "r1"
         assert row["opportunity_id"] is None
         assert store.conn.execute("PRAGMA foreign_keys;").fetchone()[0] == 1
-    finally:
-        store.close()
 
 
 def test_project_id_migration_is_atomic_and_keeps_foreign_keys_enabled(tmp_path):

@@ -15,6 +15,11 @@ from riskapp_client.ui_v2.workers import background_jobs as jobs
 # Worker dispatch is tested directly before the runner's thread boundary.
 # pylint: disable=protected-access
 
+# Each fake backend implements only the operations its test exercises, so it is
+# not a complete BackgroundJobBackend. mypy does not check tests; this keeps
+# Pyright/Pylance from reporting every fake passed as a backend factory.
+# pyright: reportArgumentType=false
+
 
 # The qtbot fixture initializes Qt before these direct QObject signal tests.
 # pylint: disable-next=unused-argument
@@ -370,11 +375,12 @@ def test_runner_constructs_uses_and_closes_backend_in_worker_thread(qtbot) -> No
 
     runner = BackgroundJobRunner(backend_factory, owns_backend=True)
     runner.progress_changed.connect(progress.append)
-    assert runner.start(
+    job_started = runner.start(
         "sync",
         {"project_id": "project-1"},
         on_success=lambda result: results.append((threading.get_ident(), result)),
     )
+    assert job_started
 
     qtbot.waitUntil(started.is_set)
     QTimer.singleShot(0, lambda: event_loop_ticks.append(threading.get_ident()))
@@ -406,12 +412,14 @@ def test_runner_is_single_flight_and_cancels_cooperatively(qtbot) -> None:
             return {"state": "cancelled", "cancelled": True}
 
     runner = BackgroundJobRunner(Backend, owns_backend=False)
-    assert runner.start(
+    job_started = runner.start(
         "sync",
         {"project_id": "project-1"},
         on_cancelled=lambda: cancelled.append(threading.get_ident()),
     )
-    assert not runner.start("history", {"project_id": "project-1"})
+    assert job_started
+    second_job_started = runner.start("history", {"project_id": "project-1"})
+    assert not second_job_started
 
     qtbot.waitUntil(started.is_set)
     runner.cancel()
@@ -433,11 +441,12 @@ def test_failed_shutdown_wait_restores_runner_until_job_finishes(qtbot) -> None:
             return {"state": "complete"}
 
     runner = BackgroundJobRunner(Backend, owns_backend=False)
-    assert runner.start(
+    job_started = runner.start(
         "sync",
         {"project_id": "project-1"},
         on_success=results.append,
     )
+    assert job_started
     qtbot.waitUntil(started.is_set)
 
     assert not runner.shutdown(timeout_ms=1)
@@ -475,7 +484,7 @@ def test_snapshot_and_history_requests_run_in_worker_thread(qtbot) -> None:
             return [{"captured_at": "2026-09-06T12:00:00", "top": []}]
 
     runner = BackgroundJobRunner(Backend, owns_backend=False)
-    assert runner.start(
+    job_started = runner.start(
         "snapshot",
         {
             "project_id": "project-1",
@@ -485,6 +494,7 @@ def test_snapshot_and_history_requests_run_in_worker_thread(qtbot) -> None:
         },
         on_success=results.append,
     )
+    assert job_started
     qtbot.waitUntil(lambda: bool(results) and not runner.is_busy)
 
     assert [call[0] for call in calls] == ["snapshot", "history"]
@@ -528,11 +538,12 @@ def test_offline_facade_worker_uses_a_separate_sqlite_connection(
         owns_backend=True,
     )
     try:
-        assert runner.start(
+        job_started = runner.start(
             "sync",
             {"project_id": "project-1"},
             on_success=results.append,
         )
+        assert job_started
         qtbot.waitUntil(lambda: bool(results) and not runner.is_busy)
 
         result = results[0]
@@ -562,6 +573,8 @@ def test_offline_facade_worker_recovers_remote_then_main_adopts_it(local_store) 
 
     backend = OfflineFirstBackend(local_store, remote_factory=reconnect)
     worker_backend = backend.create_background_backend()
+    # The contract type hides the facade attributes this test inspects.
+    assert isinstance(worker_backend, OfflineFirstBackend)
     try:
         assert backend.can_auto_sync()
         assert not backend.can_sync()
@@ -613,11 +626,12 @@ def test_shutdown_waits_for_a_running_job_and_drops_its_result(qtbot) -> None:
             return {"state": "complete"}
 
     runner = BackgroundJobRunner(Backend, owns_backend=False)
-    assert runner.start(
+    job_started = runner.start(
         "sync",
         {"project_id": "project-1"},
         on_success=results.append,
     )
+    assert job_started
     qtbot.waitUntil(started.is_set)
 
     # The job finishes while shutdown is waiting for its thread.

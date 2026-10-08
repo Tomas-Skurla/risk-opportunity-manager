@@ -119,12 +119,10 @@ def test_superuser_bypass_pruning_and_project_cascade_delete(api) -> None:
     assert (
         api.get(f"/projects/{missing_id}", headers=superuser.headers).status_code == 404
     )
-    assert (
-        api.delete(
-            f"/admin/projects/{missing_id}", headers=superuser.headers
-        ).status_code
-        == 404
+    missing_delete = api.delete(
+        f"/admin/projects/{missing_id}", headers=superuser.headers
     )
+    assert missing_delete.status_code == 404
 
     deleted = api.delete(f"/admin/projects/{project_id}", headers=superuser.headers)
     assert deleted.status_code == 204

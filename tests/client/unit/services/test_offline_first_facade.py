@@ -43,29 +43,22 @@ def test_automatic_project_refresh_includes_syncable_local_projects(tmp_path) ->
         def list_projects():
             return [Project("server-1", "Remote", created_by="user-1")]
 
-    store = LocalStore(str(tmp_path / "sync-projects.db"))
-    store.create_local_project(
-        name="Draft",
-        project_id="local-1",
-        created_by="user-1",
-    )
-    store.create_local_project(
-        name="Private",
-        project_id="local-private",
-        created_by="",
-    )
-    backend = OfflineFirstBackend(store, remote=Remote())
-    try:
+    with LocalStore(str(tmp_path / "sync-projects.db")) as store:
+        store.create_local_project(
+            name="Draft",
+            project_id="local-1",
+            created_by="user-1",
+        )
+        store.create_local_project(
+            name="Private",
+            project_id="local-private",
+            created_by="",
+        )
+        backend = OfflineFirstBackend(store, remote=Remote())
         assert [project.id for project in backend.list_sync_projects()] == [
             "server-1",
             "local-1",
         ]
         assert backend.can_auto_sync()
-    finally:
-        store.close()
-
-    offline_store = LocalStore(str(tmp_path / "offline-only.db"))
-    try:
+    with LocalStore(str(tmp_path / "offline-only.db")) as offline_store:
         assert not OfflineFirstBackend(offline_store).can_auto_sync()
-    finally:
-        offline_store.close()

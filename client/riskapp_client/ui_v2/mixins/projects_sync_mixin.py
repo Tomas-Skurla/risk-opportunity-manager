@@ -77,19 +77,18 @@ class ProjectsSyncMixin:
     _refresh_risks: Callable[..., Any]
     _refresh_top_history: Callable[..., Any]
     _record_automatic_sync_failure: Callable[[], None]
-    # _record_automatic_sync_success: Callable[[object], None]
     _schedule_automatic_sync: Callable[[], None]
     _start_background_job: Callable[..., bool]
     _start_new_action: Callable[..., Any]
-    # _observe_manual_sync_result: Callable[[object], None]
 
-    # BackgroundJobsMixin supplies these hooks in MainWindow. Declaring them as
-    # methods keeps sibling mixin signatures compatible for static analyzers.
-    def _record_automatic_sync_success(self, _result: object) -> None:
-        raise NotImplementedError  # pragma: no cover - mixin contract
+    if TYPE_CHECKING:
+        # Implemented by BackgroundJobsMixin in the concrete MainWindow class.
+        # Declaring them as methods keeps sibling mixin signatures compatible
+        # for static analyzers; keeping them behind TYPE_CHECKING means no
+        # runtime stub can shadow the real hooks if the base order changes.
+        def _record_automatic_sync_success(self, _result: object) -> None: ...
 
-    def _observe_manual_sync_result(self, _result: object) -> None:
-        raise NotImplementedError  # pragma: no cover - mixin contract
+        def _observe_manual_sync_result(self, _result: object) -> None: ...
 
     def _format_blocked_sync_details(self, summary: dict[str, object]) -> str:
         """Format unresolved blocked sync items for display in the popup."""

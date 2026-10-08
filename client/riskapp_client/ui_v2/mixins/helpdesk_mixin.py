@@ -122,7 +122,7 @@ class HelpDeskMixin:
 
         try:
             if self._current_ticket_id:
-                ticket = self.backend.update_helpdesk_ticket(
+                self.backend.update_helpdesk_ticket(
                     self._current_ticket_id,
                     title=title,
                     description=description,
