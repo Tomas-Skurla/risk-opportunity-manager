@@ -1,0 +1,6 @@
+# Desktop Qt client dependencies: allowed version ranges.
+# client/requirements.txt pins every package and is generated from this file:
+#   bash scripts/relock_python_deps.sh
+
+PySide6>=6.6,<7
+PyQtDarkTheme-fork>=2.1

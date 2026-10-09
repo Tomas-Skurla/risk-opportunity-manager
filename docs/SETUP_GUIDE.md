@@ -62,8 +62,8 @@ PYTHON_BIN=python3.14 bash scripts/setup_python_env.sh
 The script requires Python 3.14. It creates `.venv`, installs:
 
 ```text
-server/requirements.lock
-client/requirements.lock
+server/requirements.txt
+client/requirements.txt
 requirements-dev.txt
 ```
 
@@ -222,14 +222,18 @@ For using the app, including the login dialog, accounts, offline modes, roles an
 
 ## 8. Refresh dependency locks
 
-After changing a version range in `server/requirements.txt` or `client/requirements.txt`, regenerate the lock files and rebuild the environment:
+`server/requirements.in` and `client/requirements.in` hold the allowed version ranges; edit those. The matching `requirements.txt` files are generated from them by [pip-tools](https://github.com/jazzband/pip-tools) and pin every package, including indirect ones. Every install uses the pinned files, so do not edit them by hand.
+
+After changing a range, regenerate the pins and rebuild the environment:
 
 ```bash
 bash scripts/relock_python_deps.sh
 bash scripts/setup_python_env.sh --recreate
 ```
 
-`server/requirements.lock` and `client/requirements.lock` pin the exact versions every install uses. The matching `requirements.txt` files hold the allowed version ranges and are read only when the locks are regenerated. `requirements-dev.txt` adds the development tools, `requirements-test.txt` combines everything the test suite needs, and `pyproject.toml` configures the tools but pins no dependencies.
+The script keeps existing pins that still fit their range. `--upgrade` moves every package to the newest allowed version, and `--upgrade-package NAME` moves one. Dependabot runs the same pip-compile command, so its pull requests also update indirect dependencies. If a pinned file has a merge conflict, rerun the script instead of resolving it by hand.
+
+`requirements-dev.txt` adds the development tools, `requirements-test.txt` combines everything the test suite needs, and `pyproject.toml` configures the tools but pins no dependencies.
 
 ---
 

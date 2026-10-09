@@ -1,9 +1,0 @@
-darkdetect==0.8.0
-packaging==26.2
-PyQtDarkTheme-fork==2.3.6
-PySide6==6.11.0
-PySide6_Addons==6.11.0
-PySide6_Essentials==6.11.0
-setuptools==82.0.1
-shiboken6==6.11.0
-wheel==0.47.0

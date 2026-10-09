@@ -39,13 +39,13 @@ RUN apt-get update \
 
 WORKDIR /app
 
-COPY server/requirements.lock /tmp/server-requirements.lock
-COPY client/requirements.lock /tmp/client-requirements.lock
+COPY server/requirements.txt /tmp/server-requirements.txt
+COPY client/requirements.txt /tmp/client-requirements.txt
 COPY requirements-dev.txt /tmp/requirements-dev.txt
 
 RUN python -m pip install --no-cache-dir \
-        --requirement /tmp/server-requirements.lock \
-        --requirement /tmp/client-requirements.lock \
+        --requirement /tmp/server-requirements.txt \
+        --requirement /tmp/client-requirements.txt \
         --requirement /tmp/requirements-dev.txt
 
 COPY pyproject.toml alembic.ini ./
@@ -63,18 +63,24 @@ FROM base AS server
 RUN apt-get update \
     && apt-get install --no-install-recommends --only-upgrade -y \
         libpcre2-8-0 \
+        libssl3 \
+        openssl \
         perl-base \
     && dpkg --compare-versions \
         "$(dpkg-query -W -f='${Version}' perl-base)" ge '5.36.0-7+deb12u4' \
+    && dpkg --compare-versions \
+        "$(dpkg-query -W -f='${Version}' libssl3)" ge '3.0.22-1~deb12u1' \
+    && dpkg --compare-versions \
+        "$(dpkg-query -W -f='${Version}' openssl)" ge '3.0.22-1~deb12u1' \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-COPY server/requirements.lock /tmp/server-requirements.lock
+COPY server/requirements.txt /tmp/server-requirements.txt
 # pip bundles urllib3 2.7.0. Remove the installer and its vendored libraries
 # after installation; the API runtime does not need them. The test stage keeps pip.
 RUN python -m pip install --no-cache-dir \
-        --requirement /tmp/server-requirements.lock \
+        --requirement /tmp/server-requirements.txt \
     && python -m pip check \
     && python -m pip uninstall --yes pip
 

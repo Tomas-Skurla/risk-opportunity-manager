@@ -63,10 +63,10 @@ source .venv/bin/activate
 python -m pip install --upgrade pip setuptools wheel
 
 echo "Installing server locked dependencies..."
-python -m pip install -r server/requirements.lock
+python -m pip install -r server/requirements.txt
 
 echo "Installing client locked dependencies..."
-python -m pip install -r client/requirements.lock
+python -m pip install -r client/requirements.txt
 
 echo "Installing development dependencies..."
 python -m pip install -r requirements-dev.txt

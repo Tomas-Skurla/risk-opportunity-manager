@@ -13,6 +13,7 @@ from riskapp_client.adapters.mappers.scored_entity_mapper import (
     scored_entity_from_mapping,
     scored_entity_to_mapping,
 )
+from riskapp_client.adapters.remote_api.rest_api_client import ApiError
 from riskapp_client.domain.domain_models import Opportunity, Project, Risk
 from riskapp_client.services.offline_first_facade import OfflineFirstBackend
 from riskapp_client.services.scored_entity_management_service import (
@@ -274,7 +275,7 @@ def test_offline_facade_project_visibility_bootstrap_and_naming() -> None:
     backend.anonymous_offline = True
     assert [p.id for p in backend.list_projects()] == ["local-anon"]
 
-    remote.list_projects.side_effect = RuntimeError("offline")
+    remote.list_projects.side_effect = ApiError(0, "offline")
     assert [p.id for p in backend.list_projects()] == ["local-anon"]
 
     backend.remote = None

@@ -142,22 +142,30 @@ def test_superuser_bypass_pruning_and_project_cascade_delete(api) -> None:
 
 
 def test_every_admin_route_requires_a_superuser(api) -> None:
-    """The router-wide check covers every /admin route, including future ones."""
-    from fastapi.routing import APIRoute
+    """Guard the admin router and exercise every documented admin operation."""
+    from riskapp_server.api.routers.admin import router
     from riskapp_server.auth.service import require_superuser
 
-    app = api.app
-
-    admin_routes = [
-        route
-        for route in app.routes
-        if isinstance(route, APIRoute) and route.path.startswith("/admin/")
+    assert any(dep.dependency is require_superuser for dep in router.dependencies)
+    regular = register_user(api)
+    project_id = create_project(api, regular, name="Admin protection").id
+    methods = {"get", "post", "put", "patch", "delete", "head", "options", "trace"}
+    operations = [
+        (method, path)
+        for path, definition in api.app.openapi()["paths"].items()
+        if path.startswith("/admin/")
+        for method in definition
+        if method in methods
     ]
-    assert admin_routes
-    for route in admin_routes:
-        assert any(
-            dep.dependency is require_superuser for dep in route.dependencies
-        ), route.path
+    assert operations
+    for method, template in operations:
+        path = template.format(project_id=project_id, user_id=regular.id)
+        anonymous = api.request(method.upper(), path, json={})
+        assert anonymous.status_code == 401, (method, path, anonymous.text)
+        authenticated = api.request(
+            method.upper(), path, json={}, headers=regular.headers
+        )
+        assert authenticated.status_code == 403, (method, path, authenticated.text)
 
 
 def test_admin_routes_reject_regular_users_and_old_paths_are_gone(api) -> None:

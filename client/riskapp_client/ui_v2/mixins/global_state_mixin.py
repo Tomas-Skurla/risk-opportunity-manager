@@ -7,6 +7,7 @@ from collections import Counter
 from collections.abc import Callable, Sequence
 from contextlib import suppress
 from datetime import UTC, datetime
+from sqlite3 import Error as SQLiteError
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from PySide6.QtCore import QEvent, QModelIndex, QObject, Qt
@@ -360,7 +361,7 @@ class CoreMixin:
         """Call a backend function and show a modal error if it fails."""
         try:
             return fn(*args, **kwargs)
-        except (RuntimeError, OSError) as exc:
+        except (RuntimeError, OSError, SQLiteError) as exc:
             QMessageBox.critical(cast(QWidget, self), error_title, str(exc))
             return None
 

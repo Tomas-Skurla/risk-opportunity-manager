@@ -1,0 +1,18 @@
+# FastAPI server dependencies: allowed version ranges.
+# server/requirements.txt pins every package and is generated from this file:
+#   bash scripts/relock_python_deps.sh
+
+argon2-cffi>=25.1,<26
+# Security floor for CVE-2026-63374 (TLS hostname validation).
+anyio>=4.14.2,<5
+fastapi>=0.136,<1
+uvicorn[standard]>=0.46,<1
+sqlalchemy>=2.0,<3
+alembic>=1.19,<2
+python-jose[cryptography]>=3.5,<4
+python-multipart>=0.0.27,<1
+pydantic>=2.13,<3
+email-validator>=2.3,<3
+# pip-compile drops uvicorn[standard]'s "not on Windows" condition for uvloop;
+# restating it keeps server/requirements.txt installable on Windows.
+uvloop; sys_platform != "win32"

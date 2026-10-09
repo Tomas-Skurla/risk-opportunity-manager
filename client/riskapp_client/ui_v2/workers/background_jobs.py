@@ -10,12 +10,17 @@ from typing import Any, cast
 
 from PySide6.QtCore import QObject, Qt, QThread, Signal, Slot
 
+from riskapp_client.adapters.remote_api.rest_api_client import ApiError
 from riskapp_client.domain.background_job_contracts import (
     BackendFactory,
     BackgroundJobBackend,
     SyncCallbacks,
 )
 from riskapp_client.domain.domain_models import Project
+from riskapp_client.services.synchronization_service import (
+    classify_http_status,
+    sync_state_for_failure,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -153,19 +158,26 @@ class _BackgroundJobWorker(QObject):
             # row or project-specific server failure must not starve every
             # project later in this automatic pass.
             # pylint: disable-next=broad-exception-caught
-            except Exception:  # noqa: BLE001 - isolate this project and continue
+            except Exception as exc:  # noqa: BLE001 - isolate this project and continue
                 logger.exception(
                     "Automatic synchronization failed for project %s (%s)",
                     project_id,
                     project_name,
                 )
+                request_failed = isinstance(exc, (ApiError, OSError))
+                failure_kind, retryable = (
+                    classify_http_status(exc.status if isinstance(exc, ApiError) else 0)
+                    if request_failed
+                    else ("error", False)
+                )
                 summary = {
-                    "state": "retry_wait",
+                    "state": sync_state_for_failure(failure_kind),
                     "sync_error": {
                         "reason": "project_sync_failed",
-                        "failure_kind": "transient",
-                        "retryable": True,
-                        "request_failed": False,
+                        "failure_kind": failure_kind,
+                        "retryable": retryable,
+                        "request_failed": request_failed,
+                        "detail": str(exc),
                     },
                 }
             summary.setdefault("project_id", project_id)

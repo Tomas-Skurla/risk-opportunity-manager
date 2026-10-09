@@ -7,6 +7,7 @@ from typing import Any
 
 from riskapp_client.adapters.local_storage.sqlite_data_store import LocalStore
 from riskapp_client.adapters.local_storage.sync_outbox_queue import OutboxStore
+from riskapp_client.adapters.remote_api.rest_api_client import ApiError
 from riskapp_client.domain.background_job_contracts import BackgroundJobBackend
 from riskapp_client.domain.domain_models import (
     Action,
@@ -31,7 +32,10 @@ from riskapp_client.services.scored_entity_management_service import (
     ScoredEntityService,
     ScoredEntityWiring,
 )
-from riskapp_client.services.synchronization_service import SyncService
+from riskapp_client.services.synchronization_service import (
+    SyncService,
+    classify_http_status,
+)
 
 
 def _optional_callable(
@@ -227,6 +231,18 @@ class OfflineFirstBackend(Backend):
         if self.remote:
             try:
                 remote_projects = self.remote.list_projects()
+            except (ApiError, OSError) as exc:
+                # Use the cache unless the request itself was invalid: an
+                # expired session or revoked access must not hide local work.
+                if (
+                    isinstance(exc, ApiError)
+                    and classify_http_status(exc.status)[0] == "validation"
+                ):
+                    raise
+                logging.getLogger(__name__).warning(
+                    "Remote project list unavailable; using local cache: %s", exc
+                )
+            else:
                 self.store.sync_projects(remote_projects)
 
                 # Important security/UI rule:
@@ -253,12 +269,6 @@ class OfflineFirstBackend(Backend):
                 for p in list(remote_projects) + local_projects:
                     by_id[str(p.id)] = p
                 return list(by_id.values())
-            # Any remote transport or response failure must fall back to the
-            # local cache so this offline-first boundary remains available.
-            except Exception:  # pylint: disable=broad-exception-caught
-                logging.getLogger(__name__).debug(
-                    "Remote list_projects failed, using local cache", exc_info=True
-                )
 
         projects = self.store.list_projects()
 

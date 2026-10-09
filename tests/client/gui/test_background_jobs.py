@@ -5,7 +5,9 @@ from __future__ import annotations
 import threading
 from unittest.mock import Mock
 
+import pytest
 from PySide6.QtCore import QTimer
+from riskapp_client.adapters.remote_api.rest_api_client import ApiError
 from riskapp_client.domain.domain_models import Project
 from riskapp_client.services.offline_first_facade import OfflineFirstBackend
 from riskapp_client.ui_v2.mixins.background_jobs_mixin import BackgroundJobsMixin
@@ -95,11 +97,13 @@ def test_worker_automatic_sync_isolates_project_failure(qtbot, caplog) -> None:
     assert calls == ["project-1", "project-2"]
     result = outcomes[0]
     assert isinstance(result, dict)
-    assert result["state"] == "retry_wait"
+    assert result["state"] == "attention_required"
     assert result["projects"][0]["sync_error"]["reason"] == ("project_sync_failed")
     assert result["projects"][1]["state"] == "complete"
     assert "failed for project project-1" in caplog.text
     assert "project-local corruption" in caplog.text
+
+    assert result["projects"][0]["sync_error"]["retryable"] is False
 
 
 # The qtbot fixture initializes Qt before this direct QObject signal test.
@@ -640,3 +644,38 @@ def test_shutdown_waits_for_a_running_job_and_drops_its_result(qtbot) -> None:
     qtbot.wait(50)  # deliver any queued result signal
 
     assert not results
+
+
+@pytest.mark.parametrize(
+    "status, state, retryable",
+    [
+        (0, "retry_wait", True),
+        (503, "retry_wait", True),
+        (401, "authentication_required", False),
+        (403, "permission_denied", False),
+    ],
+)
+def test_worker_classifies_api_failure(qtbot, status, state, retryable):
+    class Backend:
+        @staticmethod
+        def list_projects():
+            return [Project("p1", "Project")]
+
+        @staticmethod
+        def sync_project(_project_id, **_kwargs):
+            raise ApiError(status, "request failed")
+
+    outcomes = []
+    worker = jobs._BackgroundJobWorker(
+        Backend,
+        owns_backend=False,
+        kind="automatic_sync",
+        payload={},
+        cancel_event=threading.Event(),
+    )
+    worker.succeeded.connect(lambda _kind, result: outcomes.append(result))
+    worker.run()
+    summary = outcomes[0]["projects"][0]
+    assert summary["state"] == state
+    assert summary["sync_error"]["retryable"] is retryable
+    assert summary["sync_error"]["request_failed"] is True

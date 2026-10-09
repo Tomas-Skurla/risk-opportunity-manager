@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QDialog, QLabel, QListWidget, QMessageBox, QPushBu
 from riskapp_client.domain.domain_models import Project
 from riskapp_client.ui_v2.mixins import projects_sync_mixin
 from riskapp_client.ui_v2.mixins.projects_sync_mixin import ProjectsSyncMixin
+from riskapp_client.ui_v2.window_state import MainWindowState
 
 # These regressions directly exercise the project-sync mixin's internal flows.
 # pylint: disable=protected-access
@@ -16,6 +17,7 @@ from riskapp_client.ui_v2.mixins.projects_sync_mixin import ProjectsSyncMixin
 
 class ProjectHost(ProjectsSyncMixin):
     def __init__(self, backend) -> None:
+        self.state = MainWindowState()
         self.backend = backend
         self.project_list = QListWidget()
         self.sync_btn = QPushButton()

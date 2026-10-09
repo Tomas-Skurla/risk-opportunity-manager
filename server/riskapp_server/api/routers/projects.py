@@ -178,7 +178,7 @@ def list_members(
         MemberOut(
             user_id=u.id,
             email=u.email,
-            role=pm.role,
+            role=Role(pm.role),
             is_superuser=bool(u.is_superuser),
             created_at=getattr(pm, "created_at", None),
         )

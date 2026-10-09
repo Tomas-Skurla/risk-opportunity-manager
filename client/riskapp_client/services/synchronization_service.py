@@ -16,6 +16,28 @@ class _SyncCancelled(RuntimeError):
     """Internal cooperative-cancellation signal."""
 
 
+def classify_http_status(status: int) -> tuple[str, bool]:
+    """Return the failure kind and whether an HTTP failure can be retried."""
+    if status == 401:
+        return "authentication", False
+    if status == 403:
+        return "permission", False
+    if status == 0 or status in {408, 425, 429} or status >= 500:
+        return "transient", True
+    return "validation", False
+
+
+def sync_state_for_failure(failure_kind: str) -> str:
+    """Use the same failure states in the coordinator and background worker."""
+    return {
+        "transient": "retry_wait",
+        "authentication": "authentication_required",
+        "permission": "permission_denied",
+        "validation": "attention_required",
+        "conflict": "attention_required",
+    }.get(failure_kind, "attention_required")
+
+
 class SyncService:
     def __init__(
         self,
@@ -334,23 +356,12 @@ class SyncService:
             if isinstance(it, dict) and it.get("change_id")
         ]
 
-    @staticmethod
-    def _classify_status(status: int) -> tuple[str, bool]:
-        status = int(status or 0)
-        if status == 401:
-            return "authentication", False
-        if status == 403:
-            return "permission", False
-        if status == 0 or status in {408, 425, 429} or status >= 500:
-            return "transient", True
-        return "validation", False
-
     def _request_failure(self, exc: Exception, *, phase: str) -> dict[str, Any]:
         status_value = getattr(exc, "status", None)
         if status_value is None:
             raise exc
         status = int(status_value or 0)
-        failure_kind, retryable = self._classify_status(status)
+        failure_kind, retryable = classify_http_status(status)
         return {
             "status": "error",
             "reason": f"{phase}_request_failed",
@@ -378,16 +389,6 @@ class SyncService:
             normalized.get("retryable") or failure_kind == "transient"
         )
         return normalized
-
-    @staticmethod
-    def _state_for_failure_kind(failure_kind: str) -> str:
-        return {
-            "transient": "retry_wait",
-            "authentication": "authentication_required",
-            "permission": "permission_denied",
-            "validation": "attention_required",
-            "conflict": "attention_required",
-        }.get(failure_kind, "attention_required")
 
     def _finish_summary(
         self, summary: dict[str, Any], project_id: str
@@ -474,18 +475,7 @@ class SyncService:
             failure = self._request_failure(exc, phase="push")
             return 0, [], self._record_request_failure(sent_ids, failure), []
 
-        raw_results = resp.get("results") if isinstance(resp, dict) else None
-        results = (
-            [
-                item
-                for item in raw_results
-                if isinstance(item, dict)
-                and item.get("change_id")
-                and item.get("status") in {"accepted", "conflict", "error"}
-            ]
-            if isinstance(raw_results, list)
-            else []
-        )
+        results = self._validated_push_results(project_id, changes, resp)
 
         if not results:
             failure = {
@@ -547,6 +537,54 @@ class SyncService:
             errors,
             self._acknowledged_versions(changes, accepted),
         )
+
+    @staticmethod
+    def _validated_push_results(
+        project_id: str,
+        changes: list[dict[str, Any]],
+        response: object,
+    ) -> list[dict[str, Any]] | None:
+        """Validate the entire response before acknowledging any local work."""
+        raw_results = response.get("results") if isinstance(response, dict) else None
+        if not isinstance(raw_results, list) or not raw_results:
+            return None
+        sent = {
+            str(change["change_id"]): change
+            for change in changes
+            if change.get("change_id")
+        }
+        results: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for result in raw_results:
+            if not isinstance(result, dict):
+                return None
+            change_id = result.get("change_id")
+            if (
+                not isinstance(change_id, str)
+                or change_id not in sent
+                or change_id in seen
+                or result.get("status") not in ("accepted", "conflict", "error")
+            ):
+                return None
+            change = sent[change_id]
+            if change.get("entity") and result.get("entity") not in (
+                None,
+                change["entity"],
+            ):
+                return None
+            record = change.get("record")
+            entity_id = record.get("id") if isinstance(record, dict) else None
+            if entity_id and result.get("entity_id") not in (None, entity_id):
+                return None
+            server_record = result.get("server_record")
+            if isinstance(server_record, dict) and (
+                (entity_id and server_record.get("id") not in (None, entity_id))
+                or server_record.get("project_id") not in (None, project_id)
+            ):
+                return None
+            seen.add(change_id)
+            results.append(result)
+        return results if seen == set(sent) else None
 
     def sync_project(
         self,
@@ -622,7 +660,7 @@ class SyncService:
             request_failures = [e for e in errors if e.get("request_failed")]
             if request_failures:
                 failure = request_failures[0]
-                summary["state"] = self._state_for_failure_kind(
+                summary["state"] = sync_state_for_failure(
                     str(failure.get("failure_kind") or "error")
                 )
                 summary["sync_error"] = failure
@@ -662,16 +700,14 @@ class SyncService:
                 # Paginated adapters share the same status-based failure contract.
                 except Exception as page_exc:  # noqa: BLE001  # pylint: disable=W0718
                     failure = self._request_failure(page_exc, phase="pull")
-                    summary["state"] = self._state_for_failure_kind(
+                    summary["state"] = sync_state_for_failure(
                         str(failure["failure_kind"])
                     )
                     summary["sync_error"] = failure
                     return self._finish_summary(summary, effective_project_id)
             else:
                 failure = self._request_failure(exc, phase="pull")
-                summary["state"] = self._state_for_failure_kind(
-                    str(failure["failure_kind"])
-                )
+                summary["state"] = sync_state_for_failure(str(failure["failure_kind"]))
                 summary["sync_error"] = failure
                 return self._finish_summary(summary, effective_project_id)
 

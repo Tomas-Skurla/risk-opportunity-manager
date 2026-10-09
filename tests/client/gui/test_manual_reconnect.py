@@ -13,6 +13,7 @@ from PySide6.QtWidgets import QLabel, QListWidget, QMessageBox, QPushButton, QWi
 from riskapp_client.domain.domain_models import Project
 from riskapp_client.services.offline_first_facade import OfflineFirstBackend
 from riskapp_client.ui_v2.mixins.projects_sync_mixin import ProjectsSyncMixin
+from riskapp_client.ui_v2.window_state import MainWindowState
 from riskapp_client.ui_v2.workers import BackgroundJobRunner
 from riskapp_client.ui_v2.workers import background_jobs as jobs
 from support import InProcessRemote, create_project, register_user
@@ -24,6 +25,7 @@ from support import InProcessRemote, create_project, register_user
 class _SyncHost(QWidget, ProjectsSyncMixin):
     def __init__(self, backend, project_id) -> None:
         super().__init__()
+        self.state = MainWindowState()
         self.backend = backend
         self.current_project_id = project_id
         self.current_risk_id = None
