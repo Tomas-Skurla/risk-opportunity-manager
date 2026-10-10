@@ -140,7 +140,7 @@ class LocalStore:
         with contextlib.suppress(OSError, sqlite3.Error):
             self.conn.close()
 
-    def __enter__(self) -> LocalStore:  # noqa: PYI034
+    def __enter__(self) -> LocalStore:
         return self
 
     def __exit__(
@@ -946,7 +946,7 @@ class LocalStore:
             table = table_by_entity[entity]
             self.conn.execute(
                 f"UPDATE {table} SET code=NULL WHERE project_id=? "  # noqa: S608
-                f"AND ({' OR '.join(clauses)});",  # noqa: S608
+                f"AND ({' OR '.join(clauses)});",
                 params,
             )
         self._commit_if_needed()

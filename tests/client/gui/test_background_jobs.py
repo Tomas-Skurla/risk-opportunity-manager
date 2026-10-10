@@ -17,10 +17,8 @@ from riskapp_client.ui_v2.workers import background_jobs as jobs
 # Worker dispatch is tested directly before the runner's thread boundary.
 # pylint: disable=protected-access
 
-# Each fake backend implements only the operations its test exercises, so it is
-# not a complete BackgroundJobBackend. mypy does not check tests; this keeps
-# Pyright/Pylance from reporting every fake passed as a backend factory.
-# pyright: reportArgumentType=false
+
+# Fake backend factories below implement only the operations used by each test.
 
 
 # The qtbot fixture initializes Qt before these direct QObject signal tests.
@@ -44,7 +42,7 @@ def test_worker_dispatches_sync_progress_and_project_migration(qtbot) -> None:
             return [Project("project-1", "Published")]
 
     worker = jobs._BackgroundJobWorker(
-        Backend,
+        Backend,  # pyright: ignore[reportArgumentType]
         owns_backend=False,
         kind="sync",
         payload={"project_id": "local-1"},
@@ -84,7 +82,7 @@ def test_worker_automatic_sync_isolates_project_failure(qtbot, caplog) -> None:
             return {"state": "complete"}
 
     worker = jobs._BackgroundJobWorker(
-        Backend,
+        Backend,  # pyright: ignore[reportArgumentType]
         owns_backend=False,
         kind="automatic_sync",
         payload={},
@@ -138,7 +136,7 @@ def test_worker_automatic_syncs_all_projects_and_exports_reconnect(qtbot) -> Non
             return authenticated_remote
 
     worker = jobs._BackgroundJobWorker(
-        Backend,
+        Backend,  # pyright: ignore[reportArgumentType]
         owns_backend=False,
         kind="automatic_sync",
         payload={"export_remote": True},
@@ -193,7 +191,7 @@ def test_worker_automatic_sync_stops_after_shared_authentication_failure(qtbot) 
             raise AssertionError("invalid authentication must not be exported")
 
     worker = jobs._BackgroundJobWorker(
-        Backend,
+        Backend,  # pyright: ignore[reportArgumentType]
         owns_backend=False,
         kind="automatic_sync",
         payload={"export_remote": True},
@@ -214,6 +212,7 @@ def test_worker_automatic_sync_stops_after_shared_authentication_failure(qtbot) 
 # pylint: disable-next=unused-argument
 def test_worker_automatic_sync_refreshes_projects_after_promotion(qtbot) -> None:
     list_calls = 0
+    fail_refresh = False
     outcomes: list[object] = []
 
     class Backend:
@@ -223,6 +222,8 @@ def test_worker_automatic_sync_refreshes_projects_after_promotion(qtbot) -> None
             list_calls += 1
             if list_calls == 1:
                 return [Project("local-1", "Draft", created_by="user@example.test")]
+            if fail_refresh:
+                raise ApiError(503, "Project-list refresh unavailable")
             return [Project("project-1", "Draft", created_by="user-1")]
 
         @staticmethod
@@ -233,7 +234,7 @@ def test_worker_automatic_sync_refreshes_projects_after_promotion(qtbot) -> None
             }
 
     worker = jobs._BackgroundJobWorker(
-        Backend,
+        Backend,  # pyright: ignore[reportArgumentType]
         owns_backend=False,
         kind="automatic_sync",
         payload={},
@@ -249,6 +250,24 @@ def test_worker_automatic_sync_refreshes_projects_after_promotion(qtbot) -> None
     assert result["project_id_migrations"] == {"local-1": "project-1"}
     assert result["_visible_projects"] == [
         Project("project-1", "Draft", created_by="user-1")
+    ]
+    assert list_calls == 2
+
+    # A secondary refresh failure must preserve the completed promotion and
+    # give the GUI project IDs that match the already-updated local database.
+    list_calls = 0
+    fail_refresh = True
+    outcomes.clear()
+    worker.run()
+
+    assert len(outcomes) == 1
+    result = outcomes[0]
+    assert isinstance(result, dict)
+    assert result["state"] == "complete"
+    assert result["project_id_migrations"] == {"local-1": "project-1"}
+    assert result["projects"][0]["state"] == "complete"
+    assert result["_visible_projects"] == [
+        Project("project-1", "Draft", created_by="user@example.test")
     ]
     assert list_calls == 2
 
@@ -268,7 +287,7 @@ def test_worker_dispatches_history_and_preserves_snapshot_after_history_error(  
             raise RuntimeError("history unavailable")
 
     worker = jobs._BackgroundJobWorker(
-        Backend,
+        Backend,  # pyright: ignore[reportArgumentType]
         owns_backend=False,
         kind="snapshot",
         payload={
@@ -304,7 +323,7 @@ def test_worker_reports_prestart_cancellation_invalid_results_and_unknown_jobs( 
     cancel_event = threading.Event()
     cancel_event.set()
     worker = jobs._BackgroundJobWorker(
-        factory,
+        factory,  # pyright: ignore[reportArgumentType]
         owns_backend=False,
         kind="sync",
         payload={"project_id": "project-1"},
@@ -323,7 +342,7 @@ def test_worker_reports_prestart_cancellation_invalid_results_and_unknown_jobs( 
 
     failures: list[tuple[str, str]] = []
     invalid = jobs._BackgroundJobWorker(
-        InvalidBackend,
+        InvalidBackend,  # pyright: ignore[reportArgumentType]
         owns_backend=False,
         kind="sync",
         payload={"project_id": "project-1"},
@@ -333,7 +352,7 @@ def test_worker_reports_prestart_cancellation_invalid_results_and_unknown_jobs( 
     invalid.run()
 
     unknown = jobs._BackgroundJobWorker(
-        object,
+        object,  # pyright: ignore[reportArgumentType]
         owns_backend=False,
         kind="unknown",
         payload={},
@@ -377,7 +396,10 @@ def test_runner_constructs_uses_and_closes_backend_in_worker_thread(qtbot) -> No
         calls["factory"] = threading.get_ident()
         return Backend()
 
-    runner = BackgroundJobRunner(backend_factory, owns_backend=True)
+    runner = BackgroundJobRunner(
+        backend_factory,  # pyright: ignore[reportArgumentType]
+        owns_backend=True,
+    )
     runner.progress_changed.connect(progress.append)
     job_started = runner.start(
         "sync",
@@ -415,7 +437,10 @@ def test_runner_is_single_flight_and_cancels_cooperatively(qtbot) -> None:
             progress("Cancellation observed")
             return {"state": "cancelled", "cancelled": True}
 
-    runner = BackgroundJobRunner(Backend, owns_backend=False)
+    runner = BackgroundJobRunner(
+        Backend,  # pyright: ignore[reportArgumentType]
+        owns_backend=False,
+    )
     job_started = runner.start(
         "sync",
         {"project_id": "project-1"},
@@ -444,7 +469,10 @@ def test_failed_shutdown_wait_restores_runner_until_job_finishes(qtbot) -> None:
             assert release.wait(timeout=2)
             return {"state": "complete"}
 
-    runner = BackgroundJobRunner(Backend, owns_backend=False)
+    runner = BackgroundJobRunner(
+        Backend,  # pyright: ignore[reportArgumentType]
+        owns_backend=False,
+    )
     job_started = runner.start(
         "sync",
         {"project_id": "project-1"},
@@ -487,7 +515,10 @@ def test_snapshot_and_history_requests_run_in_worker_thread(qtbot) -> None:
             calls.append(("history", threading.get_ident(), filters))
             return [{"captured_at": "2026-09-06T12:00:00", "top": []}]
 
-    runner = BackgroundJobRunner(Backend, owns_backend=False)
+    runner = BackgroundJobRunner(
+        Backend,  # pyright: ignore[reportArgumentType]
+        owns_backend=False,
+    )
     job_started = runner.start(
         "snapshot",
         {
@@ -629,7 +660,10 @@ def test_shutdown_waits_for_a_running_job_and_drops_its_result(qtbot) -> None:
             assert release.wait(timeout=5)
             return {"state": "complete"}
 
-    runner = BackgroundJobRunner(Backend, owns_backend=False)
+    runner = BackgroundJobRunner(
+        Backend,  # pyright: ignore[reportArgumentType]
+        owns_backend=False,
+    )
     job_started = runner.start(
         "sync",
         {"project_id": "project-1"},
@@ -667,7 +701,7 @@ def test_worker_classifies_api_failure(qtbot, status, state, retryable):
 
     outcomes = []
     worker = jobs._BackgroundJobWorker(
-        Backend,
+        Backend,  # pyright: ignore[reportArgumentType]
         owns_backend=False,
         kind="automatic_sync",
         payload={},

@@ -86,9 +86,6 @@ class ProjectsSyncMixin:
 
     if TYPE_CHECKING:
         # Implemented by BackgroundJobsMixin in the concrete MainWindow class.
-        # Declaring them as methods keeps sibling mixin signatures compatible
-        # for static analyzers; keeping them behind TYPE_CHECKING means no
-        # runtime stub can shadow the real hooks if the base order changes.
         def _record_automatic_sync_success(self, _result: object) -> None: ...
 
         def _observe_manual_sync_result(self, _result: object) -> None: ...

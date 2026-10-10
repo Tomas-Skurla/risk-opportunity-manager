@@ -231,7 +231,7 @@ bash scripts/relock_python_deps.sh
 bash scripts/setup_python_env.sh --recreate
 ```
 
-The script keeps existing pins that still fit their range. `--upgrade` moves every package to the newest allowed version, and `--upgrade-package NAME` moves one. Dependabot runs the same pip-compile command, so its pull requests also update indirect dependencies. If a pinned file has a merge conflict, rerun the script instead of resolving it by hand.
+The script keeps existing pins that still fit their range. `--upgrade` moves every package to the newest allowed version, and `--upgrade-package NAME` moves one. Dependabot reruns pip-compile with the options in the file header. Its version updates bump only the packages listed in `requirements.in`.
 
 `requirements-dev.txt` adds the development tools, `requirements-test.txt` combines everything the test suite needs, and `pyproject.toml` configures the tools but pins no dependencies.
 

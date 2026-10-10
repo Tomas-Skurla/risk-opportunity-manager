@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import inspect
 import logging
 import threading
@@ -97,7 +98,7 @@ class _BackgroundJobWorker(QObject):
                 result["_visible_projects"] = list(backend.list_projects() or [])
             # Refresh is secondary and must not turn a successful sync into failure.
             # pylint: disable-next=broad-exception-caught
-            except Exception:  # noqa: BLE001 - sync itself already succeeded
+            except Exception:  # sync itself already succeeded
                 logger.warning(
                     "Could not refresh projects after synchronization",
                     exc_info=True,
@@ -158,7 +159,7 @@ class _BackgroundJobWorker(QObject):
             # row or project-specific server failure must not starve every
             # project later in this automatic pass.
             # pylint: disable-next=broad-exception-caught
-            except Exception as exc:  # noqa: BLE001 - isolate this project and continue
+            except Exception as exc:  # isolate this project and continue
                 logger.exception(
                     "Automatic synchronization failed for project %s (%s)",
                     project_id,
@@ -198,8 +199,23 @@ class _BackgroundJobWorker(QObject):
                 break
 
         if migrations and not self._is_cancelled():
-            self.progress.emit("Refreshing project list")
-            projects = list(list_projects() or [])
+            try:
+                self.progress.emit("Refreshing project list")
+                projects = list(list_projects() or [])
+            # A secondary refresh must not discard completed synchronization.
+            # pylint: disable-next=broad-exception-caught
+            except Exception:
+                logger.warning(
+                    "Could not refresh projects after automatic synchronization",
+                    exc_info=True,
+                )
+                # Keep the sidebar IDs aligned with the already-promoted local rows.
+                projects = [
+                    dataclasses.replace(
+                        project, id=migrations.get(str(project.id), project.id)
+                    )
+                    for project in projects
+                ]
 
         states = {str(item.get("state") or "complete") for item in summaries}
         if "authentication_required" in states:
@@ -259,7 +275,7 @@ class _BackgroundJobWorker(QObject):
                 result.update(self._run_history(backend))
             # The snapshot is already committed; preserve that successful result.
             # pylint: disable-next=broad-exception-caught
-            except Exception as exc:  # noqa: BLE001 - snapshot already committed
+            except Exception as exc:  # snapshot already committed
                 logger.warning(
                     "Snapshot succeeded but history refresh failed",
                     exc_info=True,
@@ -294,7 +310,7 @@ class _BackgroundJobWorker(QObject):
                 self.succeeded.emit(self._kind, result)
         # Nothing may escape the worker-thread boundary into Qt's event loop.
         # pylint: disable-next=broad-exception-caught
-        except Exception as exc:  # noqa: BLE001 - thread boundary
+        except Exception as exc:  # thread boundary
             if self._kind == "automatic_sync":
                 logger.info("Automatic synchronization attempt failed: %s", exc)
             else:
@@ -311,7 +327,7 @@ class _BackgroundJobWorker(QObject):
                         close()
                     # Store cleanup is best-effort after the job result is known.
                     # pylint: disable-next=broad-exception-caught
-                    except Exception:  # noqa: BLE001 - best-effort cleanup
+                    except Exception:  # best-effort cleanup
                         logger.warning(
                             "Could not close background local store",
                             exc_info=True,

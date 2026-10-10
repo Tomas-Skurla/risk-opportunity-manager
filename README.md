@@ -16,7 +16,7 @@ RiskApp is an offline-first risk and opportunity manager: a FastAPI/SQLAlchemy A
 - Argon2id password hashing that upgrades stored hashes to new parameters at the next login;
 - bounded request/response handling, literal search escaping, and safe CSV export;
 - isolated API and client-core tests plus package-wide mypy, Ruff, compile, and dependency checks;
-- reproducible runtime lock files and an automated CI gate.
+- pinned runtime dependencies generated with pip-compile, and an automated CI gate.
 
 ## Architecture
 
@@ -37,7 +37,7 @@ See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for the components, the synchronizat
 Install the OS packages from [step 2 of the setup guide](docs/SETUP_GUIDE.md#2-install-os-prerequisites), then run from the repository root:
 
 ```bash
-bash scripts/setup_python_env.sh   # creates .venv from the lock files
+bash scripts/setup_python_env.sh   # creates .venv from the pinned requirements
 bash scripts/check_project.sh      # migrations, tests, mypy, Ruff
 bash scripts/dev-init.sh           # private keys and an admin password in .env
 bash scripts/run_server_dev.sh     # API at http://127.0.0.1:8000, this machine only

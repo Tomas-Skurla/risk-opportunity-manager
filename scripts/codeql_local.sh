@@ -3,14 +3,14 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-# Runs the same CodeQL analysis as .github/workflows/codeql.yml on this
-# machine and prints the findings.
+# Runs CodeQL's security-and-quality suite on this machine and prints the
+# findings. CI runs security-extended only (.github/workflows/codeql.yml),
+# so this adds the quality queries.
 #
-# CI sends its results only to the Security tab, which needs write access to
-# view. Printing them in CI would publish them, because logs, run summaries
-# and artifacts of a public repository are readable by anyone. This script
-# keeps everything local, and writes it outside the repository so that nothing
-# can be committed by accident.
+# CI uploads its results to code scanning and prints none of them, because
+# the logs, run summaries and artifacts of a public repository are readable
+# by anyone. This script keeps everything local, and writes it outside the
+# repository so that nothing can be committed by accident.
 #
 # Usage: bash scripts/codeql_local.sh
 #
@@ -21,8 +21,8 @@ cd "$(dirname "$0")/.."
 # The first run downloads the CodeQL bundle (about 1.4 GB once unpacked).
 # Later runs reuse it.
 
-# Keep both in step with CI: the bundle version is shown in the log of the
-# "Analyze Python" step, and the suite matches `queries:` in codeql.yml.
+# Keep in step with CI: the bundle version is shown in the log of the
+# "Analyze Python" step.
 CODEQL_VERSION="2.27.1"
 BASE_SUITE="codeql-suites/python-security-and-quality.qls"
 
@@ -89,6 +89,7 @@ work_dir="$base_dir/$(basename "$repo_dir")"
 src_dir="$work_dir/src"
 db_dir="$work_dir/db"
 sarif="$work_dir/results.sarif"
+raw_sarif="$work_dir/results-unfiltered.sarif"
 python_bin="${PYTHON:-python3}"
 
 if ! command -v "$python_bin" >/dev/null 2>&1; then
@@ -180,6 +181,8 @@ run_codeql database analyze "$db_dir" "$suite" \
   --output="$sarif" \
   --threads=0
 
+# Keep CodeQL's own output; the report below filters results.sarif.
+cp "$sarif" "$raw_sarif"
 rm -rf "$src_dir"
 sed -n 's/^\(CodeQL scanned [^.]*\)\..*/\1./p' "$log"
 
@@ -285,5 +288,6 @@ for result in sorted(results, key=lambda r: (r["ruleId"], *position(r))):
 PY
 
 echo
-echo "Full results: $sarif"
-echo "(Open it with a SARIF viewer, such as the SARIF Viewer extension for VS Code.)"
+echo "Results as listed above: $sarif"
+echo "Unfiltered CodeQL output: $raw_sarif"
+echo "(Open them with a SARIF viewer, such as the SARIF Viewer extension for VS Code.)"

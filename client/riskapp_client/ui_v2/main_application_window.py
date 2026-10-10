@@ -64,7 +64,7 @@ class MainWindow(  # pyright: ignore[reportIncompatibleVariableOverride]
         self._load_projects()
         self._start_automatic_sync_scheduler()
 
-    def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt API
+    def closeEvent(self, event: QCloseEvent) -> None:  # Qt API
         """Never destroy the window while its worker thread is still active."""
         if not self._shutdown_background_jobs():
             self.sync_status.setText(

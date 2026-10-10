@@ -154,7 +154,7 @@ class ScoredEntitiesTab(QWidget):
 
         # Match the generated Ui_Form callback's keyword parameter name.
         # pylint: disable-next=invalid-name
-        def _patched_retranslate(Form: QWidget) -> None:  # noqa: N803
+        def _patched_retranslate(Form: QWidget) -> None:
             _original_retranslate(Form)
             _btn.setText(f"Save {_label}")
 

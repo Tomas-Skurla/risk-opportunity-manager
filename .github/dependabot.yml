@@ -21,8 +21,10 @@ updates:
     commit-message:
       prefix: "ci(actions)"
 
-  # requirements.lock / requirements-dev.txt. Grouped so a routine refresh is
-  # one review rather than a dozen; security fixes still arrive individually.
+  # server/ and client/ requirements.in with their pip-compiled requirements.txt,
+  # plus requirements-dev.txt. Dependabot reruns pip-compile, so indirect pins
+  # stay consistent. Grouped so a routine refresh is one review rather than a
+  # dozen, security fixes still arrive individually.
   - package-ecosystem: pip
     directory: /
     schedule:

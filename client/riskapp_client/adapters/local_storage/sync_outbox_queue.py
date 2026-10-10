@@ -647,7 +647,7 @@ class OutboxStore:
         with self._store.write_transaction():
             self.conn.execute(
                 f"UPDATE outbox SET last_attempt_at=? "  # noqa: S608
-                f"WHERE change_id IN ({q});",  # noqa: S608
+                f"WHERE change_id IN ({q});",
                 [timestamp, *ids],
             )
 

@@ -186,7 +186,7 @@ class OfflineFirstBackend(Backend):
         *,
         kind: str,
         id_kw: str,
-        model_cls: type[Risk] | type[Opportunity],  # noqa: PYI055
+        model_cls: type[Risk] | type[Opportunity],
         list_fn: Any,
         get_project_and_version_fn: Any,
         get_row_fn: Any,

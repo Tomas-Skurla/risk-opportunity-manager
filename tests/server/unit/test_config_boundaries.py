@@ -25,7 +25,7 @@ def test_configuration_import_rejects_unknown_environment_mode() -> None:
         python_paths.append(inherited_path)
     environment["PYTHONPATH"] = os.pathsep.join(python_paths)
 
-    result = subprocess.run(  # noqa: S603 - fixed interpreter and import statement
+    result = subprocess.run(  # fixed interpreter and import statement
         [sys.executable, "-c", "import riskapp_server.core.config"],
         cwd=ROOT,
         env=environment,

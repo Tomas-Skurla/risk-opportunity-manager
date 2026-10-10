@@ -68,7 +68,7 @@ class SyncService:
         try:
             progress(message)
         # UI callbacks are external to the sync operation and must not abort it.
-        except Exception:  # noqa: BLE001  # pylint: disable=W0718
+        except Exception:  # pylint: disable=W0718
             logging.getLogger(__name__).debug(
                 "Synchronization progress callback failed",
                 exc_info=True,
@@ -471,7 +471,7 @@ class SyncService:
             resp = self._push_once(project_id, changes)
         # Remote adapters expose different transport exception classes; the
         # shared failure normalizer re-raises exceptions it cannot classify.
-        except Exception as exc:  # noqa: BLE001  # pylint: disable=W0718
+        except Exception as exc:  # pylint: disable=W0718
             failure = self._request_failure(exc, phase="push")
             return 0, [], self._record_request_failure(sent_ids, failure), []
 
@@ -685,7 +685,7 @@ class SyncService:
             return cancelled()
         # Keep pull fallback independent of the concrete remote adapter while
         # re-raising failures that do not carry a recognizable status.
-        except Exception as exc:  # noqa: BLE001  # pylint: disable=W0718
+        except Exception as exc:  # pylint: disable=W0718
             status = getattr(exc, "status", None)
             if int(status or 0) == 413:
                 try:
@@ -698,7 +698,7 @@ class SyncService:
                 except _SyncCancelled:
                     return cancelled()
                 # Paginated adapters share the same status-based failure contract.
-                except Exception as page_exc:  # noqa: BLE001  # pylint: disable=W0718
+                except Exception as page_exc:  # pylint: disable=W0718
                     failure = self._request_failure(page_exc, phase="pull")
                     summary["state"] = sync_state_for_failure(
                         str(failure["failure_kind"])

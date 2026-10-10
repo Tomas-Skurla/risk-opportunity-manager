@@ -31,7 +31,7 @@ def _migrated_template(tmp_path_factory) -> Path:
         AUTO_CREATE_SCHEMA="0",
         DATABASE_URL=f"sqlite+pysqlite:///{path.as_posix()}",
     )
-    subprocess.run(  # noqa: S603 - fixed interpreter and migration command
+    subprocess.run(  # fixed interpreter and migration command
         [sys.executable, "-m", "alembic", "upgrade", "head"],
         cwd=REPO_ROOT,
         env=environment,
