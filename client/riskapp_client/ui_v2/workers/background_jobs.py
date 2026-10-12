@@ -18,7 +18,9 @@ from riskapp_client.domain.background_job_contracts import (
     SyncCallbacks,
 )
 from riskapp_client.domain.domain_models import Project
-from riskapp_client.services.synchronization_service import (
+from riskapp_client.domain.sync_protocol import (
+    FailureKind,
+    SyncState,
     classify_http_status,
     sync_state_for_failure,
 )
@@ -39,6 +41,63 @@ def _accepts_keyword(fn: Callable[..., object], keyword: str) -> bool:
     return any(
         parameter.kind is inspect.Parameter.VAR_KEYWORD or parameter.name == keyword
         for parameter in parameters
+    )
+
+
+def _is_syncable(project: object) -> bool:
+    """Anonymous local projects have no owner and can never be published."""
+    project_id = str(getattr(project, "id", None) or "")
+    return bool(project_id) and not (
+        project_id.startswith("local-") and not getattr(project, "created_by", "")
+    )
+
+
+def _failed_project_summary(exc: Exception) -> dict[str, Any]:
+    """Summarize an exception that escaped one project's synchronization."""
+    request_failed = isinstance(exc, (ApiError, OSError))
+    if request_failed:
+        status = exc.status if isinstance(exc, ApiError) else 0
+        failure_kind, retryable = classify_http_status(status)
+    else:
+        failure_kind, retryable = FailureKind.ERROR, False
+    return {
+        "state": sync_state_for_failure(failure_kind),
+        "sync_error": {
+            "reason": "project_sync_failed",
+            "failure_kind": failure_kind,
+            "retryable": retryable,
+            "request_failed": request_failed,
+            "detail": str(exc),
+        },
+    }
+
+
+def _ends_automatic_pass(summary: dict[str, Any]) -> bool:
+    """Transport and authentication failures normally affect every project."""
+    sync_error = summary.get("sync_error")
+    return (
+        str(summary.get("state") or "")
+        in {SyncState.AUTHENTICATION_REQUIRED, SyncState.RETRY_WAIT}
+        and isinstance(sync_error, dict)
+        and bool(sync_error.get("request_failed"))
+    )
+
+
+def _combined_state(summaries: list[dict[str, Any]]) -> str:
+    """The most urgent state across projects decides the pass's state."""
+    states = {str(item.get("state") or SyncState.COMPLETE) for item in summaries}
+    for state in (SyncState.AUTHENTICATION_REQUIRED, SyncState.RETRY_WAIT):
+        if state in states:
+            return state
+    if states - {SyncState.COMPLETE}:
+        return SyncState.ATTENTION_REQUIRED
+    return SyncState.COMPLETE
+
+
+def _earliest_retry(summaries: list[dict[str, Any]]) -> str | None:
+    return min(
+        (str(item["next_retry_at"]) for item in summaries if item.get("next_retry_at")),
+        default=None,
     )
 
 
@@ -110,8 +169,8 @@ class _BackgroundJobWorker(QObject):
         self, backend: BackgroundJobBackend, result: dict[str, Any]
     ) -> None:
         if not self._payload.get("export_remote") or result.get("state") in {
-            "authentication_required",
-            "cancelled",
+            SyncState.AUTHENTICATION_REQUIRED,
+            SyncState.CANCELLED,
         }:
             return
         export_remote = getattr(backend, "export_authenticated_remote", None)
@@ -128,119 +187,85 @@ class _BackgroundJobWorker(QObject):
             getattr(backend, "list_sync_projects", backend.list_projects),
         )
         projects = list(list_projects() or [])
-        syncable = [
-            project
-            for project in projects
-            if getattr(project, "id", None)
-            and not (
-                str(getattr(project, "id", "")).startswith("local-")
-                and not getattr(project, "created_by", "")
-            )
-        ]
+        syncable = [project for project in projects if _is_syncable(project)]
         summaries: list[dict[str, Any]] = []
         migrations: dict[str, str] = {}
-
         for index, project in enumerate(syncable, start=1):
             if self._is_cancelled():
                 return {
-                    "state": "cancelled",
+                    "state": SyncState.CANCELLED,
                     "cancelled": True,
                     "projects": summaries,
                 }
-            project_id = str(project.id)
-            project_name = str(getattr(project, "name", "") or project_id)
-            self.progress.emit(
-                f"Automatically synchronizing {index}/{len(syncable)}: "
-                f"{project_name}"
-            )
-            try:
-                summary = self._sync_project(backend, project_id)
-            # Projects are independent synchronization units. A corrupt local
-            # row or project-specific server failure must not starve every
-            # project later in this automatic pass.
-            # pylint: disable-next=broad-exception-caught
-            except Exception as exc:  # isolate this project and continue
-                logger.exception(
-                    "Automatic synchronization failed for project %s (%s)",
-                    project_id,
-                    project_name,
-                )
-                request_failed = isinstance(exc, (ApiError, OSError))
-                failure_kind, retryable = (
-                    classify_http_status(exc.status if isinstance(exc, ApiError) else 0)
-                    if request_failed
-                    else ("error", False)
-                )
-                summary = {
-                    "state": sync_state_for_failure(failure_kind),
-                    "sync_error": {
-                        "reason": "project_sync_failed",
-                        "failure_kind": failure_kind,
-                        "retryable": retryable,
-                        "request_failed": request_failed,
-                        "detail": str(exc),
-                    },
-                }
-            summary.setdefault("project_id", project_id)
+
+            summary = self._sync_isolated(backend, project, f"{index}/{len(syncable)}")
             summaries.append(summary)
-            migrated_to = summary.get("project_id_migrated_to")
-            if migrated_to:
-                migrations[project_id] = str(migrated_to)
-            sync_error = summary.get("sync_error")
-            if (
-                str(summary.get("state") or "")
-                in {"authentication_required", "retry_wait"}
-                and isinstance(sync_error, dict)
-                and sync_error.get("request_failed")
-            ):
-                # Transport and authentication failures normally affect every
-                # project. Stop this pass rather than hammering the same broken
-                # connection once per project; the scheduler will retry later.
+            if summary.get("project_id_migrated_to"):
+                migrations[str(project.id)] = str(summary["project_id_migrated_to"])
+            if _ends_automatic_pass(summary):
+                # Stop rather than hammer the same broken connection once per
+                # project; the scheduler will retry later.
                 break
 
         if migrations and not self._is_cancelled():
-            try:
-                self.progress.emit("Refreshing project list")
-                projects = list(list_projects() or [])
-            # A secondary refresh must not discard completed synchronization.
-            # pylint: disable-next=broad-exception-caught
-            except Exception:
-                logger.warning(
-                    "Could not refresh projects after automatic synchronization",
-                    exc_info=True,
-                )
-                # Keep the sidebar IDs aligned with the already-promoted local rows.
-                projects = [
-                    dataclasses.replace(
-                        project, id=migrations.get(str(project.id), project.id)
-                    )
-                    for project in projects
-                ]
-
-        states = {str(item.get("state") or "complete") for item in summaries}
-        if "authentication_required" in states:
-            state = "authentication_required"
-        elif "retry_wait" in states:
-            state = "retry_wait"
-        elif states - {"complete"}:
-            state = "attention_required"
-        else:
-            state = "complete"
-
-        retry_values = sorted(
-            str(value)
-            for value in (item.get("next_retry_at") for item in summaries)
-            if value
-        )
+            projects = self._refresh_after_migrations(
+                list_projects, projects, migrations
+            )
         result: dict[str, Any] = {
-            "state": state,
+            "state": _combined_state(summaries),
             "projects": summaries,
             "project_id_migrations": migrations,
-            "next_retry_at": retry_values[0] if retry_values else None,
+            "next_retry_at": _earliest_retry(summaries),
             "_visible_projects": projects,
         }
         self._export_authenticated_remote(backend, result)
         return result
+
+    def _sync_isolated(
+        self, backend: BackgroundJobBackend, project: Project, position: str
+    ) -> dict[str, Any]:
+        """Sync one project; its failure must not starve later projects."""
+        project_id = str(project.id)
+        project_name = str(getattr(project, "name", "") or project_id)
+        self.progress.emit(f"Automatically synchronizing {position}: {project_name}")
+        try:
+            summary = self._sync_project(backend, project_id)
+        # A corrupt local row or project-specific server failure is reported in
+        # this project's summary instead of ending the automatic pass.
+        # pylint: disable-next=broad-exception-caught
+        except Exception as exc:  # isolate this project and continue
+            logger.exception(
+                "Automatic synchronization failed for project %s (%s)",
+                project_id,
+                project_name,
+            )
+            summary = _failed_project_summary(exc)
+        summary.setdefault("project_id", project_id)
+        return summary
+
+    def _refresh_after_migrations(
+        self,
+        list_projects: Callable[[], list[Project]],
+        projects: list[Project],
+        migrations: dict[str, str],
+    ) -> list[Project]:
+        try:
+            self.progress.emit("Refreshing project list")
+            return list(list_projects() or [])
+        # A secondary refresh must not discard completed synchronization.
+        # pylint: disable-next=broad-exception-caught
+        except Exception:
+            logger.warning(
+                "Could not refresh projects after automatic synchronization",
+                exc_info=True,
+            )
+            # Keep the sidebar IDs aligned with the already-promoted local rows.
+            return [
+                dataclasses.replace(
+                    project, id=migrations.get(str(project.id), project.id)
+                )
+                for project in projects
+            ]
 
     def _run_history(self, backend: BackgroundJobBackend) -> dict[str, Any]:
         self.progress.emit("Loading snapshot history")
@@ -304,7 +329,7 @@ class _BackgroundJobWorker(QObject):
                 return
             backend = self._backend_factory()
             result = self._execute(backend)
-            if isinstance(result, dict) and result.get("state") == "cancelled":
+            if isinstance(result, dict) and result.get("state") == SyncState.CANCELLED:
                 self.cancelled.emit(self._kind)
             else:
                 self.succeeded.emit(self._kind, result)

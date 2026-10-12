@@ -12,21 +12,37 @@ from typing import Any
 
 from riskapp_client.adapters.local_storage.sqlite_data_store import LocalStore, utc_iso
 from riskapp_client.domain.scored_entity_fields import SCORED_ENTITY_OUTBOX_ALLOWED_KEYS
+from riskapp_client.domain.sync_protocol import (
+    FailureKind,
+    acknowledged_version,
+    strict_int,
+)
 
 STATUS_PENDING = "pending"
 STATUS_RETRY = "retry"
 STATUS_BLOCKED = "blocked"
+# Changes the server has not acknowledged yet.
+_OPEN_STATUSES = (STATUS_PENDING, STATUS_RETRY, STATUS_BLOCKED)
 RETRY_DELAYS_SECONDS = (2, 5, 15, 60, 300)
-BLOCKING_FAILURE_KINDS = {
-    "conflict",
-    "validation",
-    "permission",
-    "authentication",
-    "error",
-}
+# Every kind except transient blocks a change until the user acts.
+BLOCKING_FAILURE_KINDS = set(FailureKind) - {FailureKind.TRANSIENT}
 
 # SQL fragments interpolated below are assembled only from fixed clauses or
 # generated "?" placeholders. All runtime values remain bound parameters.
+
+
+def _create_may_exist_remotely(entry: sqlite3.Row | None) -> bool:
+    """A sent create whose response was lost may already be version 1 remotely."""
+    return bool(
+        entry is not None
+        and entry["op"] == "upsert"
+        and (entry["base_version"] is not None or entry["last_attempt_at"])
+    )
+
+
+def _server_record(result: dict[str, Any]) -> dict[str, Any] | None:
+    raw = result.get("server_record")
+    return dict(raw) if isinstance(raw, dict) else None
 
 
 @dataclass(frozen=True)
@@ -216,6 +232,32 @@ class OutboxStore:
 
         return [self._blocked_row_to_dict(row) for row in rows]
 
+    def _oldest_open_entry(
+        self, project_id: str, entity: str, entity_id: str
+    ) -> sqlite3.Row | None:
+        return self.conn.execute(
+            """
+            SELECT change_id, op, base_version, status, failure_kind,
+                   last_attempt_at
+            FROM outbox
+            WHERE project_id=? AND entity=? AND entity_id=?
+              AND status IN (?, ?, ?)
+            ORDER BY created_at ASC
+            LIMIT 1
+            """,
+            (project_id, entity, str(entity_id), *_OPEN_STATUSES),
+        ).fetchone()
+
+    def _delete_open_entries(
+        self, project_id: str, entity: str, entity_id: str
+    ) -> None:
+        self.conn.execute(
+            "DELETE FROM outbox "
+            "WHERE project_id=? AND entity=? AND entity_id=? "
+            "AND status IN (?, ?, ?);",
+            (project_id, entity, str(entity_id), *_OPEN_STATUSES),
+        )
+
     def _replace_outbox_entry(
         self,
         *,
@@ -232,68 +274,32 @@ class OutboxStore:
         # Squash and replacement are one transaction. This joins an active
         # service transaction so the domain row and outbox row commit together.
         with self._store.write_transaction():
-            cur = self.conn.cursor()
-            existing = cur.execute(
-                """
-                SELECT change_id, op, base_version, status, failure_kind,
-                       last_attempt_at
-                FROM outbox
-                WHERE project_id=? AND entity=? AND entity_id=?
-                  AND status IN (?, ?, ?)
-                ORDER BY created_at ASC
-                LIMIT 1
-                """,
-                (
-                    project_id,
-                    entity,
-                    entity_id,
-                    STATUS_PENDING,
-                    STATUS_RETRY,
-                    STATUS_BLOCKED,
-                ),
-            ).fetchone()
+            existing = (
+                None
+                if force_rebase
+                else self._oldest_open_entry(project_id, entity, entity_id)
+            )
             if (
                 existing is not None
-                and not force_rebase
                 and existing["status"] == STATUS_BLOCKED
                 and existing["failure_kind"] == "conflict"
             ):
                 # Editing the local copy does not resolve the conflict. Keep the
                 # saved server outcome and receipt ID while refreshing "mine".
-                cur.execute(
+                self.conn.execute(
                     "UPDATE outbox SET op=?, record_json=? WHERE change_id=?;",
                     (op, record_json, existing["change_id"]),
                 )
                 return str(existing["change_id"])
 
-            effective_base_version = base_version
-            if existing is not None and not force_rebase:
+            if existing is not None:
                 # Squashing another local edit must retain the version on which
                 # the first unacknowledged edit was based.
-                effective_base_version = existing["base_version"]
-                if (
-                    effective_base_version is None
-                    and existing["op"] == "upsert"
-                    and existing["last_attempt_at"]
-                ):
-                    # A version-zero create may already have committed remotely
-                    # even though its response was lost. Any replacement edit is
-                    # therefore based on the first possible server version.
-                    effective_base_version = 1
-            cur.execute(
-                "DELETE FROM outbox "
-                "WHERE project_id=? AND entity=? AND entity_id=? "
-                "AND status IN (?, ?, ?);",
-                (
-                    project_id,
-                    entity,
-                    entity_id,
-                    STATUS_PENDING,
-                    STATUS_RETRY,
-                    STATUS_BLOCKED,
-                ),
-            )
-            cur.execute(
+                base_version = existing["base_version"]
+                if base_version is None and _create_may_exist_remotely(existing):
+                    base_version = 1
+            self._delete_open_entries(project_id, entity, entity_id)
+            self.conn.execute(
                 """
                 INSERT INTO outbox (
                     change_id, project_id, entity, op, entity_id,
@@ -307,7 +313,7 @@ class OutboxStore:
                     entity,
                     op,
                     entity_id,
-                    effective_base_version,
+                    base_version,
                     record_json,
                     STATUS_PENDING,
                     utc_iso(),
@@ -360,48 +366,15 @@ class OutboxStore:
         the correct remote net effect is no-op.
         """
         with self._store.write_transaction():
-            self.conn.execute(
-                """
-                DELETE FROM outbox
-                WHERE project_id=? AND entity=? AND entity_id=?
-                  AND status IN (?, ?, ?);
-                """,
-                (
-                    project_id,
-                    entity,
-                    str(entity_id),
-                    STATUS_PENDING,
-                    STATUS_RETRY,
-                    STATUS_BLOCKED,
-                ),
-            )
+            self._delete_open_entries(project_id, entity, entity_id)
 
     def remote_create_may_exist(
         self, project_id: str, *, entity: str, entity_id: str
     ) -> bool:
         """Return whether a version-zero create may already exist remotely."""
-        row = self.conn.execute(
-            """
-            SELECT op, base_version, last_attempt_at
-            FROM outbox
-            WHERE project_id=? AND entity=? AND entity_id=?
-              AND status IN (?, ?, ?)
-            ORDER BY created_at ASC
-            LIMIT 1
-            """,
-            (
-                project_id,
-                entity,
-                str(entity_id),
-                STATUS_PENDING,
-                STATUS_RETRY,
-                STATUS_BLOCKED,
-            ),
-        ).fetchone()
-        return bool(
-            row is not None
-            and row["op"] == "upsert"
-            and (row["base_version"] is not None or row["last_attempt_at"])
+
+        return _create_may_exist_remotely(
+            self._oldest_open_entry(project_id, entity, entity_id)
         )
 
     def _queue_scored_upsert(
@@ -667,7 +640,7 @@ class OutboxStore:
                 change_id = str(result.get("change_id") or "")
                 if not change_id or result.get("status") != "accepted":
                     continue
-                row = self.conn.execute(
+                sent = self.conn.execute(
                     """
                     SELECT entity, entity_id
                     FROM outbox
@@ -675,118 +648,93 @@ class OutboxStore:
                     """,
                     (change_id, project_id),
                 ).fetchone()
-                result_entity = str(result.get("entity") or "")
-                result_entity_id = str(result.get("entity_id") or "")
-                if row is not None:
-                    entity = str(row["entity"])
-                    entity_id = str(row["entity_id"])
-                    if result_entity not in {"", entity} or result_entity_id not in {
-                        "",
-                        entity_id,
-                    }:
-                        raise RuntimeError("Push acknowledgement does not match outbox")
-                else:
-                    # A newer local edit can replace a sent receipt. The result
-                    # still advances that replacement's base version, but must
-                    # never overwrite its editable field values.
-                    entity = result_entity
-                    entity_id = result_entity_id
-                    if not entity or not entity_id:
-                        continue
-
-                raw_version = result.get("server_version")
-                server_version: int | None = (
-                    raw_version
-                    if isinstance(raw_version, int)
-                    and not isinstance(raw_version, bool)
-                    else None
-                )
-                raw_record = result.get("server_record")
-                server_record: dict[str, Any] | None = (
-                    dict(raw_record) if isinstance(raw_record, dict) else None
-                )
-                if row is not None:
-                    self.conn.execute(
-                        "DELETE FROM outbox WHERE change_id=?;", (change_id,)
-                    )
-                    self._store.apply_push_acknowledgement(
-                        project_id,
-                        entity=entity,
-                        entity_id=entity_id,
-                        server_version=server_version,
-                        server_record=server_record,
-                    )
-                else:
-                    replacement = self.conn.execute(
-                        """
-                        SELECT change_id, base_version, record_json
-                        FROM outbox
-                        WHERE project_id=? AND entity=? AND entity_id=?
-                          AND status IN (?, ?)
-                        ORDER BY created_at ASC
-                        LIMIT 1
-                        """,
-                        (
-                            project_id,
-                            entity,
-                            entity_id,
-                            STATUS_PENDING,
-                            STATUS_RETRY,
-                        ),
-                    ).fetchone()
-                    if replacement is None:
-                        continue
-                    raw_receipt_version = result.get("receipt_server_version")
-                    replacement_version = (
-                        raw_receipt_version
-                        if bool(result.get("replayed"))
-                        and isinstance(raw_receipt_version, int)
-                        and not isinstance(raw_receipt_version, bool)
-                        else server_version
-                    )
-                    current_base = int(replacement["base_version"] or 0)
-                    advanced_base = max(
-                        current_base,
-                        int(replacement_version or 0),
-                    )
-                    replacement_record = self._safe_json_loads(
-                        replacement["record_json"]
-                    )
-                    if (
-                        entity in {"risk", "opportunity"}
-                        and server_record is not None
-                        and "code" in server_record
-                    ):
-                        replacement_record["code"] = server_record.get("code")
-                    self.conn.execute(
-                        "UPDATE outbox SET base_version=?, record_json=? "
-                        "WHERE change_id=?;",
-                        (
-                            advanced_base or None,
-                            json.dumps(replacement_record),
-                            replacement["change_id"],
-                        ),
-                    )
-                    metadata_record = server_record
-                    if (
-                        bool(result.get("replayed"))
-                        and replacement_version != server_version
-                        and server_record is not None
-                    ):
-                        metadata_record = {
-                            key: server_record[key]
-                            for key in ("id", "project_id", "code")
-                            if key in server_record
-                        }
-                    self._store.advance_push_acknowledgement(
-                        project_id,
-                        entity=entity,
-                        entity_id=entity_id,
-                        server_version=replacement_version,
-                        server_record=metadata_record,
-                    )
+                if sent is not None:
+                    self._acknowledge_sent(project_id, change_id, sent, result)
+                elif not self._advance_replacement(project_id, result):
+                    continue
                 acknowledged += 1
         return acknowledged
+
+    def _acknowledge_sent(
+        self,
+        project_id: str,
+        change_id: str,
+        sent: sqlite3.Row,
+        result: dict[str, Any],
+    ) -> None:
+        """Apply the server row for a receipt that is still queued, then drop it."""
+        entity = str(sent["entity"])
+        entity_id = str(sent["entity_id"])
+        if str(result.get("entity") or "") not in {"", entity} or str(
+            result.get("entity_id") or ""
+        ) not in {"", entity_id}:
+            raise RuntimeError("Push acknowledgement does not match outbox")
+        self.conn.execute("DELETE FROM outbox WHERE change_id=?;", (change_id,))
+        self._store.apply_push_acknowledgement(
+            project_id,
+            entity=entity,
+            entity_id=entity_id,
+            server_version=strict_int(result.get("server_version")),
+            server_record=_server_record(result),
+        )
+
+    def _advance_replacement(self, project_id: str, result: dict[str, Any]) -> bool:
+        """Rebase the newer local edit that replaced an acknowledged receipt.
+
+        The result still advances that replacement's base version, but must
+        never overwrite its editable field values.
+        """
+        entity = str(result.get("entity") or "")
+        entity_id = str(result.get("entity_id") or "")
+        if not entity or not entity_id:
+            return False
+        replacement = self.conn.execute(
+            """
+            SELECT change_id, base_version, record_json
+            FROM outbox
+            WHERE project_id=? AND entity=? AND entity_id=?
+              AND status IN (?, ?)
+            ORDER BY created_at ASC
+            LIMIT 1
+            """,
+            (project_id, entity, entity_id, STATUS_PENDING, STATUS_RETRY),
+        ).fetchone()
+        if replacement is None:
+            return False
+        server_version = strict_int(result.get("server_version"))
+        server_record = _server_record(result)
+        version = acknowledged_version(result)
+        record = self._safe_json_loads(replacement["record_json"])
+        if (
+            entity in {"risk", "opportunity"}
+            and server_record is not None
+            and "code" in server_record
+        ):
+            record["code"] = server_record.get("code")
+        base_version = max(int(replacement["base_version"] or 0), int(version or 0))
+        self.conn.execute(
+            "UPDATE outbox SET base_version=?, record_json=? WHERE change_id=?;",
+            (base_version or None, json.dumps(record), replacement["change_id"]),
+        )
+        if (
+            result.get("replayed")
+            and version != server_version
+            and server_record is not None
+        ):
+            # A replay's current row may hold later edits; keep only identity.
+            server_record = {
+                key: server_record[key]
+                for key in ("id", "project_id", "code")
+                if key in server_record
+            }
+        self._store.advance_push_acknowledgement(
+            project_id,
+            entity=entity,
+            entity_id=entity_id,
+            server_version=version,
+            server_record=server_record,
+        )
+        return True
 
     def _encode_failure(
         self, err: str | dict[str, Any]

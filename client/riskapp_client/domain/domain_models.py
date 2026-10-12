@@ -23,6 +23,14 @@ def _int_or_none(value: Any) -> int | None:
         return None
 
 
+def unique_project_name(name: str, taken: set[str]) -> str:
+    """Return ``name``, or ``name (2)``, ``name (3)``... if it is already taken."""
+    candidate, n = name, 2
+    while candidate in taken:
+        candidate, n = f"{name} ({n})", n + 1
+    return candidate
+
+
 @dataclass
 class Member:
 

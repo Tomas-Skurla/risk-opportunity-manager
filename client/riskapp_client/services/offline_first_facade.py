@@ -18,7 +18,9 @@ from riskapp_client.domain.domain_models import (
     Opportunity,
     Project,
     Risk,
+    unique_project_name,
 )
+from riskapp_client.domain.sync_protocol import classify_http_status
 from riskapp_client.services.action_management_service import ActionService
 from riskapp_client.services.assessment_management_service import AssessmentService
 from riskapp_client.services.entity_filters import (
@@ -32,10 +34,7 @@ from riskapp_client.services.scored_entity_management_service import (
     ScoredEntityService,
     ScoredEntityWiring,
 )
-from riskapp_client.services.synchronization_service import (
-    SyncService,
-    classify_http_status,
-)
+from riskapp_client.services.synchronization_service import SyncService
 
 
 def _optional_callable(
@@ -314,11 +313,7 @@ class OfflineFirstBackend(Backend):
         if self.remote:
             try:
                 existing_names = {p.name for p in (self.remote.list_projects() or [])}
-                if name in existing_names:
-                    n = 2
-                    while f"{name} ({n})" in existing_names:
-                        n += 1
-                    name = f"{name} ({n})"
+                name = unique_project_name(name, existing_names)
             except AttributeError, KeyError:
                 logging.getLogger(__name__).debug(
                     "Duplicate project name check failed", exc_info=True
@@ -327,13 +322,8 @@ class OfflineFirstBackend(Backend):
             self.store.upsert_projects([project])
             return project
         local_names = {p.name for p in self.store.list_projects()}
-        if name in local_names:
-            n = 2
-            while f"{name} ({n})" in local_names:
-                n += 1
-            name = f"{name} ({n})"
         return self.store.create_local_project(
-            name=name,
+            name=unique_project_name(name, local_names),
             description=description,
             created_by="" if self.anonymous_offline else None,
         )
