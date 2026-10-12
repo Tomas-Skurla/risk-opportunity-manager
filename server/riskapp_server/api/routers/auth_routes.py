@@ -23,7 +23,8 @@ from riskapp_server.core.config import (
 )
 from riskapp_server.core.password_policy import validate_password
 from riskapp_server.core.rate_limit import InMemorySlidingWindowLimiter
-from riskapp_server.db.session import User, get_db
+from riskapp_server.db.models import User
+from riskapp_server.db.session import get_db
 from riskapp_server.schemas.models import RefreshIn, RegisterIn, TokenOut
 
 router = APIRouter(tags=["auth"])

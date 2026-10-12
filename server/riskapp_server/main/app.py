@@ -19,7 +19,7 @@ from riskapp_server.api.routers.actions import router as actions_router
 from riskapp_server.api.routers.admin import router as admin_router
 from riskapp_server.api.routers.auth_routes import router as auth_router
 from riskapp_server.api.routers.helpdesk import router as helpdesk_router
-from riskapp_server.api.routers.items import router as items_router
+from riskapp_server.api.routers.items import opportunities_router, risks_router
 from riskapp_server.api.routers.matrix import router as matrix_router
 from riskapp_server.api.routers.projects import router as projects_router
 from riskapp_server.api.routers.snapshots import router as snapshots_router
@@ -55,7 +55,8 @@ ROUTERS = (
     auth_router,
     users_router,
     projects_router,
-    items_router,
+    risks_router,
+    opportunities_router,
     actions_router,
     matrix_router,
     snapshots_router,

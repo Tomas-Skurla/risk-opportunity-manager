@@ -1,27 +1,23 @@
+"""Derived score fields for risks, opportunities and assessments."""
+
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Any
+
+_IMPACT_DIMENSIONS = ("impact_cost", "impact_time", "impact_scope", "impact_quality")
 
 
-class _ScoredItem(Protocol):
-    """Writable score fields shared by items and assessments."""
+def recalculate_item_scores(item: Any) -> None:
+    """Set impact to the highest impact dimension and score to probability x impact.
 
-    probability: int
-    impact: int
-    score: int
+    The sync engine calls this for every row it writes, so rows without
+    probability and impact, such as actions and tickets, are left unchanged.
+    """
 
-
-def recalculate_item_scores(item: _ScoredItem) -> None:
     if not (hasattr(item, "probability") and hasattr(item, "impact")):
         return
-
-    dims = (
-        getattr(item, "impact_cost", None),
-        getattr(item, "impact_time", None),
-        getattr(item, "impact_scope", None),
-        getattr(item, "impact_quality", None),
-    )
-    valid = [int(v) for v in dims if v is not None]
+    dimensions = [getattr(item, key, None) for key in _IMPACT_DIMENSIONS]
+    valid = [int(value) for value in dimensions if value is not None]
     if valid:
         item.impact = max(valid)
 

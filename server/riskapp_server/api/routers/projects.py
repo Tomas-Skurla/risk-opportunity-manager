@@ -10,14 +10,8 @@ from sqlalchemy.sql.functions import count
 
 from riskapp_server.auth.service import get_current_user
 from riskapp_server.core.permissions import ensure_member, require_min_role
-from riskapp_server.db.session import (
-    Project,
-    ProjectMember,
-    Role,
-    User,
-    get_db,
-    utcnow,
-)
+from riskapp_server.db.models import Project, ProjectMember, Role, User, utcnow
+from riskapp_server.db.session import get_db
 from riskapp_server.schemas.models import (
     AddMemberIn,
     MemberOut,

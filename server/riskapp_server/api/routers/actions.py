@@ -10,16 +10,16 @@ from sqlalchemy.orm import Session
 from riskapp_server.auth.service import get_current_user
 from riskapp_server.core.items_crud import claim_base_version, delete_item
 from riskapp_server.core.permissions import ensure_member, require_min_role
-from riskapp_server.db.session import (
+from riskapp_server.db.models import (
     Action,
     ActionKind,
     ActionStatus,
     Item,
     Role,
     User,
-    get_db,
     utcnow,
 )
+from riskapp_server.db.session import get_db
 from riskapp_server.schemas.models import ActionCreate, ActionOut, ActionUpdate
 
 router = APIRouter(tags=["actions"])

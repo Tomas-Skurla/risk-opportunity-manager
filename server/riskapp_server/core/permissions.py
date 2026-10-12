@@ -8,7 +8,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from riskapp_server.db.session import ProjectMember, Role, User
+from riskapp_server.db.models import ProjectMember, Role, User
 
 ROLE_RANK: dict[str, int] = {
     Role.viewer.value: 1,

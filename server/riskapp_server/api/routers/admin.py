@@ -22,7 +22,7 @@ from riskapp_server.auth.service import (
     set_user_password,
 )
 from riskapp_server.core.config import RETENTION_DAYS, SYNC_RECEIPT_RETENTION_DAYS
-from riskapp_server.db.session import (
+from riskapp_server.db.models import (
     Action,
     Assessment,
     AuditLog,
@@ -33,9 +33,9 @@ from riskapp_server.db.session import (
     ScoreSnapshot,
     SyncReceipt,
     User,
-    get_db,
     utcnow,
 )
+from riskapp_server.db.session import get_db
 from riskapp_server.schemas.models import AdminSetPasswordIn
 
 router = APIRouter(

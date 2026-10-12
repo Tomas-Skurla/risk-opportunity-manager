@@ -10,7 +10,8 @@ from sqlalchemy.orm import Session
 from riskapp_server.auth.service import get_current_user
 from riskapp_server.core.config import SNAPSHOT_INSERT_CHUNK
 from riskapp_server.core.permissions import ensure_member, require_min_role
-from riskapp_server.db.session import Item, Role, ScoreSnapshot, User, get_db, utcnow
+from riskapp_server.db.models import Item, Role, ScoreSnapshot, User, utcnow
+from riskapp_server.db.session import get_db
 from riskapp_server.schemas.models import (
     SnapshotCreateOut,
     SnapshotLatestOut,
@@ -49,7 +50,7 @@ def create_snapshot(
     counts = {"risk": 0, "opportunity": 0}
 
     chunk: list[dict] = []
-    chunk_size = max(100, int(SNAPSHOT_INSERT_CHUNK or 1000))
+    chunk_size = SNAPSHOT_INSERT_CHUNK
 
     def flush_chunk() -> None:
         nonlocal chunk
