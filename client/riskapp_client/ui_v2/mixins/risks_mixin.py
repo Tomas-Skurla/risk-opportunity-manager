@@ -10,15 +10,11 @@ from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import QModelIndex
 from riskapp_client.adapters.export import csv_data_exporter as export_csv
-from riskapp_client.services import entity_filters as filters
 from riskapp_client.ui_v2.mixins.scored_entity_mixin import ScoredEntityMixin
 
 if TYPE_CHECKING:
     from PySide6.QtWidgets import (
-        QComboBox,
         QLabel,
-        QLineEdit,
-        QSpinBox,
         QTableWidget,
         QTableWidgetItem,
     )
@@ -34,15 +30,6 @@ class RisksMixin(ScoredEntityMixin):
     current_project_id: str | None
     current_risk_id: str | None
     editor_label: QLabel
-    filter_category: QLineEdit
-    filter_from: QLineEdit
-    filter_max_score: QSpinBox
-    filter_min_score: QSpinBox
-    filter_owner: QComboBox
-    filter_report: QLabel
-    filter_search: QLineEdit
-    filter_status: QComboBox
-    filter_to: QLineEdit
     risk_form: RiskForm
     risks_tab: RisksTab
     risks_table: QTableWidget
@@ -68,30 +55,12 @@ class RisksMixin(ScoredEntityMixin):
         pid = self.current_project_id
         if not pid:
             return
-        filters_dict = {
-            "min_score": self.filter_min_score,
-            "max_score": self.filter_max_score,
-            "search": self.filter_search,
-            "status": self.filter_status,
-            "category": self.filter_category,
-            "owner": self.filter_owner,
-            "from_date": self.filter_from,
-            "to_date": self.filter_to,
-        }
+
         res = self._refresh_entity(
             pid,
+            self.risks_tab,
             self.backend.list_risks,
-            filters.filter_risks,
-            filters.ScoredFilterCriteria,
-            self.filter_report,
-            self.risks_table,
-            filters_dict,
-            self._mk_item,
-            (
-                getattr(self.backend, "risks_report", None)
-                if use_remote_report
-                else None
-            ),
+            getattr(self.backend, "risks_report", None) if use_remote_report else None,
             select_id,
         )
         if res is not None:

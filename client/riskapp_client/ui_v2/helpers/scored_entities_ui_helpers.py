@@ -6,7 +6,8 @@ code small and consistent.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections import Counter
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
 from typing import Any, Protocol
 
@@ -18,7 +19,96 @@ from PySide6.QtWidgets import (
     QTableWidgetItem,
 )  # pylint: disable=no-name-in-module
 
+from riskapp_client.domain.scored_entity_fields import ALL_STATUSES, DEFAULT_STATUS
 from riskapp_client.services import entity_filters as filters
+
+
+def _top_categories(counts: Mapping[str, Any]) -> list[str]:
+    ranked = sorted(counts.items(), key=lambda kv: int(kv[1] or 0), reverse=True)[:3]
+    names = [f"{c} {n}" for c, n in ranked if c and c != "(none)" and int(n or 0) > 0]
+    return [f"Top categories: {', '.join(names)}"] if names else []
+
+
+def server_report_lines(
+    report: Mapping[str, Any], shown: int, full_count: int
+) -> list[str]:
+    """Format server statistics alongside the visible and loaded local counts."""
+    matching_total = report.get("total")
+    project_total = report.get("project_total")
+
+    matching_count_text = "?"
+    if matching_total is not None:
+        matching_count_text = str(int(matching_total))
+
+    project_count_text = "?"
+    if project_total is not None:
+        project_count_text = str(int(project_total))
+
+    summary = (
+        f"Local {shown}/{full_count} · "
+        f"Server {matching_count_text}/{project_count_text}"
+    )
+    average_score = report.get("avg_score")
+    if average_score is not None:
+        minimum_score = report.get("min_score")
+        maximum_score = report.get("max_score")
+        summary += (
+            f" · score min {minimum_score} · max {maximum_score}"
+            f" · avg {float(average_score):.1f}"
+        )
+    lines = [summary]
+    status_counts = report.get("status_counts") or {}
+    status_labels = []
+    for status in ALL_STATUSES:
+        status_count = status_counts.get(status, 0)
+        if int(status_count or 0) > 0:
+            status_labels.append(f"{status} {status_count}")
+
+    if status_labels:
+        lines.append(f"Status: {', '.join(status_labels)}")
+
+    category_counts = report.get("category_counts") or {}
+    lines.extend(_top_categories(category_counts))
+    return lines
+
+
+def local_report_lines(items: Sequence[Any], full_count: int) -> list[str]:
+    """Calculate statistics for the visible rows; the caller handles empty tables."""
+    scores: list[int] = []
+    status_counts: Counter[str] = Counter()
+    category_counts: Counter[str] = Counter()
+
+    for item in items:
+        score = int(getattr(item, "score", 0) or 0)
+        status = getattr(item, "status", None) or DEFAULT_STATUS
+        category = getattr(item, "category", None) or "(none)"
+
+        scores.append(score)
+        status_counts[status] += 1
+        category_counts[category] += 1
+
+    minimum_score = min(scores)
+    maximum_score = max(scores)
+    average_score = sum(scores) / len(scores)
+    lines = [
+        f"Showing {len(items)}/{full_count} · score min {minimum_score}"
+        f" · max {maximum_score} · avg {average_score:.1f}"
+    ]
+
+    status_labels = []
+    for status in ALL_STATUSES:
+        status_count = status_counts[status]
+        if status_count > 0:
+            status_labels.append(f"{status} {status_count}")
+
+    # Keep the standard status order, then list custom statuses by frequency.
+    for status, status_count in status_counts.most_common():
+        if status not in ALL_STATUSES:
+            status_labels.append(f"{status} {status_count}")
+
+    lines.append(f"Status: {', '.join(status_labels)}")
+    lines.extend(_top_categories(category_counts))
+    return lines
 
 
 class _ScoredEntity(Protocol):

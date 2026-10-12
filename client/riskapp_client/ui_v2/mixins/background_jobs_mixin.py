@@ -122,11 +122,9 @@ class BackgroundJobsMixin:
             if kind == "sync":
                 self.project_list.setEnabled(False)
             self.sync_btn.setEnabled(False)
-            if hasattr(self, "conflicts_btn"):
-                self.conflicts_btn.setEnabled(False)
-            if hasattr(self, "top_tab"):
-                self.top_tab.snapshot_btn.setEnabled(False)
-                self.top_tab.refresh_top_btn.setEnabled(False)
+            self.conflicts_btn.setEnabled(False)
+            self.top_tab.snapshot_btn.setEnabled(False)
+            self.top_tab.refresh_top_btn.setEnabled(False)
             label = {
                 "sync": "Synchronizing",
                 "automatic_sync": "Synchronizing automatically",
@@ -136,8 +134,7 @@ class BackgroundJobsMixin:
             self.sync_status.setText(f"Sync: {label}…")
         else:
             self.project_list.setEnabled(True)
-            if hasattr(self, "top_tab"):
-                self.top_tab.refresh_top_btn.setEnabled(True)
+            self.top_tab.refresh_top_btn.setEnabled(True)
             self._update_sync_status()
             self._apply_permissions()
 

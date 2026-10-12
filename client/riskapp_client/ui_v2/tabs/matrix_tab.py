@@ -21,6 +21,12 @@ from riskapp_client.ui_v2.components.custom_gui_widgets import (
 from riskapp_client.ui_v2.ui.ui_matrix_tab import Ui_Form as Ui_MatrixTab
 
 
+def matrix_kinds(text: str) -> tuple[bool, bool]:
+    """(show risks, show opportunities) for the kind selector's text."""
+    kind = (text or "Risks").strip().lower()
+    return kind != "opportunities", kind in ("opportunities", "both")
+
+
 class MatrixTab(QWidget):
     """Probability x Impact matrix view."""
 
@@ -81,19 +87,8 @@ class MatrixTab(QWidget):
         )
 
     def set_kind(self, text: str) -> None:
-        kind = (text or "Risks").strip().lower()
-        if kind == "opportunities":
-            self.risks_label.hide()
-            self.risks_matrix_table.hide()
-            self.opps_label.show()
-            self.opps_matrix_table.show()
-        elif kind == "both":
-            self.risks_label.show()
-            self.risks_matrix_table.show()
-            self.opps_label.show()
-            self.opps_matrix_table.show()
-        else:
-            self.risks_label.show()
-            self.risks_matrix_table.show()
-            self.opps_label.hide()
-            self.opps_matrix_table.hide()
+        show_risks, show_opps = matrix_kinds(text)
+        self.risks_label.setVisible(show_risks)
+        self.risks_matrix_table.setVisible(show_risks)
+        self.opps_label.setVisible(show_opps)
+        self.opps_matrix_table.setVisible(show_opps)

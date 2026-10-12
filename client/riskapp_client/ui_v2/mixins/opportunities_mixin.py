@@ -9,15 +9,11 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from riskapp_client.adapters.export import csv_data_exporter as export_csv
-from riskapp_client.services import entity_filters as filters
 from riskapp_client.ui_v2.mixins.scored_entity_mixin import ScoredEntityMixin
 
 if TYPE_CHECKING:
     from PySide6.QtWidgets import (
-        QComboBox,
         QLabel,
-        QLineEdit,
-        QSpinBox,
         QTableWidget,
         QTableWidgetItem,
     )
@@ -33,15 +29,6 @@ class OpportunitiesMixin(ScoredEntityMixin):
     current_opportunity_id: str | None
     current_project_id: str | None
     opp_editor_label: QLabel
-    opp_filter_category: QLineEdit
-    opp_filter_from: QLineEdit
-    opp_filter_max_score: QSpinBox
-    opp_filter_min_score: QSpinBox
-    opp_filter_owner: QComboBox
-    opp_filter_report: QLabel
-    opp_filter_search: QLineEdit
-    opp_filter_status: QComboBox
-    opp_filter_to: QLineEdit
     opp_form: RiskForm
     opps_tab: OpportunitiesTab
     opps_table: QTableWidget
@@ -86,25 +73,10 @@ class OpportunitiesMixin(ScoredEntityMixin):
         pid = self.current_project_id
         if not pid:
             return
-        filters_dict = {
-            "min_score": self.opp_filter_min_score,
-            "max_score": self.opp_filter_max_score,
-            "search": self.opp_filter_search,
-            "status": self.opp_filter_status,
-            "category": self.opp_filter_category,
-            "owner": self.opp_filter_owner,
-            "from_date": self.opp_filter_from,
-            "to_date": self.opp_filter_to,
-        }
         res = self._refresh_entity(
             pid,
+            self.opps_tab,
             self.backend.list_opportunities,
-            filters.filter_opportunities,
-            filters.ScoredFilterCriteria,
-            self.opp_filter_report,
-            self.opps_table,
-            filters_dict,
-            self._mk_item,
             (
                 getattr(self.backend, "opportunities_report", None)
                 if use_remote_report

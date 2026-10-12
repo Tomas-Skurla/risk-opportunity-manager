@@ -527,8 +527,8 @@ def test_scored_entity_helpers_permissions_and_export(monkeypatch, qtbot) -> Non
     assert exports == [("/tmp/interview.csv", ["risk-1", "risk-2"])]
 
     assert window._owner_filter_value(object()) == (None, False)
-    window.filter_owner.setCurrentIndex(1)
-    assert window._owner_filter_value(window.filter_owner) == (None, True)
+    window.risks_tab.filter_owner.setCurrentIndex(1)
+    assert window._owner_filter_value(window.risks_tab.filter_owner) == (None, True)
 
     window.current_role = "member"
     warnings: list[str] = []

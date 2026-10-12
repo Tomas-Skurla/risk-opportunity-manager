@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any, cast
 
 from PySide6.QtCore import Qt
@@ -14,13 +14,39 @@ from PySide6.QtWidgets import (
     QTableWidget,
     QWidget,
 )
+from riskapp_client.services import entity_filters as filters
 from riskapp_client.ui_v2.helpers.scored_entities_ui_helpers import (
     date_bounds,
     form_values_for_entity,
+    local_report_lines,
     populate_scored_table,
     score_bounds,
+    server_report_lines,
 )
 from riskapp_client.utils.normalize import norm_optional_text_fields
+
+_OPTIONAL_TEXT_FIELDS = (
+    "code",
+    "description",
+    "category",
+    "threat",
+    "triggers",
+    "mitigation_plan",
+    "document_url",
+    "owner_user_id",
+    "status",
+    "identified_at",
+    "status_changed_at",
+    "response_at",
+    "occurred_at",
+)
+_FORM_FIELDS = (
+    "impact_cost",
+    "impact_time",
+    "impact_scope",
+    "impact_quality",
+    *_OPTIONAL_TEXT_FIELDS,
+)
 
 
 class ScoredEntityMixin:
@@ -29,9 +55,26 @@ class ScoredEntityMixin:
     current_project_id: str | None
     _call_backend: Callable[..., Any]
     _can_mark_deleted: Callable[[], bool]
+    _mk_item: Callable[..., Any]
     _select_row_by_entity_id: Callable[..., None]
-    _update_scored_filter_report: Callable[..., None]
     _update_sync_status: Callable[[], None]
+
+    @staticmethod
+    def _update_scored_filter_report(
+        label: QLabel,
+        full_count: int,
+        filtered: Sequence[object],
+        *,
+        server_report: dict | None = None,
+    ) -> None:
+        """Show the server's stats when it sent them, else stats for `filtered`."""
+        if server_report:
+            lines = server_report_lines(server_report, len(filtered), full_count)
+        elif filtered:
+            lines = local_report_lines(filtered, full_count)
+        else:
+            lines = [f"Showing 0/{full_count}"]
+        label.setText("<br>".join(lines))
 
     def _export_entity_csv(
         self,
@@ -55,48 +98,45 @@ class ScoredEntityMixin:
     def _refresh_entity(
         self,
         pid: str,
+        tab: Any,
         list_backend_fn: Callable[..., Any],
-        filter_fn: Callable[..., Any],
-        criteria_cls: Callable[..., Any],
-        report_widget: Any,
-        table_widget: QTableWidget,
-        filters_dict: dict[str, Any],
-        mk_item_fn: Callable[..., Any],
         report_backend_fn: Callable[..., Any] | None = None,
         select_id: str | None = None,
     ) -> dict[str, Any] | None:
         full = self._call_backend("Backend error", list_backend_fn, pid)
         if full is None:
             return None
-        mn, mx = score_bounds(filters_dict["min_score"], filters_dict["max_score"])
-        dt_from, dt_to = date_bounds(filters_dict["from_date"], filters_dict["to_date"])
-        criteria = criteria_cls(
-            search=(filters_dict["search"].text() or ""),
-            min_score=mn,
-            max_score=mx,
-            status=(filters_dict["status"].currentText() or "(any)"),
-            category_contains=(filters_dict["category"].text() or ""),
-            owner_user_id=self._owner_filter_value(filters_dict["owner"])[0],
-            owner_unassigned=self._owner_filter_value(filters_dict["owner"])[1],
-            identified_from=dt_from,
-            identified_to=dt_to,
+        mn, mx = score_bounds(tab.filter_min_score, tab.filter_max_score)
+        dt_from, dt_to = date_bounds(tab.filter_from, tab.filter_to)
+        search = tab.filter_search.text() or ""
+        status = tab.filter_status.currentText() or "(any)"
+        category = tab.filter_category.text() or ""
+        owner_id, owner_unassigned = self._owner_filter_value(tab.filter_owner)
+        filtered = filters.filter_scored(
+            full,
+            filters.ScoredFilterCriteria(
+                search=search,
+                min_score=mn,
+                max_score=mx,
+                status=status,
+                category_contains=category,
+                owner_user_id=owner_id,
+                owner_unassigned=owner_unassigned,
+                identified_from=dt_from,
+                identified_to=dt_to,
+            ),
         )
-        filtered = filter_fn(full, criteria)
         server_report = None
         if report_backend_fn is not None:
             try:
-                status = (filters_dict["status"].currentText() or "(any)").strip()
-                status_q = None if status == "(any)" else status
-                owner_id, owner_unassigned = self._owner_filter_value(
-                    filters_dict["owner"]
-                )
+
                 server_report = report_backend_fn(
                     pid,
-                    search=(filters_dict["search"].text() or "") or None,
+                    search=search or None,
                     min_score=(mn if mn > 0 else None),
                     max_score=(mx if mx < 25 else None),
-                    status=status_q,
-                    category=(filters_dict["category"].text() or "") or None,
+                    status=None if status.strip() == "(any)" else status.strip(),
+                    category=category or None,
                     owner_user_id=owner_id,
                     owner_unassigned=bool(owner_unassigned),
                     from_date=(dt_from.date().isoformat() if dt_from else None),
@@ -105,10 +145,10 @@ class ScoredEntityMixin:
             except AttributeError, RuntimeError:
                 server_report = None
         self._update_scored_filter_report(
-            report_widget, len(full), list(filtered), server_report=server_report
+            tab.filter_report, len(full), filtered, server_report=server_report
         )
-        cache = populate_scored_table(table_widget, list(filtered), mk_item=mk_item_fn)
-        self._select_row_by_entity_id(select_id, table=table_widget)
+        cache = populate_scored_table(tab.table, filtered, mk_item=self._mk_item)
+        self._select_row_by_entity_id(select_id, table=tab.table)
         return cache
 
     @staticmethod
@@ -179,19 +219,8 @@ class ScoredEntityMixin:
         payload = form.get_payload()
         if not payload.get("title"):
             return False
-        st = str(payload.get("status") or "").strip().lower()
-        if st == "deleted" and hasattr(self, "_can_mark_deleted"):
-            try:
-                if not self._can_mark_deleted():
-                    QMessageBox.warning(
-                        cast(QWidget, self),
-                        "Not allowed",
-                        "Only managers (or admins) can mark an item as deleted.",
-                    )
-                    return False
-            except AttributeError, RuntimeError, ValueError:
-                logging.getLogger(__name__).debug("Editor commit failed", exc_info=True)
-                return False
+        if self._deleted_status_denied(payload.get("status")):
+            return False
         if (
             self._call_backend(
                 "Backend error",
@@ -237,6 +266,17 @@ class ScoredEntityMixin:
             refresh_fn()
             self._update_sync_status()
 
+    def _deleted_status_denied(self, status: object) -> bool:
+        """Warn and return True when the user may not set status=deleted."""
+        if str(status or "").strip().lower() != "deleted" or self._can_mark_deleted():
+            return False
+        QMessageBox.warning(
+            cast(QWidget, self),
+            "Not allowed",
+            "Only managers (or admins) can mark an item as deleted.",
+        )
+        return True
+
     def _save_entity(
         self,
         payload: dict[str, Any],
@@ -254,105 +294,46 @@ class ScoredEntityMixin:
         pid = self.current_project_id
         if not pid:
             QMessageBox.warning(
-                cast(QWidget, self),
-                "No project",
-                "Select a project first.",
+                cast(QWidget, self), "No project", "Select a project first."
             )
             return None
         data = dict(payload or {})
         title = (data.pop("title", "") or "").strip()
-        p = int(data.pop("probability", 3) or 3)
-        i = int(data.pop("impact", 3) or 3)
-        norm_optional_text_fields(
-            data,
-            [
-                "code",
-                "description",
-                "category",
-                "threat",
-                "triggers",
-                "mitigation_plan",
-                "document_url",
-                "owner_user_id",
-                "status",
-                "identified_at",
-                "status_changed_at",
-                "response_at",
-                "occurred_at",
-            ],
-        )
-        st = str(data.get("status") or "").strip().lower()
-        if st == "deleted" and hasattr(self, "_can_mark_deleted"):
-            try:
-                if not self._can_mark_deleted():
-                    QMessageBox.warning(
-                        cast(QWidget, self),
-                        "Not allowed",
-                        "Only managers (or admins) can mark an item as deleted.",
-                    )
-                    return None
-            except AttributeError, RuntimeError:
-                logging.getLogger(__name__).debug(
-                    "Deletion permission check failed", exc_info=True
-                )
-                return None
+        values = {
+            "title": title,
+            "probability": int(data.pop("probability", 3) or 3),
+            "impact": int(data.pop("impact", 3) or 3),
+        }
+        norm_optional_text_fields(data, _OPTIONAL_TEXT_FIELDS)
+        if self._deleted_status_denied(data.get("status")):
+            return None
+
         if current_id:
-            if (
-                self._call_backend(
-                    "Backend error",
-                    update_backend_fn,
-                    pid,
-                    current_id,
-                    title=title,
-                    probability=p,
-                    impact=i,
-                    base_version=base_version,
-                    **data,
-                )
-                is None
-            ):
-                return None
-            label_widget.setText(f"{label_prefix} (editing: {title})")
-        else:
-            ent = self._call_backend(
+
+            updated = self._call_backend(
                 "Backend error",
-                create_backend_fn,
+                update_backend_fn,
                 pid,
-                title=title,
-                probability=p,
-                impact=i,
+                current_id,
+                base_version=base_version,
+                **values,
                 **data,
             )
-            if ent is None:
+            if updated is None:
                 return None
-            current_id = ent.id
-            # Keep the editor on the newly created entity.
-            form.set_values(
-                title=title,
-                probability=p,
-                impact=i,
-                impact_cost=data.get("impact_cost"),
-                impact_time=data.get("impact_time"),
-                impact_scope=data.get("impact_scope"),
-                impact_quality=data.get("impact_quality"),
-                code=data.get("code"),
-                description=data.get("description"),
-                category=data.get("category"),
-                threat=data.get("threat"),
-                triggers=data.get("triggers"),
-                mitigation_plan=data.get("mitigation_plan"),
-                document_url=data.get("document_url"),
-                owner_user_id=data.get("owner_user_id"),
-                status=data.get("status"),
-                identified_at=data.get("identified_at"),
-                status_changed_at=data.get("status_changed_at"),
-                response_at=data.get("response_at"),
-                occurred_at=data.get("occurred_at"),
+        else:
+            created = self._call_backend(
+                "Backend error", create_backend_fn, pid, **values, **data
             )
-            label_widget.setText(f"{label_prefix} (editing: {title})")
+            if created is None:
+                return None
+            current_id = created.id
+            # Keep the editor on the newly created entity.
+            form.set_values(**values, **{f: data.get(f) for f in _FORM_FIELDS})
+        label_widget.setText(f"{label_prefix} (editing: {title})")
         if refresh_fn:
             refresh_fn(select_id=current_id)
-        for ref in extra_refreshes:
-            ref()
+        for refresh in extra_refreshes:
+            refresh()
         self._update_sync_status()
         return current_id

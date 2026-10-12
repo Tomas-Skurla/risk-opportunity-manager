@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from riskapp_client.domain.domain_models import Assessment
+from riskapp_client.domain.domain_models import Member
+from riskapp_client.ui_v2.components.custom_gui_widgets import fill_table
 
 if TYPE_CHECKING:
     from PySide6.QtWidgets import QTableWidgetItem
@@ -22,6 +22,9 @@ class AssessmentsMixin:
     current_project_id: str | None
     current_assessment_item_id: str | None
     current_assessment_item_type: str
+    _cached_members: list[Member]
+    _risk_title_by_id: dict[str, str]
+    _opp_title_by_id: dict[str, str]
 
     _call_backend: Callable[..., Any]
     _mk_item: Callable[..., QTableWidgetItem]
@@ -45,25 +48,9 @@ class AssessmentsMixin:
     def _refresh_assessments(self) -> None:
         tab = self.assessments_tab
         pid = self.current_project_id
-        item_id = getattr(self, "current_assessment_item_id", None)
-        item_type = getattr(self, "current_assessment_item_type", "risk")
-        # Update the header label when we can resolve the title.
-        try:
-            title = ""
-            if item_id and item_type == "risk":
-                title = (getattr(self, "_risk_title_by_id", {}) or {}).get(item_id, "")
-            elif item_id and item_type == "opportunity":
-                title = (getattr(self, "_opp_title_by_id", {}) or {}).get(item_id, "")
-            nice = "Risk" if item_type == "risk" else "Opportunity"
-            tab.target_label.setText(
-                f"Target: {nice}{(' · ' + title) if title else ''}"
-                if item_id
-                else "Target: (none)"
-            )
-        except AttributeError, RuntimeError:
-            logging.getLogger(__name__).debug(
-                "Failed to refresh assessments header", exc_info=True
-            )
+        item_id = self.current_assessment_item_id
+        item_type = self.current_assessment_item_type
+        tab.target_label.setText(self._assessment_target_text(item_type, item_id))
         tab.assessments_table.setRowCount(0)
         if not pid or not item_id:
             self._reset_assessment_form()
@@ -73,51 +60,58 @@ class AssessmentsMixin:
         )
         if assessments is None:
             return
-        my_uid = None
-        if hasattr(self.backend, "current_user_id"):
-            try:
-                my_uid = self.backend.current_user_id()
-            except AttributeError, RuntimeError:
-                my_uid = None
-        my_row: Assessment | None = None
-        # Build uid→email lookup from cached members.
-        email_by_uid: dict[str, str] = {}
-        for m in getattr(self, "_cached_members", []):
-            email_by_uid[str(m.user_id)] = m.email
-        for a in assessments:
-            row = tab.assessments_table.rowCount()
-            tab.assessments_table.insertRow(row)
-            assessor = a.assessor_user_id or ""
-            assessor_display = email_by_uid.get(
-                assessor, assessor[:8] if assessor else ""
-            )
-            tab.assessments_table.setItem(row, 0, self._mk_item(assessor_display))
-            tab.assessments_table.setItem(
-                row, 1, self._mk_item(str(a.probability), align_center=True)
-            )
-            tab.assessments_table.setItem(
-                row, 2, self._mk_item(str(a.impact), align_center=True)
-            )
-            tab.assessments_table.setItem(
-                row, 3, self._mk_item(str(a.score), align_center=True)
-            )
-            tab.assessments_table.setItem(row, 4, self._mk_item(a.notes or ""))
-            tab.assessments_table.setItem(row, 5, self._mk_item(a.updated_at or ""))
-            if my_uid and assessor == my_uid:
-                my_row = a
+
+        email_by_uid = {str(m.user_id): m.email for m in self._cached_members}
+        fill_table(
+            tab.assessments_table,
+            (
+                (
+                    self._mk_item(
+                        email_by_uid.get(
+                            a.assessor_user_id or "", (a.assessor_user_id or "")[:8]
+                        )
+                    ),
+                    self._mk_item(str(a.probability), align_center=True),
+                    self._mk_item(str(a.impact), align_center=True),
+                    self._mk_item(str(a.score), align_center=True),
+                    self._mk_item(a.notes or ""),
+                    self._mk_item(a.updated_at or ""),
+                )
+                for a in assessments
+            ),
+        )
+
         tab.assessments_table.resizeColumnsToContents()
-        if my_row:
-            tab.assess_p.setValue(int(my_row.probability))
-            tab.assess_i.setValue(int(my_row.impact))
-            tab.assess_notes.setText(my_row.notes or "")
+        my_uid = self._current_user_id()
+        mine = [
+            a for a in assessments if my_uid and (a.assessor_user_id or "") == my_uid
+        ]
+        if mine:
+            tab.assess_p.setValue(int(mine[-1].probability))
+            tab.assess_i.setValue(int(mine[-1].impact))
+            tab.assess_notes.setText(mine[-1].notes or "")
         else:
             self._reset_assessment_form()
+
+    def _assessment_target_text(self, item_type: str, item_id: str | None) -> str:
+        if not item_id:
+            return "Target: (none)"
+        titles = {"risk": self._risk_title_by_id, "opportunity": self._opp_title_by_id}
+        title = titles.get(item_type, {}).get(item_id, "")
+        noun = "Risk" if item_type == "risk" else "Opportunity"
+        return f"Target: {noun}{' · ' + title if title else ''}"
+
+    def _current_user_id(self) -> str | None:
+        try:
+            return self.backend.current_user_id()
+        except AttributeError, RuntimeError:
+            return None
 
     def _save_assessment(self) -> None:
         tab = self.assessments_tab
         pid = self.current_project_id
-        item_id = getattr(self, "current_assessment_item_id", None)
-        item_type = getattr(self, "current_assessment_item_type", "risk")
+        item_id = self.current_assessment_item_id
+        item_type = self.current_assessment_item_type
         if not pid or not item_id:
             return
         p = int(tab.assess_p.value())
