@@ -9,6 +9,7 @@ import contextlib
 import logging
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
+from sqlite3 import Error as SQLiteError
 from typing import TYPE_CHECKING, Any, cast
 
 from PySide6.QtCore import Qt  # pylint: disable=no-name-in-module
@@ -27,6 +28,7 @@ from riskapp_client.ui_v2.components.conflict_center_dialog import (
     ConflictCenterDialog,
 )
 from riskapp_client.ui_v2.components.custom_gui_widgets import NewProjectDialog
+from riskapp_client.ui_v2.window_state import MainWindowState
 
 if TYPE_CHECKING:
     from riskapp_client.ui_v2.components.custom_gui_widgets import RiskForm
@@ -44,6 +46,7 @@ _EDITOR_BASES = (
 class ProjectsSyncMixin:
     """MainWindow mixin: ProjectsSyncMixin"""
 
+    state: MainWindowState
     backend: Any
     conflicts_btn: QPushButton
     current_assessment_item_id: str | None
@@ -77,19 +80,15 @@ class ProjectsSyncMixin:
     _refresh_risks: Callable[..., Any]
     _refresh_top_history: Callable[..., Any]
     _record_automatic_sync_failure: Callable[[], None]
-    # _record_automatic_sync_success: Callable[[object], None]
     _schedule_automatic_sync: Callable[[], None]
     _start_background_job: Callable[..., bool]
     _start_new_action: Callable[..., Any]
-    # _observe_manual_sync_result: Callable[[object], None]
 
-    # BackgroundJobsMixin supplies these hooks in MainWindow. Declaring them as
-    # methods keeps sibling mixin signatures compatible for static analyzers.
-    def _record_automatic_sync_success(self, _result: object) -> None:
-        raise NotImplementedError  # pragma: no cover - mixin contract
+    if TYPE_CHECKING:
+        # Implemented by BackgroundJobsMixin in the concrete MainWindow class.
+        def _record_automatic_sync_success(self, _result: object) -> None: ...
 
-    def _observe_manual_sync_result(self, _result: object) -> None:
-        raise NotImplementedError  # pragma: no cover - mixin contract
+        def _observe_manual_sync_result(self, _result: object) -> None: ...
 
     def _format_blocked_sync_details(self, summary: dict[str, object]) -> str:
         """Format unresolved blocked sync items for display in the popup."""
@@ -171,11 +170,11 @@ class ProjectsSyncMixin:
         projects: Iterable[Project] | None = None,
         notify_selection: bool = True,
     ) -> None:
-        self.project_list.clear()
         if projects is None:
             projects = self._call_backend("Backend error", self.backend.list_projects)
         if projects is None:
             return
+        self.project_list.clear()
         # Build a uid→email map for resolving project owners.
         owner_map: dict[str, str] = {}
         try:
@@ -358,6 +357,19 @@ class ProjectsSyncMixin:
         return parsed.strftime("%Y-%m-%d %H:%M UTC")
 
     def _update_sync_status(self) -> None:
+        try:
+            self._read_sync_status()
+        except SQLiteError:
+            logging.getLogger(__name__).exception("Cannot read local sync status")
+            self.sync_btn.setEnabled(False)
+            self.sync_status.setText("Sync status unavailable: local database error")
+            self.sync_status.setToolTip(
+                "Check the application log for the database error."
+            )
+            if hasattr(self, "conflicts_btn"):
+                self.conflicts_btn.setEnabled(False)
+
+    def _read_sync_status(self) -> None:
         pid = self.current_project_id
         if self._is_unsyncable_local_project(pid):
             self.sync_btn.setEnabled(False)
@@ -411,6 +423,16 @@ class ProjectsSyncMixin:
             f"{mode} · queued: {pending} · retrying: {deferred} "
             f"· conflicts: {conflicts} "
             f"· errors: {errors} · last sync: {formatted_last_sync}"
+        )
+        if self.state.sync_errors:
+            self.sync_status.setText(
+                self.sync_status.text() + " · sync needs attention"
+            )
+        self.sync_status.setToolTip(
+            "\n".join(
+                f"{project_id}: {detail}"
+                for project_id, detail in self.state.sync_errors.items()
+            )
         )
         if hasattr(self, "conflicts_btn"):
             self.conflicts_btn.setText(f"Conflicts ({conflicts})")
@@ -500,6 +522,7 @@ class ProjectsSyncMixin:
             self._sync_failed("Synchronization returned an invalid result")
             return
         summary = dict(result)
+        self._remember_sync_errors([summary])
         self._adopt_worker_remote(summary)
         self._follow_own_saves([summary])
         self._observe_manual_sync_result(summary)
@@ -606,6 +629,21 @@ class ProjectsSyncMixin:
                 return True
         return False
 
+    def _remember_sync_errors(self, summaries: Iterable[dict[str, Any]]) -> None:
+        for summary in summaries:
+            project_id = str(summary.get("project_id") or self.current_project_id or "")
+            if not project_id:
+                continue
+            error = summary.get("sync_error")
+            if isinstance(error, dict) and not error.get("retryable", False):
+                self.state.sync_errors[project_id] = str(
+                    error.get("detail")
+                    or error.get("reason")
+                    or "Synchronization failed"
+                )
+            elif summary.get("state") == "complete":
+                self.state.sync_errors.pop(project_id, None)
+
     def _automatic_sync_succeeded(self, result: object) -> None:
         """Adopt reconnect state and refresh local views without modal dialogs."""
         if not isinstance(result, dict):
@@ -617,6 +655,7 @@ class ProjectsSyncMixin:
         recovered = self._adopt_worker_remote(summary)
         projects = summary.get("projects")
         if isinstance(projects, list):
+            self._remember_sync_errors(p for p in projects if isinstance(p, dict))
             self._follow_own_saves(p for p in projects if isinstance(p, dict))
 
         migrations = summary.get("project_id_migrations")

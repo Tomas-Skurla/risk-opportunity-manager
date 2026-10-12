@@ -103,7 +103,7 @@ class _SameOriginRedirectHandler(urllib.request.HTTPRedirectHandler):
         msg: str,
         headers: Any,
         newurl: str,
-    ) -> urllib.request.Request | None:  # noqa: D401
+    ) -> urllib.request.Request | None:
         parsed = urllib.parse.urlparse(newurl)
         if parsed.scheme and parsed.scheme != self._allowed_scheme:
             raise urllib.error.HTTPError(

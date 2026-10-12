@@ -27,6 +27,7 @@ from riskapp_client.ui_v2.window_state import MainWindowState
 
 class ProjectSyncHost(ProjectsSyncMixin):
     def __init__(self, backend) -> None:
+        self.state = MainWindowState()
         self.backend = backend
         self.current_project_id = "project-1"
         self.current_risk_id = "risk-1"
@@ -99,6 +100,7 @@ class ProjectSyncHost(ProjectsSyncMixin):
 
 class ProjectListHost(ProjectsSyncMixin):
     def __init__(self, backend) -> None:
+        self.state = MainWindowState()
         self.backend = backend
         self.project_list = QListWidget()
         self._cached_members = [Member("owner-2", "owner@example.test", "admin")]
@@ -109,6 +111,7 @@ class ProjectListHost(ProjectsSyncMixin):
 
 class MembersHost(MembersMixin):
     def __init__(self, backend) -> None:
+        self.state = MainWindowState()
         self.backend = backend
         self.current_project_id = "project-1"
         self.members_tab = MembersTab(
@@ -598,7 +601,7 @@ def test_project_list_labels_local_state_owner_and_selection(qtbot) -> None:
     assert host.project_list.currentItem().data(Qt.ItemDataRole.UserRole) == "server-1"
 
 
-def test_project_list_can_select_without_triggering_refresh(qtbot) -> None:
+def test_project_list_can_select_without_triggering_refresh(qtbot, monkeypatch) -> None:
     class Backend:
         @staticmethod
         def list_projects():
@@ -619,6 +622,12 @@ def test_project_list_can_select_without_triggering_refresh(qtbot) -> None:
         notify_selection=False,
     )
 
+    assert host.project_list.currentItem().data(Qt.ItemDataRole.UserRole) == "project-2"
+    assert not selections
+
+    monkeypatch.setattr(host, "_call_backend", lambda *_args: None)
+    host._load_projects(notify_selection=False)
+    assert host.project_list.count() == 2
     assert host.project_list.currentItem().data(Qt.ItemDataRole.UserRole) == "project-2"
     assert not selections
 
@@ -736,3 +745,45 @@ def test_members_refresh_handles_no_project_and_offline_mode(qtbot) -> None:
     host._refresh_members()
     assert host.members_tab.members_hint.text().startswith("Offline mode")
     backend.list_members.assert_not_called()
+
+
+def test_sync_attention_survives_refresh_until_affected_project_succeeds(qtbot):
+    backend = Mock()
+    backend.pending_count.return_value = 0
+    backend.conflict_count.return_value = 0
+    backend.deferred_count.return_value = 0
+    backend.error_count.return_value = 0
+    backend.last_sync_time.return_value = None
+    backend.can_sync.return_value = True
+    backend.can_auto_sync.return_value = False
+    host = ProjectSyncHost(backend)
+    host._remember_sync_errors(
+        [
+            {
+                "project_id": "project-1",
+                "state": "attention_required",
+                "sync_error": {"retryable": False, "detail": "local corruption"},
+            }
+        ]
+    )
+    host._update_sync_status()
+    assert "sync needs attention" in host.sync_status.text()
+    assert "local corruption" in host.sync_status.toolTip()
+    host._remember_sync_errors([{"project_id": "project-2", "state": "complete"}])
+    host._update_sync_status()
+    assert "sync needs attention" in host.sync_status.text()
+    host._remember_sync_errors([{"project_id": "project-1", "state": "complete"}])
+    host._update_sync_status()
+    assert "sync needs attention" not in host.sync_status.text()
+    assert host.sync_status.toolTip() == ""
+
+
+def test_sync_status_reports_database_failure_without_fake_zero_counts(qtbot):
+    import sqlite3
+
+    backend = Mock()
+    backend.pending_count.side_effect = sqlite3.DatabaseError("unreadable cache")
+    host = ProjectSyncHost(backend)
+    host._update_sync_status()
+    assert host.sync_status.text() == "Sync status unavailable: local database error"
+    assert not host.sync_btn.isEnabled()

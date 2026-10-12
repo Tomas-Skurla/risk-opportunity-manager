@@ -83,5 +83,5 @@ class AssessmentService:
         try:
             _, version = self._store.get_assessment_project_and_version(assessment_id)
             return int(version)
-        except RuntimeError, OSError, KeyError:  # noqa: BLE001
+        except RuntimeError, OSError, KeyError:
             return 0

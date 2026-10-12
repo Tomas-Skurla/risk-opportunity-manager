@@ -542,3 +542,58 @@ def test_stale_action_editor_conflicts_after_another_devices_update(
         finally:
             alice.store.close()
             bob.store.close()
+
+
+def test_cancellation_after_partial_pull_rolls_back_real_rows(local_store) -> None:
+    project = local_store.create_local_project(name="Project", project_id="project-1")
+    local_store.upsert_local_risk(
+        risk_id="risk-1",
+        project_id=project.id,
+        title="Before",
+        probability=2,
+        impact=2,
+        version=1,
+        dirty=0,
+    )
+    remote = Mock()
+    remote.sync_pull.return_value = {
+        "server_time": "2026-09-16T12:00:00",
+        "server_sequence": 2,
+        "risks": [
+            {
+                "id": "risk-1",
+                "project_id": project.id,
+                "type": "risk",
+                "title": "After",
+                "probability": 4,
+                "impact": 4,
+                "version": 2,
+                "is_deleted": False,
+                "updated_at": "2026-09-16T12:00:00",
+            }
+        ],
+        "opportunities": [],
+        "actions": [],
+        "assessments": [],
+        "helpdesk_tickets": [],
+    }
+    cancelled = False
+    original_apply = local_store.apply_pull_risks
+
+    def cancel_after_risks(*args: Any, **kwargs: Any) -> None:
+        nonlocal cancelled
+        original_apply(*args, **kwargs)
+        cancelled = True
+
+    local_store.apply_pull_risks = cancel_after_risks  # type: ignore[method-assign]
+    service = SyncService(local_store, OutboxStore(local_store), remote)
+
+    summary = service.sync_project(project.id, should_cancel=lambda: cancelled)
+    assert summary["state"] == "cancelled"
+
+    row = local_store.get_risk_row("risk-1")
+    assert row is not None
+    assert row["title"] == "Before"
+    assert row["version"] == 1
+    assert local_store.get_last_server_sequence(project.id) == 0
+    local_store.apply_pull_risks = original_apply  # type: ignore[method-assign]

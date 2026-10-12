@@ -17,3 +17,7 @@ The workflow uses Python 3.14 and the `none` build mode. It does not install app
 A successful analysis job means the scan completed. Alert-based merge protection is a separate repository setting that this workflow does not configure. CodeQL does not replace the test suite or a manual demo rehearsal.
 
 GitHub documents [advanced setup](https://docs.github.com/en/code-security/how-tos/find-and-fix-code-vulnerabilities/configure-code-scanning/configuring-advanced-setup-for-code-scanning) and [workflow options](https://docs.github.com/en/code-security/reference/code-scanning/workflow-configuration-options).
+
+## Full report on your machine
+
+`bash scripts/codeql_local.sh` runs the broader `security-and-quality` suite locally and prints every finding, so quality results never appear in public CI logs. The first run downloads the CodeQL bundle. Results are written under `~/.cache/codeql-local/`, never into the repository: `results.sarif` holds the report as printed, and `results-unfiltered.sarif` keeps CodeQL's complete output. The script lists the queries and known false positives it leaves out, each with its reason.

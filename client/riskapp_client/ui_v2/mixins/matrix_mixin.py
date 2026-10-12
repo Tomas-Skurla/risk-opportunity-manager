@@ -52,9 +52,10 @@ class MatrixMixin:
         pid = self.current_project_id
         if not pid:
             return
-        kind = "risks"
-        with contextlib.suppress(AttributeError, RuntimeError, ValueError):
+        try:
             kind = (self.matrix_tab.kind_combo.currentText() or "Risks").strip().lower()
+        except AttributeError, RuntimeError, ValueError:
+            kind = "risks"
         if kind == "opportunities":
             opps = self._call_backend(
                 "Backend error", self.backend.list_opportunities, pid
