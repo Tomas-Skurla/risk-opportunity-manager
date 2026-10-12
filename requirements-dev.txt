@@ -14,4 +14,4 @@ httpx2>=2,<3
 ruff>=0.14,<1
 black>=26,<27
 mypy>=2.3,<3
-types-python-jose>=3.5,<4
+types-python-jose>=3.5.0.20260408,<4
