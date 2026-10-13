@@ -767,20 +767,28 @@ class RiskForm(QWidget):
         response_at: str | None = None,
         occurred_at: str | None = None,
     ) -> None:
-        # Only these widgets are silenced; the others still emit change signals.
+        # Loading values is not an edit: silence every input the dirty tracking
+        # watches, or opening the window would look like unsaved changes.
         quiet = (
             self.code,
             self.title,
             self.category,
+            self.document_url,
             self.description,
             self.threat,
             self.triggers,
+            self.mitigation_plan,
             self.identified_at,
+            self.status_changed_at,
             self.response_at,
             self.occurred_at,
             self.owner_user_id,
             self.p,
             self.i,
+            self.impact_cost,
+            self.impact_time,
+            self.impact_scope,
+            self.impact_quality,
             self.status,
         )
         for widget in quiet:

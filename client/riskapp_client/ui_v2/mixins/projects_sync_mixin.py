@@ -157,15 +157,17 @@ class ProjectsSyncMixin:
             select_id=select_id,
             use_remote_report=include_remote,
         )
+        self._refresh_opportunities(use_remote_report=include_remote)
+        # The combos also refresh the target titles that actions and
+        # assessments display, so they must run first.
         for fn in (
             self._refresh_action_risk_combo,
+            self._refresh_action_opp_combo,
             self._refresh_actions,
             self._refresh_matrix,
             self._refresh_assessments,
         ):
             fn()
-        self._refresh_opportunities(use_remote_report=include_remote)
-        self._refresh_action_opp_combo()
         if include_remote:
             self._refresh_top_history()
             self._refresh_members()

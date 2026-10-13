@@ -74,8 +74,9 @@ class LayoutMixin:
     _cancel_background_job: Callable[..., Any]
     _create_new_project: Callable[..., Any]
     _delete_current_project: Callable[..., Any]
-    _delete_entity: Callable[..., Any]
     _delete_helpdesk_ticket: Callable[..., Any]
+    _delete_opportunity: Callable[..., Any]
+    _delete_risk: Callable[..., Any]
     _export_opportunities_csv: Callable[..., Any]
     _export_risks_csv: Callable[..., Any]
     _mark_editor_dirty: Callable[..., Any]
@@ -214,12 +215,7 @@ class LayoutMixin:
             on_risk_clicked=self._on_risk_clicked,
             on_new_risk=self._start_new_risk,
             on_save_risk=self._save_risk,
-            on_delete_item=lambda: self._delete_entity(
-                self.current_risk_id,
-                self.backend.delete_risk,
-                self._refresh_risks,
-                self._start_new_risk,
-            ),
+            on_delete_item=self._delete_risk,
             on_mark_dirty=self._mark_editor_dirty,
         )
         self.opps_tab = OpportunitiesTab(
@@ -230,12 +226,7 @@ class LayoutMixin:
             on_opportunity_clicked=self._on_opportunity_clicked,
             on_new_opportunity=self._start_new_opportunity,
             on_save_opportunity=self._save_opportunity,
-            on_delete_item=lambda: self._delete_entity(
-                self.current_opportunity_id,
-                self.backend.delete_opportunity,
-                self._refresh_opportunities,
-                self._start_new_opportunity,
-            ),
+            on_delete_item=self._delete_opportunity,
             on_mark_dirty=self._mark_opp_editor_dirty,
         )
         self.matrix_tab = MatrixTab(on_kind_changed=self._on_matrix_kind_changed)

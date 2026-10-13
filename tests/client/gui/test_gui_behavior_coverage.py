@@ -361,6 +361,11 @@ class GuiBackend:
 
 
 # pylint: enable=unused-argument
+def _action_targets(window) -> list[str]:
+    table = window.actions_tab.actions_table
+    return [table.item(row, 3).text() for row in range(table.rowCount())]
+
+
 def _window(qtbot):
     backend = GuiBackend()
     window = MainWindow(backend)
@@ -408,6 +413,8 @@ def test_real_window_risk_and_opportunity_crud(monkeypatch, qtbot) -> None:
     window._commit_editor_changes(refresh=True)
     assert ("update_risk", "risk-1") in backend.calls
     assert window._editor_dirty is False
+    # A rename committed without pressing Save must also reach the Actions tab.
+    assert "risk: Updated outage" in _action_targets(window)
 
     window._start_new_risk()
     window._save_risk(
@@ -431,6 +438,7 @@ def test_real_window_risk_and_opportunity_crud(monkeypatch, qtbot) -> None:
     window._opp_editor_dirty = True
     window._commit_opp_editor_changes(refresh=True)
     assert ("update_opportunity", "opp-1") in backend.calls
+    assert "opp: Updated automation" in _action_targets(window)
 
     window._start_new_opportunity()
     window._save_opportunity(
