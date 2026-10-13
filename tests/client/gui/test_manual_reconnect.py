@@ -171,10 +171,6 @@ def test_manual_authentication_or_cancellation_does_not_export_a_session(
 ) -> None:
     class Backend:
         @staticmethod
-        def list_projects() -> list[Project]:
-            raise AssertionError("Project listing must not run in this sync-only test")
-
-        @staticmethod
         def sync_project(
             project_id: str,
             *,
@@ -186,31 +182,11 @@ def test_manual_authentication_or_cancellation_does_not_export_a_session(
             return {"state": state}
 
         @staticmethod
-        def create_snapshot(
-            project_id: str, *, kind: str | None = None
-        ) -> dict[str, Any]:
-            raise AssertionError(f"Unexpected snapshot for {project_id}: {kind}")
-
-        @staticmethod
-        def top_history(
-            project_id: str,
-            *,
-            kind: str = "risks",
-            limit: int = 10,
-            from_ts: str | None = None,
-            to_ts: str | None = None,
-        ) -> list[dict[str, Any]]:
-            raise AssertionError(
-                f"Unexpected history for {project_id}: {kind}, {limit}, "
-                f"{from_ts}, {to_ts}"
-            )
-
-        @staticmethod
         def export_authenticated_remote() -> object | None:
             raise AssertionError("An authentication failure must not be adopted")
 
     worker = jobs._BackgroundJobWorker(
-        Backend,
+        Backend,  # pyright: ignore[reportArgumentType]
         owns_backend=False,
         kind="sync",
         payload={"project_id": "project-1", "export_remote": True},

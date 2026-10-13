@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from riskapp_client.domain.scored_entity_fields import (
     ACTION_DEFAULT_STATUS,
     DEFAULT_STATUS,
 )
+
+if TYPE_CHECKING:
+    from riskapp_client.domain.background_job_contracts import BackgroundJobBackend
 
 
 def _int_or_none(value: Any) -> int | None:
@@ -416,3 +419,12 @@ class Backend(Protocol):
     ) -> HelpDeskTicket: ...
 
     def delete_helpdesk_ticket(self, ticket_id: str) -> None: ...
+
+    # --- Background jobs ---
+    def create_background_backend(self) -> BackgroundJobBackend:
+        """Build a backend the worker owns; the worker closes it in its thread."""
+        ...
+
+    def can_auto_sync(self) -> bool:
+        """Whether an authenticated session exists or can be recovered."""
+        ...

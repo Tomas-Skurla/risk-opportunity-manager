@@ -230,13 +230,20 @@ def test_main_window_builds_all_views_and_common_gui_helpers(
         def list_projects(self):
             return []
 
+        def create_background_backend(self):
+            raise AssertionError("An empty window must not start a backend job")
+
+        @staticmethod
+        def can_auto_sync() -> bool:
+            return False
+
     critical: list[str] = []
     monkeypatch.setattr(
         QMessageBox,
         "critical",
         lambda _parent, _title, message, *_args: critical.append(message),
     )
-    # A deliberately incomplete backend tests the window's fallback behavior.
+    # Only project listing is needed while exercising these window helpers.
     window = MainWindow(cast(Backend, EmptyBackend()))
     qtbot.addWidget(window)
     window.top_tab.auto_snap_timer.stop()

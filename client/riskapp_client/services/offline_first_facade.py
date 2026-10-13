@@ -171,6 +171,10 @@ class OfflineFirstBackend(Backend):
             release_authentication_blocks=release_authentication_blocks,
         )
 
+    def close(self) -> None:
+        """Close this facade's local connection in its owning thread."""
+        self.store.close()
+
     def can_auto_sync(self) -> bool:
         """Return whether a worker can use or recover an authenticated session."""
         return self.remote is not None or self._remote_factory is not None

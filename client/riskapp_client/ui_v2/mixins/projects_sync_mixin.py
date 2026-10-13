@@ -389,8 +389,7 @@ class ProjectsSyncMixin:
         errors = self._backend_query("error_count", 0, pid)
         last_sync = self._backend_query("last_sync_time", None, pid)
         can_sync = bool(self._backend_query("can_sync", False))
-        reconnect = getattr(self.backend, "can_auto_sync", None)
-        can_reconnect = callable(reconnect) and bool(reconnect())
+        can_reconnect = bool(self.backend.can_auto_sync())
         self.sync_btn.setEnabled(bool(pid) and (can_sync or can_reconnect))
         status = (
             f"{'ONLINE' if can_sync else 'OFFLINE'} · queued: {pending} "
@@ -569,8 +568,7 @@ class ProjectsSyncMixin:
         """Start a silent all-project sync when the UI is safe to refresh."""
         if self._editor_dirty or self._opp_editor_dirty:
             return False
-        available = getattr(self.backend, "can_auto_sync", None)
-        if callable(available) and not bool(available()):
+        if not self.backend.can_auto_sync():
             return False
         can_sync = getattr(self.backend, "can_sync", None)
         export_remote = callable(can_sync) and not bool(can_sync())
@@ -600,7 +598,16 @@ class ProjectsSyncMixin:
 
     def _remember_sync_errors(self, summaries: Iterable[dict[str, Any]]) -> None:
         for summary in summaries:
-            project_id = str(summary.get("project_id") or self.current_project_id or "")
+            # A promoted project keeps its sync state under its server id.
+            migrated_from = summary.get("project_id_migrated_from")
+            if migrated_from:
+                self.state.sync_errors.pop(str(migrated_from), None)
+            project_id = str(
+                summary.get("project_id_migrated_to")
+                or summary.get("project_id")
+                or self.current_project_id
+                or ""
+            )
             if not project_id:
                 continue
             error = summary.get("sync_error")

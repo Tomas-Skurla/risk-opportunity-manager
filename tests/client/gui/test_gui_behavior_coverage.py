@@ -129,6 +129,23 @@ class GuiBackend:
             ),
         ]
 
+    def create_background_backend(self) -> GuiBackend:
+        return self
+
+    @staticmethod
+    def close() -> None:
+        """This in-memory test backend has no resources to release."""
+
+    @staticmethod
+    def can_auto_sync() -> bool:
+        return True
+
+    def export_authenticated_remote(self):
+        return self.remote
+
+    def list_sync_projects(self):
+        return self.list_projects()
+
     def list_projects(self):
         return [self.project]
 
@@ -316,7 +333,7 @@ class GuiBackend:
     def can_sync():
         return True
 
-    def sync_project(self, _project_id):
+    def sync_project(self, project_id, *, should_cancel=None, progress=None):
         return {
             "pushed": 2,
             "conflicts": 0,

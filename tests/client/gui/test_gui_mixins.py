@@ -275,6 +275,9 @@ def test_open_conflict_center_resolves_through_backend(monkeypatch, qtbot) -> No
         def can_sync(self):
             return True
 
+        def can_auto_sync(self):
+            return False
+
     dialogs = []
 
     class FakeSignal:
@@ -326,6 +329,9 @@ def test_open_conflict_center_reports_when_no_conflicts(monkeypatch, qtbot) -> N
         def resolve_conflict(self, *_args):
             raise AssertionError("must not resolve")
 
+        def can_auto_sync(self):
+            return False
+
     information = Mock()
     monkeypatch.setattr(QMessageBox, "information", information)
     host = ProjectSyncHost(Backend())
@@ -354,6 +360,9 @@ def test_project_sync_status_falls_back_when_backend_queries_fail(qtbot) -> None
 
         def can_sync(self):
             raise RuntimeError("offline")
+
+        def can_auto_sync(self):
+            return False
 
     host = ProjectSyncHost(BrokenBackend())
     qtbot.addWidget(host.sync_btn)
@@ -459,6 +468,9 @@ def test_sync_now_handles_missing_project_unsupported_and_failed_backend(
             return None
 
         def can_sync(self):
+            return False
+
+        def can_auto_sync(self):
             return False
 
     host.backend = BrokenBackend()
@@ -776,6 +788,22 @@ def test_sync_attention_survives_refresh_until_affected_project_succeeds(qtbot):
     host._update_sync_status()
     assert "sync needs attention" not in host.sync_status.text()
     assert host.sync_status.toolTip() == ""
+
+    # An error from the run that promoted a local project follows the new id.
+    host._remember_sync_errors(
+        [
+            {
+                "project_id": "local-3",
+                "project_id_migrated_from": "local-3",
+                "project_id_migrated_to": "project-3",
+                "state": "attention_required",
+                "sync_error": {"retryable": False, "detail": "rejected"},
+            }
+        ]
+    )
+    host._remember_sync_errors([{"project_id": "project-3", "state": "complete"}])
+    host._update_sync_status()
+    assert "sync needs attention" not in host.sync_status.text()
 
 
 def test_sync_status_reports_database_failure_without_fake_zero_counts(qtbot):
