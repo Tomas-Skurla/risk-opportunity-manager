@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 import uuid
 from collections.abc import Callable, Mapping, MutableMapping
 from contextlib import AbstractContextManager
@@ -27,7 +28,8 @@ class ScoredEntityWiring[ModelT]:
 
     list_fn: Callable[[str], list[ModelT]]
     get_project_and_version_fn: Callable[[str], tuple[str, int]]
-    get_row_fn: Callable[[str], Mapping[str, Any] | None]
+    # The store returns sqlite3.Row; tests may pass a plain mapping instead.
+    get_row_fn: Callable[[str], sqlite3.Row | Mapping[str, Any] | None]
 
     upsert_local_fn: Callable[..., None]
 
@@ -107,19 +109,13 @@ class ScoredEntityService[ModelT]:
         existing = self._w.get_row_fn(entity_id)
 
         def _existing(key: str) -> Any:
-            """Read a key from an optional sqlite row or mapping.
-
-            LocalStore implementations commonly return sqlite3.Row (index-only) while
-            tests/mocks may return a dict-like mapping.
-            """
+            """Read a column of the stored row, or None when there is no row."""
 
             if not existing:
                 return None
-            try:
-                return existing[key]  # sqlite3.Row
-            except RuntimeError, ValueError, KeyError:
-                # Mapping[str, Any]
+            if isinstance(existing, Mapping):
                 return existing.get(key)
+            return existing[key]
 
         prev_status = _existing("status") or DEFAULT_STATUS
         new_status = meta.get("status") if "status" in meta else prev_status

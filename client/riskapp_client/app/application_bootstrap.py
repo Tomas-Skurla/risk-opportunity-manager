@@ -91,7 +91,6 @@ def _show_server_down(
             remote_factory=remote_factory,
         )
     else:
-        # Stay local only.
         backend = OfflineFirstBackend(store, remote=None, anonymous_offline=True)
     return MainWindow(
         backend,
@@ -100,51 +99,60 @@ def _show_server_down(
     )
 
 
-def build_main_window(config: AppConfig) -> MainWindow:
+def _prepare_db_directory(db_path: Path) -> None:
     try:
-        Path(config.local_db_path).expanduser().parent.mkdir(
-            parents=True, exist_ok=True
-        )
+        Path(db_path).expanduser().parent.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         QMessageBox.critical(
             None,
             "Local storage error",
-            f"Cannot create local DB directory for:\n{config.local_db_path}\n\n{exc}",
+            f"Cannot create local DB directory for:\n{db_path}\n\n{exc}",
         )
         raise
 
-    store = LocalStore(str(config.local_db_path))
-    base_url = config.base_url
-    email = config.email
-    password = config.password
-    cached_email = store.get_meta("last_email") or None
 
-    # Get credentials from the dialog or environment.
-    if not email or not password:
-        dlg = LoginDialog(default_url=base_url, cached_email=cached_email)
-        result = dlg.exec()
+def _main_window(backend: OfflineFirstBackend, config: AppConfig) -> MainWindow:
+    return MainWindow(
+        backend,
+        auto_sync_interval_seconds=config.auto_sync_interval_seconds,
+        auto_sync_max_backoff_seconds=config.auto_sync_max_backoff_seconds,
+    )
 
-        if dlg.wants_register:
-            reg = _handle_registration(
-                dlg.ui.url.text().strip() or base_url,
-                allow_http=config.allow_http_anywhere,
-            )
-            if reg is not None:
-                base_url, email, password = reg
-            else:
-                sys.exit(0)
-        elif dlg.wants_local:
-            # Stay local only.
-            backend = OfflineFirstBackend(store, remote=None, anonymous_offline=True)
-            return MainWindow(
-                backend,
-                auto_sync_interval_seconds=config.auto_sync_interval_seconds,
-                auto_sync_max_backoff_seconds=config.auto_sync_max_backoff_seconds,
-            )
-        elif result != QDialog.DialogCode.Accepted:
+
+def _ask_for_credentials(
+    config: AppConfig, cached_email: str | None
+) -> tuple[str, str, str] | None:
+    """Return (server URL, email, password), or None to work fully local.
+
+    Cancelling the login dialog, or the registration it opens, quits the app.
+    """
+    dlg = LoginDialog(default_url=config.base_url, cached_email=cached_email)
+    result = dlg.exec()
+    if dlg.wants_register:
+        credentials = _handle_registration(
+            dlg.ui.url.text().strip() or config.base_url,
+            allow_http=config.allow_http_anywhere,
+        )
+        if credentials is None:
             sys.exit(0)
-        else:
-            base_url, email, password = dlg.values()
+        return credentials
+    if dlg.wants_local:
+        return None
+    if result != QDialog.DialogCode.Accepted:
+        sys.exit(0)
+    return dlg.values()
+
+
+def build_main_window(config: AppConfig) -> MainWindow:
+    _prepare_db_directory(config.local_db_path)
+    store = LocalStore(str(config.local_db_path))
+    base_url, email, password = config.base_url, config.email, config.password
+    if not email or not password:
+        credentials = _ask_for_credentials(config, store.get_meta("last_email") or None)
+        if credentials is None:
+            local_only = OfflineFirstBackend(store, remote=None, anonymous_offline=True)
+            return _main_window(local_only, config)
+        base_url, email, password = credentials
 
     def remote_factory() -> ApiBackend:
         return ApiBackend(
@@ -154,16 +162,11 @@ def build_main_window(config: AppConfig) -> MainWindow:
             url_policy=UrlPolicy(allow_http_anywhere=config.allow_http_anywhere),
         )
 
-    # Try to connect.
     try:
         remote = remote_factory()
         store.set_meta("last_email", email)
-        backend = OfflineFirstBackend(store, remote=remote)
-        return MainWindow(
-            backend,
-            auto_sync_interval_seconds=config.auto_sync_interval_seconds,
-            auto_sync_max_backoff_seconds=config.auto_sync_max_backoff_seconds,
-        )
+        return _main_window(OfflineFirstBackend(store, remote=remote), config)
+
     except (RuntimeError, OSError) as exc:
         logger.warning("Login/connection failed: %s", exc)
         # Retain credentials in memory only for transport failures. Invalid
@@ -173,7 +176,6 @@ def build_main_window(config: AppConfig) -> MainWindow:
             int(getattr(exc, "status", 0) or 0) if isinstance(exc, ApiError) else 0
         )
         reconnect = remote_factory if api_status == 0 else None
-        # Offer offline options.
         window = _show_server_down(
             str(exc),
             email=email,
