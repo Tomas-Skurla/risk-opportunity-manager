@@ -754,6 +754,17 @@ def test_history_snapshot_periods_and_auto_snapshot(monkeypatch, qtbot) -> None:
         lambda _parent, _title, message, *_args: messages.append(message),
     )
 
+    # Offline refresh must not start a worker that tries to reconnect for history.
+    with monkeypatch.context() as offline:
+        offline.setattr(backend, "remote", None)
+        start_job = Mock()
+        offline.setattr(window, "_start_background_job", start_job)
+        window._refresh_top_history()
+        start_job.assert_not_called()
+        assert window.top_tab.top_table.rowCount() == 0
+        assert "Offline:" in window.top_tab.top_report.text()
+
+    # Once connected again, the same refresh loads the server's history.
     window._refresh_top_history()
     qtbot.waitUntil(lambda: not window._background_jobs.is_busy)
     assert window.top_tab.top_table.rowCount() == 2

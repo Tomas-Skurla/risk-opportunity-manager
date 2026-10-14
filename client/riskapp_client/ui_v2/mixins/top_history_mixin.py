@@ -168,6 +168,12 @@ class TopHistoryMixin:
                 "Local project: sync to the server to use top history."
             )
             return
+        if self._detect_offline_mode():
+            tab.top_table.setRowCount(0)
+            tab.top_report.setText(
+                "Offline: reconnect to the server to load snapshot history."
+            )
+            return
         if not hasattr(self.backend, "top_history"):
             tab.top_table.setRowCount(0)
             tab.top_report.setText("Top history not supported by this backend.")
