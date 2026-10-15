@@ -1,112 +1,122 @@
-# Server database backup and recovery
+# Server database backup and restore
 
-The backup command uses SQLite's online backup API, validates the resulting database, and publishes a new standalone file. It includes committed WAL data without requiring the API to stop. Restore requires every API process to be stopped and all database connections closed.
+`scripts/server_database.py` backs up, verifies and restores the SQLite server database. Backups use SQLite's [online backup API](https://www.sqlite.org/backup.html), so they include committed WAL data and the API can keep running; a restore needs every API process stopped. The tool does not cover client caches or PostgreSQL.
 
-These commands support the SQLite server database. They do not back up client caches/outboxes or implement PostgreSQL backup and recovery. Deployment automation and release publication are separate work.
+## Before you start
 
-## Choose the database and storage location
+- Activate the Python 3.14 environment and run from the repository root. Always name the database file explicitly: the development launcher uses `server/riskapp.db`, and Compose uses `/data/riskapp.db` inside the container. A relative SQLite URL resolves against the server's working directory, not the tool's.
+- Keep backups in a protected directory outside the checkout: they contain password hashes, token hashes, accounts and project data. Files are written with mode `0600` on Unix; on Windows, restrict the folder's ACL. Keep an encrypted copy off the database host, because a copy on the same volume or PVC does not survive losing it, and verify that copy too.
+- `SECRET_KEY` and `TOKEN_HASH_KEY` are not in the backup. Keep them in a separate secret store; restoring with different keys invalidates existing tokens.
 
-Activate the project's Python 3.14 environment and run commands from the repository root. Always supply the actual database file explicitly. The development launcher normally uses `server/riskapp.db`; Compose uses `/data/riskapp.db` inside the API container. A relative SQLite URL is resolved against the server process's working directory, not against this tool's working directory.
+## Back up and verify
 
-Use a protected backup directory outside the checkout. Database snapshots contain password hashes, token hashes, accounts, and project data. On Unix, published files have mode `0600`; on Windows, restrict the directory's ACL to the operator and backup account. Store an additional encrypted copy outside the database host and its volume, and verify that copied file. A backup on the same PVC alone does not protect against loss of that PVC.
-
-The running deployment's `SECRET_KEY` and `TOKEN_HASH_KEY` must be recoverable through a separate protected secret store. They are not embedded in a snapshot. Restoring the original keys preserves access-token validation and refresh/reset token validation. Recovery with different keys invalidates the corresponding tokens.
-
-## Create and verify a snapshot
-
-Git Bash or Linux, with the repository environment active:
+In Bash, with the Python environment active:
 
 ```bash
-mkdir -p -m 700 ../riskapp-backups
-backup_file="../riskapp-backups/server-$(date -u +%Y%m%dT%H%M%SZ).sqlite3"
-python scripts/server_database.py backup \
-  --database server/riskapp.db --output "$backup_file"
-python scripts/server_database.py verify --backup "$backup_file"
+(
+  set -euo pipefail
+  mkdir -p -m 700 ../riskapp-backups
+  backup_file="../riskapp-backups/server-$(date -u +%Y%m%dT%H%M%SZ).sqlite3"
+  python scripts/server_database.py backup --database server/riskapp.db --output "$backup_file"
+  python scripts/server_database.py verify --backup "$backup_file"
+)
 ```
 
-PowerShell, with the repository environment active:
+On Windows, use PowerShell from the repository root:
 
 ```powershell
-New-Item -ItemType Directory -Force ../riskapp-backups | Out-Null
-$backupFile = "../riskapp-backups/server-$((Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ')).sqlite3"
-python scripts/server_database.py backup --database server/riskapp.db --output $backupFile
-python scripts/server_database.py verify --backup $backupFile
+& {
+    $ErrorActionPreference = "Stop"
+    $repoPath = (Resolve-Path .).Path
+    $python = Join-Path $repoPath ".venv\Scripts\python.exe"
+    $backupDir = Join-Path (Split-Path $repoPath -Parent) "riskapp-backups"
+    New-Item -ItemType Directory -Path $backupDir -Force | Out-Null
+    $serverDb = Join-Path $repoPath "server\riskapp.db"
+    $stamp = (Get-Date).ToUniversalTime().ToString("yyyyMMddTHHmmssZ")
+    $backupFile = Join-Path $backupDir "server-$stamp.sqlite3"
+    & $python scripts/server_database.py backup --database $serverDb --output $backupFile
+    if ($LASTEXITCODE -ne 0) { throw "Backup failed. Stop here." }
+    & $python scripts/server_database.py verify --backup $backupFile
+    if ($LASTEXITCODE -ne 0) { throw "Backup verification failed. Stop here." }
+}
 ```
 
-Success prints JSON containing `path`, `revision`, and `sha256`. A failed operation returns exit code 1 and prints its error to stderr. Record the successful JSON in the backup inventory and compare the SHA-256 after copying to another location. Check the command's exit status before retaining, copying, or expiring backups.
+Paste the complete block for your shell at once. It stops after a failure rather than continuing to the dependent command. These commands use the normal development database path; change that explicit path if your server uses another file. For a database created without migrations, add `--allow-unversioned` to both calls as explained below. The [Windows rehearsal](DEMO_REHEARSAL.md) already includes that option for its disposable database.
 
-Verification checks SQLite integrity, foreign keys, required server tables, and the Alembic revision. Versioned snapshots must match the migration head packaged with the tool. For an older revision, recover with the matching application version first and follow the normal migration procedure; do not edit its revision to make verification pass.
+Success prints JSON with `path`, `revision` and `sha256`; a failure exits with code 1 and prints the error to stderr. Record the JSON and compare the SHA-256 after copying the file elsewhere. Verification checks integrity, foreign keys, the required tables and the Alembic revision, which must match the migration head of this application version. For an older revision, recover with the matching application version and then migrate; never edit the revision to make verification pass.
 
-Existing backup files are never overwritten. Publication uses an atomic hard link on the destination filesystem; ordinary NTFS and Linux filesystems support this. Unsupported/network filesystems can reject publication, leaving no completed output. All staging handles are closed before publication and cleanup, including on Windows. `--timeout 30` is the default SQLite busy timeout and snapshot-copy deadline; verification itself is not a total wall-clock deadline.
+Existing files are never overwritten. A finished backup is published with an atomic hard link, which ordinary NTFS and Linux filesystems support; some network filesystems refuse it, and then no output is left behind. Never copy the live `.db` file, or delete its `-wal`, `-shm` or `-journal` files, to get a backup.
 
-Do not copy just the live `.db` file or delete `-wal`, `-shm`, or `-journal` files to obtain a backup. SQLite's [online backup API](https://www.sqlite.org/backup.html) handles a consistent committed snapshot while the source remains in use.
+**Databases without a migration revision.** `AUTO_CREATE_SCHEMA=1` creates development databases without `alembic_version`. For those, backup, verify and restore need `--allow-unversioned`, and the JSON reports `revision: null`. Integrity, foreign keys, tables and sync columns are still checked, but that does not prove the schema matches a migration. The flag never stamps a revision or accepts a wrong one. Production should use migrations and the default strict verification.
 
-### Existing development databases without a migration revision
+## Rehearse a restore
 
-`AUTO_CREATE_SCHEMA=1` can create a current development database without `alembic_version`. Such databases require explicit `--allow-unversioned` on **backup, verify, and restore**. For example:
+Restore into a new file first, rather than over the live database:
+
+Choose the backup by its printed path; replace `PASTE-TIMESTAMP` below. Each restore block names its input again rather than relying on a variable from the backup terminal. The commands below use Bash; the [Windows rehearsal](DEMO_REHEARSAL.md#checkpoint-4-restore-the-older-backup) provides a complete PowerShell restore.
 
 ```bash
-python scripts/server_database.py backup \
-  --database server/riskapp.db --output "$backup_file" --allow-unversioned
-python scripts/server_database.py verify --backup "$backup_file" --allow-unversioned
+(
+  set -euo pipefail
+  backup_file="../riskapp-backups/server-PASTE-TIMESTAMP.sqlite3"
+  python scripts/server_database.py restore --backup "$backup_file" \
+    --database ../riskapp-backups/rehearsal.sqlite3 --offline
+  python scripts/server_database.py verify --backup ../riskapp-backups/rehearsal.sqlite3
+)
 ```
 
-Their JSON reports `revision: null`. The tool still checks integrity, foreign keys, server tables, and current sync columns. Those checks are not proof that every column, constraint, and index matches an Alembic migration. This flag is for known current development schemas, never an automatic baseline stamp or a bypass for a versioned database with the wrong revision. Production should use explicit migrations and the default strict verification.
-
-## Rehearse recovery before replacing the live database
-
-1. Verify the off-host copy using the intended application version.
-2. Restore into a new file, rather than replacing the live database:
-
-   ```bash
-   python scripts/server_database.py restore \
-     --backup "$backup_file" \
-     --database ../riskapp-backups/rehearsal.sqlite3 --offline
-   ```
-
-3. Start an isolated API against that file with the recovered secrets, a separate port, and no real clients connected. In Git Bash/Linux, from the repository root:
-
-   ```bash
-   export DATABASE_URL="$(python -c 'from pathlib import Path; print("sqlite+pysqlite:///" + (Path.cwd().parent / "riskapp-backups/rehearsal.sqlite3").as_posix())')"
-   export AUTO_CREATE_SCHEMA=0
-   cd server
-   python -m uvicorn riskapp_server.main.app:create_app --factory \
-     --env-file ../.env --host 127.0.0.1 --port 8010
-    ```
-
-   Use a disposable shell: its exported database settings must not leak into the normal startup session. For an unversioned development rehearsal, add the flag to restore and keep the same application version.
-
-4. Check `/health`, login, expected users/projects/members, and representative domain data. Test refresh-token continuity where appropriate. Stop the rehearsal API cleanly. Measure elapsed recovery time and record the snapshot's age so that the chosen backup frequency and recovery objectives have evidence.
-
-The automated drill uses a migrated database and real API calls. It recovers authentication, membership, refresh tokens, Help Desk data, audit data, receipt replays, and sequence counters, then accepts and pulls a new sync change. Other tests cover live WAL writes, corruption, foreign-key failures, stale revisions, locked sources, publication races, and replacement failures.
+Only after restore and verification succeed, start an API against it in a throwaway shell, with the recovered keys, a separate port and no real clients:
 
 ```bash
-python -m pytest tests/server/ops/test_sqlite_backup.py -q
+(
+  set -euo pipefail
+  test -f ../riskapp-backups/rehearsal.sqlite3
+  DATABASE_URL="$(python -c 'from pathlib import Path; print("sqlite+pysqlite:///" + (Path.cwd().parent / "riskapp-backups/rehearsal.sqlite3").as_posix())')"
+  export DATABASE_URL
+  export AUTO_CREATE_SCHEMA=0
+  cd server
+  python -m uvicorn riskapp_server.main.app:create_app --factory \
+    --env-file ../.env --host 127.0.0.1 --port 8010
+)
 ```
 
-## Replace the live database during a recovery window
+Check `/health`, logging in, the expected users, projects and members, and some project data, then stop the API. Note how long the recovery took and how old the backup was, so the backup schedule rests on evidence.
 
-Pause every client's automatic synchronization, stop every API worker/instance, and confirm all database connections have closed. Preserve a verified snapshot of the current database if it is readable before replacing it. The `--offline` flag acknowledges this operational prerequisite; it does not stop processes or detect every open reader.
+`python -m pytest tests/server/ops/test_sqlite_backup.py -q` runs the automated drill. It restores a migrated database and checks logins, memberships, refresh tokens, Help Desk and audit data, receipt replays and sequence counters through the real API, then accepts and pulls a new sync change. Other cases cover live WAL writes, corruption, foreign-key failures, stale revisions, locked sources and failed replacements.
+
+## Replace the live database
+
+Pause automatic sync in every client, stop every API process and confirm that all database connections are closed. If the current database is readable, back it up first.
 
 ```bash
-python scripts/server_database.py restore \
-  --backup "$backup_file" --database server/riskapp.db --offline --replace
-python scripts/server_database.py verify --backup server/riskapp.db
+(
+  set -euo pipefail
+  backup_file="../riskapp-backups/server-PASTE-TIMESTAMP.sqlite3"
+  python scripts/server_database.py restore --backup "$backup_file" --database server/riskapp.db --offline --replace
+  python scripts/server_database.py verify --backup server/riskapp.db
+)
 ```
 
-Use `--allow-unversioned` on both commands only for the development case described above. Existing destinations require `--replace`; absent destinations do not. Restore validates a staged copy before atomic replacement. If validation or replacement fails, the original target is retained. A target or snapshot with SQLite sidecars is rejected: find and stop the remaining owner instead of deleting the sidecars. Do not restart workers while recovery is running.
+`--offline` confirms that the API is stopped; it does not stop anything itself. `--replace` is required when the target exists. The restore validates a staged copy before an atomic swap and keeps the original if anything fails. Files with SQLite sidecars are refused: find the process that still has the database open instead of deleting them. Keep clients paused until the restarted API passes the same checks as the rehearsal.
 
-Keep clients paused while you restart the API with the recovered keys and perform the smoke checks. Restoring an older server database rewinds entity versions, sync receipts, and project sequence counters. A client's saved sequence can then be ahead of the server, causing its incremental pull to return HTTP 400. Data acknowledged after the backup can also remain only in client caches, outside their pending outboxes. The current client has no automatic reconciliation for this server rollback.
+In a container, the tool runs as `python -m riskapp_server.ops.sqlite_backup`. A backup can run inside the API container with a protected `/backups` mount. A restore must run in a one-off maintenance container with the same data volume and image while all API containers are stopped, never through a running API container.
 
-Use the [older-snapshot recovery demo](OLDER_SNAPSHOT_RECOVERY.md): preserve the old client database, start a new cache against the restored server, and explicitly re-enter selected later work. Its three integration tests cover stale cursors, preserved conflict payloads, leftover cached entities, and successful manual reapplication without modifying the preserved cache. Resetting the cursor alone does not rebuild the client database. Do not use the destructive development reset as a recovery shortcut. Automated multi-device reconciliation remains outside this demo.
+## Clients after restoring an older backup
 
-## Container invocation
+A restore rewinds record versions, sync receipts and the per-project sequence counters, but clients keep what they had:
 
-The runtime image contains the same tool as a module. With a protected `/backups` mount, an online backup can run inside the API container:
+| Point in time | Server | Existing client |
+| --- | --- | --- |
+| Backup taken | Risk version 1, `At backup` | In sync |
+| Later work synced | Version 2, plus a second risk | Has both, and a newer watermark |
+| Further offline edit | Unchanged | `Queued offline draft` in the outbox |
+| Backup restored | Version 1, second risk gone | Still has the later data, watermark and edit |
 
-```bash
-python -m riskapp_server.ops.sqlite_backup backup \
-  --database /data/riskapp.db --output /backups/server-20261006T120000Z.sqlite3
-```
+If the client's watermark is ahead of the restored server, its pull fails with HTTP 400 (`snapshot_sequence precedes since_sequence`), and its queued edit can become a version conflict. Neither means the queued work may be discarded. Data acknowledged after the backup may also exist only in a client's cache, outside its outbox. The client has no automatic reconciliation for this, so recover by hand:
 
-For restore, stop all API containers and run this module in a one-off maintenance container with the same data volume and matching application image. The module does not need authentication secrets merely to copy or verify the SQLite file. Do not run restore through an active API container.
+1. Close every client and keep a copy of its database (by default `~/.riskapp/client.sqlite3`, on Windows `%USERPROFILE%\.riskapp\client.sqlite3`). Copy it only when no `-wal`, `-shm` or `-journal` file remains next to it.
+2. Start a client with a new, unused cache and automatic sync off, for example `RISKAPP_LOCAL_DB="$HOME/.riskapp/client-recovered.sqlite3" RISKAPP_AUTO_SYNC_INTERVAL_SECONDS=0 bash scripts/run_client_dev.sh`, and sync. It receives exactly the restored data.
+3. Re-enter the later changes you decide to keep; they become new edits against the restored versions. Re-create later records only deliberately, and check the parents of actions and assessments. Do not import old payloads or replay old change IDs.
+4. Keep the old database until the recovery is verified, and keep using the new cache with this server.
+
+Resetting the watermark alone is not enough: pulls merge rows rather than rebuild the cache, so records created after the backup would stay in the old cache. `tests/client/integration/test_snapshot_recovery.py` covers these cases, and the [demo rehearsal](DEMO_REHEARSAL.md#5-back-up-and-restore-the-server) walks through them.
