@@ -1,3 +1,5 @@
+"""Offline-first backend: work on the local copy, send changes through the outbox."""
+
 from __future__ import annotations
 
 import logging
@@ -18,13 +20,14 @@ from riskapp_client.domain.domain_models import (
     Opportunity,
     Project,
     Risk,
+    unique_project_name,
 )
+from riskapp_client.domain.sync_protocol import classify_http_status
 from riskapp_client.services.action_management_service import ActionService
 from riskapp_client.services.assessment_management_service import AssessmentService
 from riskapp_client.services.entity_filters import (
-    ScoredFilterCriteria,
+    criteria_from_report_filters,
     filter_scored,
-    parse_date,
 )
 from riskapp_client.services.helpdesk_service import HelpDeskService
 from riskapp_client.services.member_management_service import MembersService
@@ -32,10 +35,11 @@ from riskapp_client.services.scored_entity_management_service import (
     ScoredEntityService,
     ScoredEntityWiring,
 )
-from riskapp_client.services.synchronization_service import (
-    SyncService,
-    classify_http_status,
-)
+from riskapp_client.services.synchronization_service import SyncService
+
+logger = logging.getLogger(__name__)
+# Upper bound of each score bucket in a report; the last one is open-ended.
+_SCORE_BUCKETS = (("0-4", 4), ("5-9", 9), ("10-14", 14), ("15-19", 19), ("20-25", None))
 
 
 def _optional_callable(
@@ -47,6 +51,39 @@ def _optional_callable(
     if not callable(candidate):
         return None
     return candidate
+
+
+def _is_anonymous_local(project: Project) -> bool:
+    """A local project created without an account; it can never be synced."""
+    return str(project.id).startswith("local-") and not project.created_by
+
+
+def _score_bucket(score: int) -> str:
+    return next(
+        label for label, upper in _SCORE_BUCKETS if upper is None or score <= upper
+    )
+
+
+def _local_scored_report(
+    items: list[Risk] | list[Opportunity], filters: dict[str, Any]
+) -> dict[str, Any]:
+    """The server's report summary, computed from the local copy."""
+    filtered = filter_scored(items, criteria_from_report_filters(filters))
+    scores = [int(x.score or 0) for x in filtered]
+    buckets = dict.fromkeys((label for label, _ in _SCORE_BUCKETS), 0)
+    for score in scores:
+        buckets[_score_bucket(score)] += 1
+    return {
+        "total": len(filtered),
+        "project_total": len(items),
+        "min_score": min(scores, default=None),
+        "max_score": max(scores, default=None),
+        "avg_score": sum(scores) / len(scores) if scores else None,
+        "status_counts": dict(Counter(x.status or "concept" for x in filtered)),
+        "category_counts": dict(Counter(x.category or "(none)" for x in filtered)),
+        "owner_counts": dict(Counter(x.owner_user_id or "(none)" for x in filtered)),
+        "score_buckets": buckets,
+    }
 
 
 class OfflineFirstBackend(Backend):
@@ -66,31 +103,41 @@ class OfflineFirstBackend(Backend):
         self._remote_factory = remote_factory
         self.anonymous_offline = anonymous_offline
         self.outbox = OutboxStore(store)
-        self._risks = self._make_scored_service(
-            kind="risk",
-            id_kw="risk_id",
-            model_cls=Risk,
-            list_fn=store.list_risks,
-            get_project_and_version_fn=store.get_risk_project_and_version,
-            get_row_fn=store.get_risk_row,
-            upsert_local_fn=store.upsert_local_risk,
-            queue_upsert_fn=self.outbox.queue_risk_upsert,
-            queue_delete_fn=self.outbox.queue_risk_delete,
-            soft_delete_local_fn=store.soft_delete_risk,
-            next_code_fn=store.next_risk_code,
+        self._risks = ScoredEntityService(
+            ScoredEntityWiring(
+                kind="risk",
+                id_kw="risk_id",
+                model_cls=Risk,
+                list_fn=store.list_risks,
+                get_project_and_version_fn=store.get_risk_project_and_version,
+                get_row_fn=store.get_risk_row,
+                upsert_local_fn=store.upsert_local_risk,
+                queue_upsert_fn=self.outbox.queue_risk_upsert,
+                queue_delete_fn=self.outbox.queue_risk_delete,
+                discard_pending_changes_fn=self._discard_changes_of("risk"),
+                soft_delete_local_fn=store.soft_delete_risk,
+                write_transaction_fn=store.write_transaction,
+                next_code_fn=store.next_risk_code,
+                remote_create_may_exist_fn=self._remote_create_check_of("risk"),
+            )
         )
-        self._opps = self._make_scored_service(
-            kind="opportunity",
-            id_kw="opportunity_id",
-            model_cls=Opportunity,
-            list_fn=store.list_opportunities,
-            get_project_and_version_fn=store.get_opportunity_project_and_version,
-            get_row_fn=store.get_opportunity_row,
-            upsert_local_fn=store.upsert_local_opportunity,
-            queue_upsert_fn=self.outbox.queue_opportunity_upsert,
-            queue_delete_fn=self.outbox.queue_opportunity_delete,
-            soft_delete_local_fn=store.soft_delete_opportunity,
-            next_code_fn=store.next_opportunity_code,
+        self._opps = ScoredEntityService(
+            ScoredEntityWiring(
+                kind="opportunity",
+                id_kw="opportunity_id",
+                model_cls=Opportunity,
+                list_fn=store.list_opportunities,
+                get_project_and_version_fn=store.get_opportunity_project_and_version,
+                get_row_fn=store.get_opportunity_row,
+                upsert_local_fn=store.upsert_local_opportunity,
+                queue_upsert_fn=self.outbox.queue_opportunity_upsert,
+                queue_delete_fn=self.outbox.queue_opportunity_delete,
+                discard_pending_changes_fn=self._discard_changes_of("opportunity"),
+                soft_delete_local_fn=store.soft_delete_opportunity,
+                write_transaction_fn=store.write_transaction,
+                next_code_fn=store.next_opportunity_code,
+                remote_create_may_exist_fn=self._remote_create_check_of("opportunity"),
+            )
         )
         self._actions = ActionService(store, self.outbox)
         self._assessments = AssessmentService(store, self.outbox)
@@ -124,6 +171,10 @@ class OfflineFirstBackend(Backend):
             release_authentication_blocks=release_authentication_blocks,
         )
 
+    def close(self) -> None:
+        """Close this facade's local connection in its owning thread."""
+        self.store.close()
+
     def can_auto_sync(self) -> bool:
         """Return whether a worker can use or recover an authenticated session."""
         return self.remote is not None or self._remote_factory is not None
@@ -153,187 +204,117 @@ class OfflineFirstBackend(Backend):
     def _use_remote(self, project_id: str | None = None) -> bool:
         return self._remote_for_project(project_id) is not None
 
+    def _discard_changes_of(self, entity: str) -> Callable[[str, str], None]:
+        """Drop one entity's queued changes, called as (project_id, entity_id)."""
+
+        def discard(project_id: str, entity_id: str) -> None:
+            self.outbox.discard_entity_changes(
+                project_id, entity=entity, entity_id=entity_id
+            )
+
+        return discard
+
+    def _remote_create_check_of(self, entity: str) -> Callable[[str, str], bool]:
+        """Ask whether an unacknowledged create may already exist on the server."""
+
+        def may_exist(project_id: str, entity_id: str) -> bool:
+            return self.outbox.remote_create_may_exist(
+                project_id, entity=entity, entity_id=entity_id
+            )
+
+        return may_exist
+
     def list_sync_projects(self) -> list[Project]:
         """Refresh the authoritative project list without offline fallback."""
         if self.remote is None:
             raise RuntimeError("No authenticated server session is available.")
         remote_projects = list(self.remote.list_projects() or [])
         self.store.sync_projects(remote_projects)
-        local_projects = [
-            project
-            for project in self.store.list_projects()
-            if str(project.id).startswith("local-") and project.created_by
-        ]
-        by_id = {
-            str(project.id): project for project in [*remote_projects, *local_projects]
-        }
-        return list(by_id.values())
-
-    def _discard_scored_changes(
-        self,
-        entity: str,
-        project_id: str,
-        entity_id: str,
-    ) -> None:
-        self.outbox.discard_entity_changes(
-            project_id,
-            entity=entity,
-            entity_id=entity_id,
-        )
-
-    def _make_scored_service(
-        self,
-        *,
-        kind: str,
-        id_kw: str,
-        model_cls: type[Risk] | type[Opportunity],
-        list_fn: Any,
-        get_project_and_version_fn: Any,
-        get_row_fn: Any,
-        upsert_local_fn: Any,
-        queue_upsert_fn: Any,
-        queue_delete_fn: Any,
-        soft_delete_local_fn: Any,
-        next_code_fn: Any,
-    ) -> ScoredEntityService:
-        return ScoredEntityService(
-            ScoredEntityWiring(
-                kind=kind,
-                id_kw=id_kw,
-                model_cls=model_cls,
-                list_fn=list_fn,
-                get_project_and_version_fn=get_project_and_version_fn,
-                get_row_fn=get_row_fn,
-                upsert_local_fn=upsert_local_fn,
-                queue_upsert_fn=queue_upsert_fn,
-                queue_delete_fn=queue_delete_fn,
-                discard_pending_changes_fn=(
-                    lambda project_id, entity_id: self._discard_scored_changes(
-                        kind,
-                        project_id,
-                        entity_id,
-                    )
-                ),
-                soft_delete_local_fn=soft_delete_local_fn,
-                write_transaction_fn=self.store.write_transaction,
-                next_code_fn=next_code_fn,
-                remote_create_may_exist_fn=(
-                    lambda project_id, entity_id: self.outbox.remote_create_may_exist(
-                        project_id,
-                        entity=kind,
-                        entity_id=entity_id,
-                    )
-                ),
-            )
-        )
+        return self._with_syncable_local_projects(remote_projects)
 
     def list_projects(self) -> list[Project]:
-        if self.remote:
-            try:
-                remote_projects = self.remote.list_projects()
-            except (ApiError, OSError) as exc:
-                # Use the cache unless the request itself was invalid: an
-                # expired session or revoked access must not hide local work.
-                if (
-                    isinstance(exc, ApiError)
-                    and classify_http_status(exc.status)[0] == "validation"
-                ):
-                    raise
-                logging.getLogger(__name__).warning(
-                    "Remote project list unavailable; using local cache: %s", exc
-                )
-            else:
-                self.store.sync_projects(remote_projects)
+        remote_projects = self._fetch_remote_projects()
+        if remote_projects is not None:
+            self.store.sync_projects(remote_projects)
+            if not self.anonymous_offline:
+                # Online, only /projects decides what the sidebar shows: the
+                # cache keeps projects with local data after access is revoked.
+                return self._with_syncable_local_projects(remote_projects)
+        cached = self._visible_cached_projects()
+        if cached or self.remote:
+            return cached
+        return [self._bootstrap_local_project()]
 
-                # Important security/UI rule:
-                # When online, the project picker must show only projects returned
-                # by /projects for the authenticated user. The local SQLite cache
-                # may still contain old projects after membership removal because
-                # sync_projects() deliberately preserves cached projects that have
-                # local data. That cache should not make inaccessible projects
-                # visible in the sidebar.
-                if self.anonymous_offline:
-                    return [
-                        p
-                        for p in self.store.list_projects()
-                        if str(p.id).startswith("local-") and not p.created_by
-                    ]
-
-                local_projects = [
-                    p
-                    for p in self.store.list_projects()
-                    if str(p.id).startswith("local-") and p.created_by
-                ]
-
-                by_id: dict[str, Project] = {}
-                for p in list(remote_projects) + local_projects:
-                    by_id[str(p.id)] = p
-                return list(by_id.values())
-
-        projects = self.store.list_projects()
-
-        if self.anonymous_offline:
-            projects = [
-                p
-                for p in projects
-                if str(p.id).startswith("local-") and not p.created_by
-            ]
-        else:
-            projects = [
-                p
-                for p in projects
-                if not (str(p.id).startswith("local-") and not p.created_by)
-            ]
-
-        if projects:
-            return projects
-
+    def _fetch_remote_projects(self) -> list[Project] | None:
+        """The server's project list, or None when the cache must be used."""
         if not self.remote:
-            meta_key = (
-                "bootstrap_anon_project_id"
-                if self.anonymous_offline
-                else "bootstrap_user_project_id"
+            return None
+        try:
+            return list(self.remote.list_projects())
+        except (ApiError, OSError) as exc:
+            # Use the cache unless the request itself was invalid: an expired
+            # session or revoked access must not hide local work.
+            if (
+                isinstance(exc, ApiError)
+                and classify_http_status(exc.status)[0] == "validation"
+            ):
+                raise
+            logger.warning(
+                "Remote project list unavailable; using local cache: %s", exc
             )
-            bootstrap_id = self.store.get_meta(meta_key)
-            if bootstrap_id:
-                existing = self.store.get_project(str(bootstrap_id))
-                if existing:
-                    return [existing]
+            return None
 
-            p = self.store.create_local_project(
-                name="Local Project",
-                description="Offline project",
-                created_by="" if self.anonymous_offline else None,
-            )
-            self.store.set_meta(meta_key, p.id)
-            return [p]
+    def _visible_cached_projects(self) -> list[Project]:
+        """Anonymous sessions see only anonymous projects; accounts see the rest."""
+        return [
+            p
+            for p in self.store.list_projects()
+            if _is_anonymous_local(p) == bool(self.anonymous_offline)
+        ]
 
-        return projects
+    def _with_syncable_local_projects(
+        self, remote_projects: list[Project]
+    ) -> list[Project]:
+        """Server projects plus local ones that will sync once published."""
+        local = [
+            p
+            for p in self.store.list_projects()
+            if str(p.id).startswith("local-") and p.created_by
+        ]
+        return list({str(p.id): p for p in [*remote_projects, *local]}.values())
+
+    def _bootstrap_local_project(self) -> Project:
+        """Reuse or create the project an offline-only session starts with."""
+        meta_key = (
+            "bootstrap_anon_project_id"
+            if self.anonymous_offline
+            else "bootstrap_user_project_id"
+        )
+        bootstrap_id = self.store.get_meta(meta_key)
+        existing = self.store.get_project(str(bootstrap_id)) if bootstrap_id else None
+        if existing:
+            return existing
+        project = self.store.create_local_project(
+            name="Local Project",
+            description="Offline project",
+            created_by="" if self.anonymous_offline else None,
+        )
+        self.store.set_meta(meta_key, project.id)
+        return project
 
     def create_project(self, *, name: str, description: str = "") -> Project:
         if self.remote:
             try:
                 existing_names = {p.name for p in (self.remote.list_projects() or [])}
-                if name in existing_names:
-                    n = 2
-                    while f"{name} ({n})" in existing_names:
-                        n += 1
-                    name = f"{name} ({n})"
+                name = unique_project_name(name, existing_names)
             except AttributeError, KeyError:
-                logging.getLogger(__name__).debug(
-                    "Duplicate project name check failed", exc_info=True
-                )
+                logger.debug("Duplicate project name check failed", exc_info=True)
             project = self.remote.create_project(name=name, description=description)
             self.store.upsert_projects([project])
             return project
         local_names = {p.name for p in self.store.list_projects()}
-        if name in local_names:
-            n = 2
-            while f"{name} ({n})" in local_names:
-                n += 1
-            name = f"{name} ({n})"
         return self.store.create_local_project(
-            name=name,
+            name=unique_project_name(name, local_names),
             description=description,
             created_by="" if self.anonymous_offline else None,
         )
@@ -359,73 +340,26 @@ class OfflineFirstBackend(Backend):
             raise RuntimeError("Members management requires a synced project.")
         self._members.remove(project_id, member_user_id=member_user_id)
 
-    def _generate_scored_report(self, items: list, filters: dict) -> dict:
-        dt_from = parse_date(str(filters.get("from_date") or ""))
-        dt_to = parse_date(str(filters.get("to_date") or ""))
-        if dt_to:
-            dt_to = dt_to.replace(hour=23, minute=59, second=59)
-
-        crit = ScoredFilterCriteria(
-            search=str(filters.get("search") or ""),
-            min_score=int(filters.get("min_score") or 0),
-            max_score=int(filters.get("max_score") or 999_999),
-            status=str(filters.get("status") or "(any)"),
-            category_contains=str(filters.get("category") or ""),
-            owner_user_id=(
-                str(filters.get("owner_user_id"))
-                if filters.get("owner_user_id")
-                else None
-            ),
-            owner_unassigned=bool(filters.get("owner_unassigned")),
-            identified_from=dt_from,
-            identified_to=dt_to,
+    def _scored_report(
+        self,
+        report_name: str,
+        service: ScoredEntityService,
+        project_id: str,
+        filters: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Ask the server for the report, or compute it from the local copy."""
+        remote_report = _optional_callable(
+            self._remote_for_project(project_id), report_name
         )
-        filtered = filter_scored(items, crit)
-        scores = [int(x.score or 0) for x in filtered]
-
-        buckets = {"0-4": 0, "5-9": 0, "10-14": 0, "15-19": 0, "20-25": 0}
-        for sc in scores:
-            v = int(sc or 0)
-            if v <= 4:
-                buckets["0-4"] += 1
-            elif v <= 9:
-                buckets["5-9"] += 1
-            elif v <= 14:
-                buckets["10-14"] += 1
-            elif v <= 19:
-                buckets["15-19"] += 1
-            else:
-                buckets["20-25"] += 1
-
-        return {
-            "total": len(filtered),
-            "project_total": len(items),
-            "min_score": min(scores) if scores else None,
-            "max_score": max(scores) if scores else None,
-            "avg_score": (sum(scores) / len(scores)) if scores else None,
-            "status_counts": dict(Counter((x.status or "concept") for x in filtered)),
-            "category_counts": dict(
-                Counter((x.category or "(none)") for x in filtered)
-            ),
-            "owner_counts": dict(
-                Counter((x.owner_user_id or "(none)") for x in filtered)
-            ),
-            "score_buckets": buckets,
-        }
+        if remote_report is not None:
+            return dict(remote_report(project_id, **filters))
+        return _local_scored_report(service.list(project_id), filters)
 
     def list_risks(self, project_id: str) -> list[Risk]:
         return self._risks.list(project_id)
 
     def risks_report(self, project_id: str, **filters: Any) -> dict[str, Any]:
-        report = _optional_callable(
-            self._remote_for_project(project_id),
-            "risks_report",
-        )
-        if report is not None:
-            return dict(report(project_id, **filters))
-
-        items = self._risks.list(project_id)
-        return self._generate_scored_report(items, filters)
+        return self._scored_report("risks_report", self._risks, project_id, filters)
 
     def create_risk(
         self,
@@ -483,15 +417,9 @@ class OfflineFirstBackend(Backend):
         return self._opps.list(project_id)
 
     def opportunities_report(self, project_id: str, **filters: Any) -> dict[str, Any]:
-        report = _optional_callable(
-            self._remote_for_project(project_id),
-            "opportunities_report",
+        return self._scored_report(
+            "opportunities_report", self._opps, project_id, filters
         )
-        if report is not None:
-            return dict(report(project_id, **filters))
-
-        items = self._opps.list(project_id)
-        return self._generate_scored_report(items, filters)
 
     def create_opportunity(
         self,

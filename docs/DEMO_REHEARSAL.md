@@ -1,220 +1,264 @@
 # Windows demo rehearsal
 
-Allow about 30 minutes for the first run. This exercises offline persistence, manual reconnect, a two-client conflict, and recovery from earlier server data. Use disposable demo records and the same application version throughout.
+This checks offline persistence, reconnecting, a two-client conflict and recovery after restoring an older server backup. Use the disposable server on port `8001` and the client caches below. The demo files live in `../riskapp-demo`, outside the repository; the normal server database and client cache are not used.
 
-The rehearsal has its own server database, port `8001`, and separate client caches. It uses your existing private `.env` for the signing keys and bootstrap account. Your normal `server/riskapp.db` and default client cache are not used. Keep the demo folder outside the repository and keep credentials out of screenshots.
+Run every block from the repository root in **PowerShell**. Paste each whole `& { ... }` block at once: it groups dependent commands so a failure stops that block. Each block defines its own paths; it does not depend on variables left in another terminal. `$ErrorActionPreference` handles PowerShell errors, and explicit exit-code checks handle Python failures. `>>` is PowerShell's normal continuation prompt, not part of the commands to paste.
 
-## 1. Prepare an isolated session
+## 1. Prepare
 
-Run the project checks first. From the repository root in Git Bash, with the Windows environment active:
+Complete [Windows installation](SETUP_GUIDE.md#windows-installation), including the private `.env`, and run [the project checks](SETUP_GUIDE.md#2-run-the-checks). Keep the same `.env` keys and bootstrap credentials throughout the rehearsal. Read the login email and password locally; keep them out of screenshots.
 
-```bash
-source .venv/Scripts/activate
-bash scripts/check_project.sh
-```
-
-The focused automated rehearsal can also be run on its own:
-
-```bash
-python -m pytest tests/client/gui/test_manual_reconnect.py \
-  tests/client/gui/test_automatic_sync.py \
-  tests/client/integration/test_snapshot_recovery.py \
-  tests/server/ops/test_sqlite_backup.py -q
-```
-
-Use PowerShell for the following launch and recovery commands. They call the Windows Python executable directly, so activating the environment is unnecessary. Open each terminal at the repository root:
+In a **control terminal**, create the demo directory. This refuses an existing directory. If you kept a previous rehearsal, move its completed folder aside or follow the cleanup below before starting another run.
 
 ```powershell
-Set-Location "<your checkout path here>"
-```
-
-In a **control terminal**, create a new folder for this run:
-
-```powershell
-$repoPath = (Resolve-Path .).Path
-$python = Join-Path $repoPath ".venv\Scripts\python.exe"
-if (-not (Test-Path $python)) { throw "Create the project environment first." }
-if (-not (Test-Path (Join-Path $repoPath ".env"))) {
-    throw "Use the setup guide to create your private .env first."
+& {
+    $ErrorActionPreference = "Stop"
+    $repoPath = (Resolve-Path .).Path
+    $python = Join-Path $repoPath ".venv\Scripts\python.exe"
+    $demoPath = Join-Path (Split-Path $repoPath -Parent) "riskapp-demo"
+    if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
+        throw "Complete Windows installation first."
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $repoPath ".env") -PathType Leaf)) {
+        throw "Create .env using the Windows installation instructions first."
+    }
+    New-Item -ItemType Directory -Path $demoPath | Out-Null
+    Write-Host "Demo directory: $demoPath"
 }
-$demoPath = Join-Path (Split-Path $repoPath -Parent) (
-    "riskapp-demo-" + (Get-Date -Format "yyyyMMdd-HHmmss")
-)
-New-Item -ItemType Directory -Path $demoPath -ErrorAction Stop | Out-Null
-$serverDb = Join-Path $demoPath "server.sqlite3"
-$demoPath
 ```
-
-Copy the printed folder path into the server/client blocks below. Open `.env` locally and read `INITIAL_SUPERUSER_EMAIL` and `INITIAL_SUPERUSER_PASSWORD`. Both must be populated to bootstrap this new demo database. Keep the same keys and account settings for every restart; rerunning credential generation is not part of this rehearsal.
 
 ## 2. Start the server and client A
 
-In a **server terminal**, from the repository root:
+In a separate **server terminal**, use this block for every server start:
 
 ```powershell
-$repoPath = (Resolve-Path .).Path
-$python = Join-Path $repoPath ".venv\Scripts\python.exe"
-$demoPath = "PASTE THE PRINTED DEMO FOLDER PATH HERE"
-if (-not (Test-Path $demoPath -PathType Container)) { throw "Invalid demo folder." }
-$env:ENV = "development"
-$env:AUTO_CREATE_SCHEMA = "1"
-$env:ENFORCE_HTTPS = "0"
-$env:ALLOWED_HOSTS = "127.0.0.1,localhost"
-$env:DATABASE_URL = "sqlite+pysqlite:///" + (
-    (Join-Path $demoPath "server.sqlite3").Replace("\", "/")
-)
-Push-Location (Join-Path $repoPath "server")
-try {
-    & $python -m uvicorn riskapp_server.main.app:create_app --factory `
-        --env-file (Join-Path $repoPath ".env") --host 127.0.0.1 --port 8001
-} finally {
-    Pop-Location
+& {
+    $ErrorActionPreference = "Stop"
+    $repoPath = (Resolve-Path .).Path
+    $python = Join-Path $repoPath ".venv\Scripts\python.exe"
+    $demoPath = Join-Path (Split-Path $repoPath -Parent) "riskapp-demo"
+    if (-not (Test-Path -LiteralPath $demoPath -PathType Container)) {
+        throw "Prepare the demo directory first."
+    }
+    $env:ENV = "development"
+    $env:AUTO_CREATE_SCHEMA = "1"
+    $env:ENFORCE_HTTPS = "0"
+    $env:ALLOWED_HOSTS = "127.0.0.1,localhost"
+    $env:DATABASE_URL = "sqlite+pysqlite:///" + ((Join-Path $demoPath "server.sqlite3").Replace("\", "/"))
+    Push-Location (Join-Path $repoPath "server")
+    try {
+        & $python -m uvicorn riskapp_server.main.app:create_app --factory `
+            --env-file (Join-Path $repoPath ".env") --host 127.0.0.1 --port 8001
+    } finally {
+        Pop-Location
+    }
 }
 ```
 
-Wait for `Application startup complete`. In the control terminal:
+Wait for `Application startup complete`. In the control terminal, this should return `status: ok` and `db: ok`:
 
 ```powershell
 Invoke-RestMethod "http://127.0.0.1:8001/health"
 ```
 
-In a **client A terminal**, from the repository root:
+In a separate **client A terminal**, run the block below. Use the same block in another terminal for B, changing `$clientTag` to `"b"`. Later, use `"recovered"` for the recovery client. On restart, use the same tag as before.
 
 ```powershell
-$repoPath = (Resolve-Path .).Path
-$python = Join-Path $repoPath ".venv\Scripts\python.exe"
-$demoPath = "PASTE THE PRINTED DEMO FOLDER PATH HERE"
-if (-not (Test-Path $demoPath -PathType Container)) { throw "Invalid demo folder." }
-$clientTag = "a"
-$env:RISKAPP_URL = "http://127.0.0.1:8001"
-$env:RISKAPP_ALLOW_HTTP = "1"
-$env:RISKAPP_AUTO_SYNC_INTERVAL_SECONDS = "0"
-$env:RISKAPP_LOCAL_DB = Join-Path $demoPath ("client-" + $clientTag + ".sqlite3")
-Push-Location (Join-Path $repoPath "client")
-try {
-    & $python -m riskapp_client.app
-} finally {
-    Pop-Location
+& {
+    $ErrorActionPreference = "Stop"
+    $clientTag = "a"
+    $repoPath = (Resolve-Path .).Path
+    $python = Join-Path $repoPath ".venv\Scripts\python.exe"
+    $demoPath = Join-Path (Split-Path $repoPath -Parent) "riskapp-demo"
+    if (-not (Test-Path -LiteralPath $demoPath -PathType Container)) {
+        throw "Prepare the demo directory first."
+    }
+    $env:RISKAPP_URL = "http://127.0.0.1:8001"
+    $env:RISKAPP_ALLOW_HTTP = "1"
+    $env:RISKAPP_AUTO_SYNC_INTERVAL_SECONDS = "0"
+    $env:RISKAPP_LOCAL_DB = Join-Path $demoPath ("client-" + $clientTag + ".sqlite3")
+    Write-Host "Client database: $env:RISKAPP_LOCAL_DB"
+    Push-Location (Join-Path $repoPath "client")
+    try {
+        & $python -m riskapp_client.app
+    } finally {
+        Pop-Location
+    }
 }
 ```
 
-Log in with the bootstrap account and check the login dialog's URL is `http://127.0.0.1:8001`. Create a project named `Demo rehearsal`. Create a risk with title `Baseline` and probability `2`. Set the Cost, Time, Scope, and Quality impact fields to `3`; the read-only overall impact should be `3`. Leave other editable fields at their defaults. Click **Save Risk**, then **Sync Now**. Wait until the job finishes and the status shows `queued: 0`, `conflicts: 0`, and `errors: 0`.
+Automatic sync is off so you control when each client talks to the server. Log in with the bootstrap account at `http://127.0.0.1:8001`. Create project `Demo rehearsal` and risk `Baseline` with probability `2` and all four impact fields at `3`. Click **Save Risk**, then **Sync Now**. The saved risk should be `R-001`, score `6`, with queue, conflicts and errors all `0`.
 
-Automatic sync is deliberately disabled so you control when each client's changes reach the server. After a successful test, you can repeat the reconnect portion with `RISKAPP_AUTO_SYNC_INTERVAL_SECONDS = "60"` to demonstrate the ordinary automatic mode.
+## 3. Offline edit and restart
 
-## 3. Offline edit, failed sync, and restart
+1. Stop the server with **Ctrl+C** and wait for its terminal prompt. Leave A open.
+2. Select **R-001**. Rename it `Offline draft A`, set probability `4`, keep the impacts at `3`, and click **Save Risk**. Expect score `12` and a queued change. Do not click **Sync Now** yet.
+3. Close A normally and wait for its terminal prompt. Restart it with the same `"a"` tag while the server stays stopped.
+4. Enter the same credentials. After the connection fails, choose **Work Offline as … (will sync later)**. **Work Fully Local** uses a separate, anonymous mode.
+5. Select the project and R-001. Confirm the title, probability `4` and queued change survived. **Sync Now** must be available.
 
-1. Stop the server with **Ctrl+C** in its terminal and wait for the process to finish. Leave client A running.
-2. Select `Baseline`. Change its title to `Offline draft A` and probability to `4`. Click **Save Risk**. Confirm the edited values are visible and queued work is present.
-3. Click **Sync Now** while the server remains stopped. Expect a failure or retry message. Confirm the values and pending work remain; a failed request must not discard the edit.
-4. Close client A normally and wait for its terminal prompt. Relaunch it using the same block and `client-a.sqlite3` path, while the server is still down.
-5. Enter the same account credentials. After the connection fails, choose **Work Offline as <email> (will sync later)**.
-6. Select the demo project. Confirm `Offline draft A`, probability `4`, and the pending edit survived the process restart. **Sync Now** must be enabled.
+`ONLINE` on a client that connected earlier means an authenticated session, not a live network check. A newly started account-associated offline session shows `OFFLINE`. Failed requests must preserve queued work; retry timing and automatic reconnect are also covered by the [manual test checklist](TEST_GUIDE.md#offline-work) and automated tests. If a previous attempt left work in `retry`, wait for its saved retry time before expecting it to be sent again.
 
-The `ONLINE` label on a previously connected client indicates an authenticated session, not a continuous network health check. The failed request and preserved queue are the checks while the API is stopped. A client launched through the account-associated offline option should show `OFFLINE` until it reconnects.
-
-Keep A open with its unsynced edit for the conflict test. Do not choose the fully local/anonymous option, because that session has no account reconnect factory.
-
-If the earlier failed request left `retrying` work, synchronization respects its saved retry time. Wait for that delay to elapse, then click **Sync Now** again; do not edit the outbox or treat an immediate zero-push attempt as data loss.
 
 ## 4. Reconnect and resolve a real conflict
 
-1. Restart the server using the same server block, database path, and `.env`. Verify `/health` again. Leave A open without clicking **Sync Now** yet.
-2. Open a **client B terminal** at the repository root. Run the client block above with `$clientTag = "b"`; use the same demo folder, URL, account, and disabled automatic sync. B must use `client-b.sqlite3`, never A's cache.
-3. In B, select the demo project and click **Sync Now** before editing. Confirm the server still has `Baseline`, probability `2`.
-4. In B, change that risk to title `Accepted by B`, probability `3`. Save and sync successfully. Keep impact unchanged. B has now advanced the server's record version while A still holds its earlier edit.
-5. In A, click **Sync Now**. The worker should reconnect, and the status should become `ONLINE`. Expect a conflict/attention message and **Conflicts (1)**. This is expected version protection, not a failed rehearsal.
-6. Open **Conflicts (1)** and select the risk. Verify the local copy contains `Offline draft A` / `4` and the server copy contains `Accepted by B` / `3`.
-7. Click **Later**, close A, and reopen it with the same cache while the API is running. Open the conflict again: both copies and the unresolved conflict must still be available.
-8. Choose **Merge fields...**. Select **Mine** for the title and **Server** for probability. Leave the remaining differing fields on **Server**, then click **Queue merge**. Close the Conflict Center and click **Sync Now**.
-9. In B, click **Sync Now**. Both clients should now show `Offline draft A`, probability `3`, with no unresolved conflict or pending edit for that risk.
+1. Restart the server and check `/health`. Leave A's queued change unsent.
+2. Start B with tag `"b"`, log in and sync the project. It should still have R-001 `Baseline`, probability `2`.
+3. In B, select R-001, rename it `Accepted by B`, set probability `3`, save and sync. Keep the impacts at `3`.
+4. In A, click **Sync Now**. Expect a reconnect and **Conflicts (1)**: B's server version is newer than A's queued edit.
+5. Open the Conflict Center. The local copy should be `Offline draft A` / `4`; the server copy should be `Accepted by B` / `3`.
+6. Choose **Later**, close A and restart it with tag `"a"`. The unresolved conflict and both copies should still be available.
+7. Choose **Merge fields…**, use **Mine** for the title and **Server** for probability. Leave other differing fields on **Server**. Click **Queue merge**, close the Conflict Center and **Sync Now**.
+8. Sync B. Both clients should show R-001 `Offline draft A`, probability `3`, impact `3`, score `9`, and queue, conflicts and errors all `0`.
 
-This proves local persistence, worker-thread reconnect, version conflict detection, conflict persistence across restart, and deliberate field selection. You can repeat the same conflict with a new edit to demonstrate **Keep mine** or **Use server** separately.
+The same setup can demonstrate **Keep mine** or **Use server** with a fresh conflict; the recorded run below exercised the field merge.
 
-## 5. Back up and recover earlier server contents
+## 5. Back up and restore the server
 
-Keep the server running for the backup. In A, set the first risk's title to `At backup`, save, and sync until it is acknowledged.
+The six recovery checkpoints are below. Stop at any error and retain the demo folder.
 
-In the control terminal, whose `$python`, `$demoPath`, and `$serverDb` were set
-in step 1, run:
+### Checkpoint 1: create and verify the backup
+
+In A, select **R-001**, rename it `At backup`, save and sync until the queue is empty. Keep the server running. In the control terminal:
 
 ```powershell
-$backupFile = Join-Path $demoPath "server-at-backup.sqlite3"
-& $python scripts/server_database.py backup --database $serverDb `
-    --output $backupFile --allow-unversioned
-if ($LASTEXITCODE -ne 0) { throw "Backup failed; stop the drill." }
-& $python scripts/server_database.py verify --backup $backupFile --allow-unversioned
-if ($LASTEXITCODE -ne 0) { throw "Backup verification failed; stop the drill." }
+& {
+    $ErrorActionPreference = "Stop"
+    $repoPath = (Resolve-Path .).Path
+    $python = Join-Path $repoPath ".venv\Scripts\python.exe"
+    $demoPath = Join-Path (Split-Path $repoPath -Parent) "riskapp-demo"
+    $serverDb = Join-Path $demoPath "server.sqlite3"
+    $backupFile = Join-Path $demoPath "server-at-backup.sqlite3"
+    & $python scripts/server_database.py backup --database $serverDb --output $backupFile --allow-unversioned
+    if ($LASTEXITCODE -ne 0) { throw "Backup failed. Stop here." }
+    & $python scripts/server_database.py verify --backup $backupFile --allow-unversioned
+    if ($LASTEXITCODE -ne 0) { throw "Backup verification failed. Stop here." }
+}
 ```
 
-Record the successful verification JSON. The explicit `--allow-unversioned` flag is needed because this isolated development server uses `AUTO_CREATE_SCHEMA=1`. It does not bypass validation of a mismatched migration revision. A repeated rehearsal needs a new demo folder; backup files are not overwritten.
+Both commands print JSON. `revision: null` is expected: this demo uses automatic schema creation, so it needs `--allow-unversioned`. The tool still checks integrity, foreign keys and the required schema. Backup files are never overwritten. Keep the reported SHA-256 for comparison with the restored file.
 
-Now create a visible gap between the snapshot and the later client:
+### Checkpoint 2: sync newer server data
 
-1. In A, change the first risk to `Accepted after backup`, save, and sync.
-2. Create a second risk named `Exists only after backup`, save, and sync.
-3. Stop the server. In A, change the first risk to `Queued offline draft`, probability `5`. Save without syncing. Write down these field values and confirm pending work is present.
-4. Close **both A and B** normally and wait for their processes to exit.
+In A, select **R-001**, rename it `Accepted after backup`, save and sync. Then create **R-002**, title `Exists only after backup`, probability `2`, with all impacts at `3`. Save and sync. Confirm both risks are present and queue, conflicts and errors are all `0`.
 
-Preserve A's closed cache in the control terminal:
+### Checkpoint 3: save offline work and preserve the cache
+
+Stop the server and wait for its terminal prompt. In A, select **R-001**, rename it `Queued offline draft`, set probability `5`, keep all impacts at `3`, and **Save Risk** without syncing. Expect score `15` and a queued change. R-002 should remain `Exists only after backup`.
+
+Close A and B normally and wait for both terminal prompts. Preserve A's cache in the control terminal:
 
 ```powershell
-$clientDb = Join-Path $demoPath "client-a.sqlite3"
-foreach ($suffix in @("-wal", "-shm", "-journal")) {
-    if (Test-Path ($clientDb + $suffix)) {
-        throw "SQLite sidecars remain. Find the open owner and retain the whole set."
+& {
+    $ErrorActionPreference = "Stop"
+    $repoPath = (Resolve-Path .).Path
+    $demoPath = Join-Path (Split-Path $repoPath -Parent) "riskapp-demo"
+    $clientDb = Join-Path $demoPath "client-a.sqlite3"
+    $preservedClient = Join-Path $demoPath "preserved-client-a.sqlite3"
+    $hashFile = Join-Path $demoPath "client-a.sha256"
+    foreach ($suffix in "-wal", "-shm", "-journal") {
+        if (Test-Path -LiteralPath ($clientDb + $suffix)) {
+            throw "SQLite sidecar remains: $clientDb$suffix. Stop; do not delete it."
+        }
+    }
+    if ((Test-Path -LiteralPath $preservedClient) -or (Test-Path -LiteralPath $hashFile)) {
+        throw "A preservation copy or hash already exists. Stop; keep the existing evidence."
+    }
+    $originalHash = (Get-FileHash -LiteralPath $clientDb -Algorithm SHA256).Hash
+    Copy-Item -LiteralPath $clientDb -Destination $preservedClient
+    $preservedHash = (Get-FileHash -LiteralPath $preservedClient -Algorithm SHA256).Hash
+    if ($originalHash -ne $preservedHash) { throw "The copied cache does not match. Stop here." }
+    Set-Content -LiteralPath $hashFile -Value $originalHash -Encoding ascii
+    Write-Host "Client cache preserved; hashes match."
+}
+```
+
+The recorded hash makes the final check independent of PowerShell variables. If sidecars remain, retain them and find the remaining connection; do not copy only the main file or delete sidecars to make the check pass.
+
+### Checkpoint 4: restore the older backup
+
+Keep the API and both clients stopped. The following block checks that the preservation files exist and the recovery cache is unused, then replaces **only the demo server database**:
+
+
+```powershell
+& {
+    $ErrorActionPreference = "Stop"
+    $repoPath = (Resolve-Path .).Path
+    $python = Join-Path $repoPath ".venv\Scripts\python.exe"
+    $demoPath = Join-Path (Split-Path $repoPath -Parent) "riskapp-demo"
+    $backupFile = Join-Path $demoPath "server-at-backup.sqlite3"
+    $serverDb = Join-Path $demoPath "server.sqlite3"
+    foreach ($name in "server-at-backup.sqlite3", "server.sqlite3", "preserved-client-a.sqlite3", "client-a.sha256") {
+        if (-not (Test-Path -LiteralPath (Join-Path $demoPath $name) -PathType Leaf)) {
+            throw "Required rehearsal file is missing: $name"
+        }
+    }
+    foreach ($suffix in "", "-wal", "-shm", "-journal") {
+        if (Test-Path -LiteralPath (Join-Path $demoPath ("client-recovered.sqlite3" + $suffix))) {
+            throw "Recovery cache already exists. Use a fresh rehearsal directory."
+        }
+    }
+    & $python scripts/server_database.py restore --backup $backupFile --database $serverDb --offline --replace --allow-unversioned
+    if ($LASTEXITCODE -ne 0) { throw "Restore failed. Stop here." }
+    & $python scripts/server_database.py verify --backup $serverDb --allow-unversioned
+    if ($LASTEXITCODE -ne 0) { throw "Restored database verification failed. Stop here." }
+    Write-Host "Restore and verification passed."
+}
+```
+
+Both JSON outputs should have the backup's SHA-256. `--offline` acknowledges that every API process is stopped; it does not stop them. If sidecars prevent the restore, find the remaining owner instead of removing the files. Restart the API with the server block and check `/health`. Keep A and B closed from now on.
+
+### Checkpoint 5: recover selected work through a fresh cache
+
+Start the client block with tag `"recovered"`. Log in and sync `Demo rehearsal`. Before editing, check:
+
+| Record | Expected restored state |
+| --- | --- |
+| R-001 | `At backup`, probability `3`, impact `3`, score `9` |
+| R-002 | Absent: it was created after the backup |
+
+Select the **existing R-001 row**, so the editor is editing that risk rather than creating a new one. Re-enter `Queued offline draft`, probability `5`, with all impacts at `3`. Save and sync. Expect one risk, score `15`, and queue, conflicts and errors all `0`.
+
+This creates a new edit against the restored version. Keep old change IDs and payloads in the preserved cache; do not bulk-replay them. Re-create later records only deliberately, checking parent relationships for actions and assessments.
+
+### Checkpoint 6: restart and confirm preservation
+
+Close the recovered client, restart it with the same `"recovered"` tag and sync. Confirm R-001 still shows `Queued offline draft`, probability `5`, impact `3`, score `15`, with one risk and queue, conflicts and errors all `0`.
+
+In the control terminal, check both caches against the hash recorded before restoration:
+
+```powershell
+& {
+    $ErrorActionPreference = "Stop"
+    $repoPath = (Resolve-Path .).Path
+    $demoPath = Join-Path (Split-Path $repoPath -Parent) "riskapp-demo"
+    $originalHash = (Get-Content -LiteralPath (Join-Path $demoPath "client-a.sha256") -Raw).Trim()
+    foreach ($name in "client-a.sqlite3", "preserved-client-a.sqlite3") {
+        $currentHash = (Get-FileHash -LiteralPath (Join-Path $demoPath $name) -Algorithm SHA256).Hash
+        if ($currentHash -ne $originalHash) { throw "Cache changed: $name" }
+        Write-Host "$name unchanged: True"
     }
 }
-$preservedClient = Join-Path $demoPath "preserved-client-a.sqlite3"
-if (Test-Path $preservedClient) { throw "Preservation copy already exists." }
-Copy-Item -LiteralPath $clientDb -Destination $preservedClient -ErrorAction Stop
-$preservedHash = (Get-FileHash -LiteralPath $preservedClient -Algorithm SHA256).Hash
-$originalHash = (Get-FileHash -LiteralPath $clientDb -Algorithm SHA256).Hash
-if ($originalHash -ne $preservedHash) { throw "Client preservation copy differs." }
 ```
 
-If sidecars remain, retain them and resolve the remaining open connection; do not delete them to make the check pass. The server backup tool validates server schemas and is not a client-cache backup tool.
+Both lines must report `True`. Future launches against this restored server must use the recovered cache. Resetting an old cache's cursor alone leaves later cached records behind. The [backup guide](BACKUP_RESTORE.md#clients-after-restoring-an-older-backup) explains the limits: this is manual recovery, not automatic reconciliation after a server rollback.
 
-With the API and clients still stopped, restore the earlier **demo server**:
+The recovery limit to explain: the snapshot defines which server writes survive. Later work may remain only in a client's cache or outbox. This demo preserves that evidence and reapplies selected fields through a fresh cache, it does not provide automatic multi-client reconciliation after server rollback.
 
-```powershell
-& $python scripts/server_database.py restore --backup $backupFile `
-    --database $serverDb --offline --replace --allow-unversioned
-if ($LASTEXITCODE -ne 0) { throw "Restore failed; stop the drill." }
-& $python scripts/server_database.py verify --backup $serverDb --allow-unversioned
-if ($LASTEXITCODE -ne 0) { throw "Restored database verification failed." }
-```
+## Recorded Windows rehearsal: 14 October 2026
 
-`--replace` replaces only the explicitly selected demo server file. `--offline` acknowledges that you have stopped every API process; it does not stop them for you. If the restore rejects database sidecars, find the owner instead of removing them. Restart the API with the same server block and keys, then check `/health`.
+The manually observed run passed these checks:
 
-Keep old clients A and B closed. Their cursors, cached records, and versions describe newer server data. Restoring the server does not reconcile those caches.
+| Check | Observed result |
+| --- | --- |
+| Offline save and restart | The edited title, probability and queued work survived reopening the same cache |
+| Reconnect and conflict | A's stale edit conflicted with B's accepted edit; both copies remained available after restarting A |
+| Field merge | Both clients converged on the selected title and probability, with no queued work or conflict |
+| Backup and older-snapshot restore | Backup and verification succeeded; the restored database matched the backup's SHA-256 |
+| Fresh-cache recovery | The earlier risk was present and the later risk absent; the selected edit was re-entered and synced |
+| Recovery restart and preservation | The recovered edit survived restart; the original and copied cache hashes were unchanged |
 
-Start a **recovery client terminal** at the repository root. Use the client launch block with `$clientTag = "recovered"`. Before launching, confirm the cache is new:
-
-```powershell
-$demoPath = "PASTE THE PRINTED DEMO FOLDER PATH HERE"
-if (Test-Path (Join-Path $demoPath "client-recovered.sqlite3")) {
-    throw "Use a fresh recovery cache for this drill."
-}
-```
-
-1. Log in, select the project, and click **Sync Now**. The first risk should be `At backup`; `Exists only after backup` should be absent. The bootstrap account and project should still exist because they were in the snapshot.
-2. Re-enter the selected later values: title `Queued offline draft`, probability `5`. Save and sync. This creates a new edit against the restored version.
-3. Restart the recovery client with the same recovered cache and sync again. Confirm the recovered edit remains, with no duplicate record or conflict.
-4. In the control terminal, confirm the old caches were preserved unchanged:
-
-```powershell
-if ((Get-FileHash -LiteralPath $clientDb -Algorithm SHA256).Hash -ne $originalHash) {
-    throw "The original client cache changed."
-}
-if ((Get-FileHash -LiteralPath $preservedClient -Algorithm SHA256).Hash -ne $preservedHash) {
-    throw "The preservation copy changed."
-}
-```
-
-Future launches against this restored demo server must use the recovered cache. Do not reconnect A/B, reset their cursors, or bulk-replay their old outboxes as a shortcut. Re-create later records only when you explicitly choose to recover them; actions and assessments also need their parent relationships checked.
-
-The recovery limit to explain: the snapshot defines which server writes survive. Later work may remain only in a client's cache or outbox. This demo preserves that evidence and reapplies selected fields through a fresh cache; it does not provide automatic multi-client reconciliation after server rollback.
+The initial restore command failed at argument parsing because variables were unset in that terminal. The corrected command completed successfully before recovery continued. An earlier intermittent restart issue was **not reproduced in this Windows run**; its cause was not established, so this is not evidence that it was fixed. The run verified the procedure using a timestamped demo folder and hashes retained in the control terminal. The blocks above make future runs independent of those terminal variables. This result records the observed application behavior, not an execution of every revised command block.
 
 ## Record the rehearsal outcome
 
@@ -233,4 +277,22 @@ The recovery limit to explain: the snapshot defines which server writes survive.
 
 For any failure, record the step, client cache path, exact clicks, expected versus actual result, and the relevant client/server exception text. Include a screenshot of the status or conflict copies when useful, with secrets removed. Keep the demo databases until the issue is understood. Fix the specific defect, add a regression test for its cause, rerun that case, then rerun the project checks before the next full rehearsal.
 
-Close the demo clients and stop the demo API after the run. Close their dedicated terminals so the demo environment settings do not carry into normal launches. For background-sync behavior and recovery limits, also see [the client guide](../client/README_CLIENT.md), [backup/restore](BACKUP_RESTORE.md), and [older-snapshot recovery](OLDER_SNAPSHOT_RECOVERY.md).
+## Cleanup
+
+1. Close every demo client normally. Stop the demo API with **Ctrl+C** and wait for its terminal prompt.
+2. Keep the demo folder if a check failed or you want the evidence. If you want to discard a completed run, the following deletes its databases, backup, preservation copy and recorded hash. Run it from the repository root:
+
+   ```powershell
+   & {
+       $ErrorActionPreference = "Stop"
+       $repoPath = (Resolve-Path .).Path
+       $demoPath = Join-Path (Split-Path $repoPath -Parent) "riskapp-demo"
+       Remove-Item -LiteralPath $demoPath -Recurse
+   }
+   ```
+
+3. Close all rehearsal terminals. Their `$env:` settings are process-local; closing those sessions clears the demo URL, database paths and disabled automatic-sync setting. Start a fresh terminal for normal development.
+
+Keep `.venv` and the private `.env` for normal local development. The cleanup removes only the named demo folder. For a run made with a different folder name, such as the timestamped 14 October run, remove that exact folder instead; do not use a wildcard.
+
+For background-sync behavior and recovery limits, see [the client guide](../client/README_CLIENT.md) and [backup and restore](BACKUP_RESTORE.md#clients-after-restoring-an-older-backup).

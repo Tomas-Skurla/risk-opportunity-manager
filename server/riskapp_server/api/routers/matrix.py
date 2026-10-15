@@ -9,7 +9,8 @@ from sqlalchemy.sql.functions import count
 
 from riskapp_server.auth.service import get_current_user
 from riskapp_server.core.permissions import ensure_member
-from riskapp_server.db.session import Item, User, get_db
+from riskapp_server.db.models import Item, User
+from riskapp_server.db.session import get_db
 from riskapp_server.schemas.models import MatrixResponse
 
 router = APIRouter(tags=["matrix"])

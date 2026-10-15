@@ -37,12 +37,3 @@ class OpportunitiesTab(ScoredEntitiesTab):
         )
         self.table_card = self.ui.table_card
         self.editor_card = self.ui.editor_card
-        self.opp_filter_search = self.filter_search
-        self.opp_filter_min_score = self.filter_min_score
-        self.opp_filter_max_score = self.filter_max_score
-        self.opp_filter_status = self.filter_status
-        self.opp_filter_category = self.filter_category
-        self.opp_filter_owner = self.filter_owner
-        self.opp_filter_from = self.filter_from
-        self.opp_filter_to = self.filter_to
-        self.opp_filter_report = self.filter_report

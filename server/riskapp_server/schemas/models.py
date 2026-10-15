@@ -13,7 +13,7 @@ from pydantic import (
     model_validator,
 )
 
-from riskapp_server.db.session import (
+from riskapp_server.db.models import (
     ActionKind,
     ActionStatus,
     HelpDeskCategory,
@@ -148,11 +148,6 @@ class _ItemCreateFields(ItemShared):
     impact: Impact
 
 
-class ItemCreate(_ItemCreateFields):
-
-    type: Literal["risk", "opportunity"]
-
-
 class RiskCreate(_ItemCreateFields):
 
     type: Literal["risk"] = "risk"
@@ -195,11 +190,6 @@ class _ItemOutFields(ItemShared, ORMModel):
     updated_at: datetime
     version: int
     is_deleted: bool
-
-
-class ItemOut(_ItemOutFields):
-
-    type: Literal["risk", "opportunity"]
 
 
 class RiskOut(_ItemOutFields):

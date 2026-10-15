@@ -58,20 +58,23 @@ RUN bash scripts/check_project.sh
 
 FROM base AS server
 
-# Apply Debian security updates to packages inherited from the pinned base.
-# Fail the build if the repository does not yet provide the fixed Perl version.
+# Apply Debian updates to packages inherited from the pinned base.
+# Fail the build if the repository does not provide the required fixed versions.
 RUN apt-get update \
-    && apt-get install --no-install-recommends --only-upgrade -y \
+    && DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends --only-upgrade -y \
         libpcre2-8-0 \
         libssl3 \
         openssl \
         perl-base \
+        tzdata \
     && dpkg --compare-versions \
         "$(dpkg-query -W -f='${Version}' perl-base)" ge '5.36.0-7+deb12u4' \
     && dpkg --compare-versions \
         "$(dpkg-query -W -f='${Version}' libssl3)" ge '3.0.22-1~deb12u1' \
     && dpkg --compare-versions \
         "$(dpkg-query -W -f='${Version}' openssl)" ge '3.0.22-1~deb12u1' \
+    && dpkg --compare-versions \
+        "$(dpkg-query -W -f='${Version}' tzdata)" ge '2026c-0+deb12u1' \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

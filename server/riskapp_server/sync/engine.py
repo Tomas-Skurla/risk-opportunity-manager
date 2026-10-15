@@ -1,510 +1,50 @@
-# pylint: disable=too-many-lines
-# The sync engine is organized into helpers; further file splitting is separate work.
+"""Push: apply a batch of client changes in one transaction, one result each."""
+
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
 import uuid
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
-from typing import Any, NotRequired, TypedDict, cast
+from typing import Any
 
 from fastapi import HTTPException
-from pydantic import BaseModel
-from sqlalchemy import func, select, update
-from sqlalchemy.engine import CursorResult
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.inspection import inspect as sa_inspect
 from sqlalchemy.orm import Session
 
-from riskapp_server.core.config import MAX_SYNC_PULL_PER_ENTITY, SYNC_PUSH_EXPUNGE_EVERY
+from riskapp_server.core.config import SYNC_PUSH_EXPUNGE_EVERY
 from riskapp_server.core.permissions import ensure_member, ensure_role_at_least
-from riskapp_server.core.scoring import recalculate_item_scores
-from riskapp_server.db.session import (
-    Action,
-    ActionStatus,
-    Assessment,
-    AuditLog,
-    HelpDeskCategory,
-    HelpDeskPriority,
-    HelpDeskStatus,
-    HelpDeskTicket,
-    Item,
-    RiskStatus,
-    SyncProjectState,
-    SyncReceipt,
-    utcnow,
+from riskapp_server.db.models import RiskStatus, SyncProjectState, SyncReceipt, utcnow
+from riskapp_server.schemas.models import SyncChange
+from riskapp_server.sync.mutations import (
+    ConflictError,
+    _apply_delete,
+    _apply_upsert,
+    current_server_state,
+    fetch_obj,
+    maybe_entity_id,
+    updated_at_text,
 )
-from riskapp_server.schemas.models import (
-    ActionOut,
-    HelpDeskTicketOut,
-    SyncActionRecord,
-    SyncAssessmentRecord,
-    SyncChange,
-    SyncHelpDeskTicketRecord,
-    SyncItemRecord,
+from riskapp_server.sync.mutations import (  # re-exported for tests
+    _claim_base_version as _claim_base_version,
 )
+from riskapp_server.sync.pull import pull_since as pull_since
+from riskapp_server.sync.receipts import (
+    change_result,
+    duplicate_error_reason,
+    load_existing_receipts,
+    payload_hash,
+    receipt_result,
+    refresh_accepted_replay,
+    store_receipt,
+)
+from riskapp_server.sync.registry import ENTITY_MODELS, ENTITY_REGISTRY, OPS
+
+logger = logging.getLogger("riskapp_server.sync")
 
 
-class EntityConfig(TypedDict):
-    model: type[Any]
-    schema: type[BaseModel]
-    manager_delete: bool
-    defaults: dict[str, Any]
-    parent_model: NotRequired[type[Any]]
-    parent_field: NotRequired[str]
-
-
-ENTITY_REGISTRY: dict[str, EntityConfig] = {
-    "risk": {
-        "model": Item,
-        "schema": SyncItemRecord,
-        "manager_delete": True,
-        "defaults": {
-            "title": "Untitled",
-            "probability": 1,
-            "impact": 1,
-            "type": "risk",
-        },
-    },
-    "opportunity": {
-        "model": Item,
-        "schema": SyncItemRecord,
-        "manager_delete": True,
-        "defaults": {
-            "title": "Untitled",
-            "probability": 1,
-            "impact": 1,
-            "type": "opportunity",
-        },
-    },
-    "action": {
-        "model": Action,
-        "schema": SyncActionRecord,
-        "manager_delete": True,
-        "defaults": {
-            "title": "Untitled action",
-            "kind": "mitigation",
-            "status": ActionStatus.open.value,
-        },
-    },
-    "assessment": {
-        "model": Assessment,
-        "schema": SyncAssessmentRecord,
-        "manager_delete": False,
-        "defaults": {"probability": 1, "impact": 1},
-        "parent_model": Item,
-        "parent_field": "item_id",
-    },
-    "helpdesk_ticket": {
-        "model": HelpDeskTicket,
-        "schema": SyncHelpDeskTicketRecord,
-        "manager_delete": False,
-        "defaults": {
-            "title": "Untitled ticket",
-            "category": HelpDeskCategory.other.value,
-            "priority": HelpDeskPriority.medium.value,
-            "status": HelpDeskStatus.open.value,
-        },
-    },
-}
-
-ENTITY_MODELS = {key: config["model"] for key, config in ENTITY_REGISTRY.items()}
-OPS = {"upsert", "delete"}
-
-
-# Keep the public 'field' parameter name for existing keyword callers.
-# pylint: disable-next=redefined-outer-name
-def parse_uuid(value: Any, field: str) -> uuid.UUID:
-    try:
-        return value if isinstance(value, uuid.UUID) else uuid.UUID(str(value))
-    except (ValueError, KeyError, TypeError) as exc:
-        raise HTTPException(
-            status_code=400, detail=f"Invalid UUID for {field}"
-        ) from exc
-
-
-def model_to_dict(obj: Any) -> dict[str, Any]:
-    """Serialize a model to JSON-safe values."""
-
-    out: dict[str, Any] = {}
-    insp = sa_inspect(obj)
-    for attr in insp.mapper.column_attrs:
-        k = attr.key
-        if k == "change_sequence":
-            # Feed ordering is transport metadata, not client-editable state.
-            continue
-        v = getattr(obj, k)
-        if isinstance(v, uuid.UUID):
-            out[k] = str(v)
-        elif isinstance(v, datetime):
-            out[k] = v.isoformat()
-        else:
-            out[k] = v
-    if hasattr(obj, "item_id") and "item_id" in out:
-        out.setdefault("risk_id", out["item_id"])
-        out.setdefault("opportunity_id", out["item_id"])
-    return out
-
-
-def model_to_sync_dict(db: Session, entity: str, obj: Any) -> dict[str, Any]:
-    """Serialize one entity with unambiguous parent aliases for the client."""
-    out = model_to_dict(obj)
-    if entity not in {"action", "assessment"}:
-        return out
-    item_id = out.get("item_id")
-    item_type = (
-        db.execute(select(Item.type).where(Item.id == obj.item_id)).scalar()
-        if item_id
-        else None
-    )
-    out["risk_id"] = item_id if item_type == "risk" else None
-    out["opportunity_id"] = item_id if item_type == "opportunity" else None
-    return out
-
-
-def _maybe_recalculate_scores(obj: Any) -> None:
-
-    if all(hasattr(obj, a) for a in ("probability", "impact", "score")):
-        recalculate_item_scores(obj)
-
-
-def _min_role_for_change(entity: str, op: str) -> str:
-    return (
-        "manager"
-        if op == "delete" and ENTITY_REGISTRY[entity]["manager_delete"]
-        else "member"
-    )
-
-
-def _naive_utc(dt: datetime) -> datetime:
-    return (
-        dt.astimezone(UTC).replace(tzinfo=None)
-        if getattr(dt, "tzinfo", None) is not None
-        else dt
-    )
-
-
-def _parse_sequence_cursor(
-    cur: str | None, *, default_since: int, snapshot_sequence: int
-) -> int:
-    if not cur:
-        return default_since
-    try:
-        prefix, value = cur.split(":", 1)
-        sequence = int(value)
-        if prefix != "seq" or not default_since <= sequence <= snapshot_sequence:
-            raise ValueError("cursor is outside the synchronization snapshot")
-        return sequence
-    except (ValueError, KeyError, TypeError) as exc:
-        raise HTTPException(status_code=400, detail="Invalid cursor") from exc
-
-
-def _encode_sequence_cursor(sequence: int) -> str:
-    return f"seq:{sequence}"
-
-
-@dataclass(frozen=True)
-class _PullContext:
-    db: Session
-    project_id: uuid.UUID
-    server_time: datetime
-    limit: int | None
-    hard_cap: int | None
-    cursors: dict[str, str]
-    since_sequence: int
-    snapshot_sequence: int
-
-
-@dataclass(frozen=True)
-class _PullPage:
-    rows: list[Any]
-    has_more: bool
-    cursor: str
-
-
-def _prepare_pull_context(
-    db: Session,
-    project_id: uuid.UUID,
-    limit_per_entity: int | None,
-    cursors: dict[str, str] | None,
-    since_sequence: int,
-    snapshot_sequence: int | None,
-) -> _PullContext:
-    current_sequence_value = db.execute(
-        select(SyncProjectState.last_sequence).where(
-            SyncProjectState.project_id == project_id
-        )
-    ).scalar_one_or_none()
-    if current_sequence_value is None:
-        raise HTTPException(
-            status_code=500, detail="Project synchronization state is missing"
-        )
-    current_sequence = int(current_sequence_value)
-
-    since_sequence = int(since_sequence)
-    if since_sequence < 0:
-        raise HTTPException(
-            status_code=400, detail="since_sequence must be nonnegative"
-        )
-    normalized_snapshot_sequence = (
-        current_sequence if snapshot_sequence is None else int(snapshot_sequence)
-    )
-    if normalized_snapshot_sequence < since_sequence:
-        raise HTTPException(
-            status_code=400, detail="snapshot_sequence precedes since_sequence"
-        )
-    if normalized_snapshot_sequence > current_sequence:
-        raise HTTPException(
-            status_code=400, detail="snapshot_sequence is ahead of the server"
-        )
-    hard_cap = MAX_SYNC_PULL_PER_ENTITY if limit_per_entity is None else None
-    limit = hard_cap if limit_per_entity is None else limit_per_entity
-    return _PullContext(
-        db=db,
-        project_id=project_id,
-        server_time=_naive_utc(utcnow()),
-        limit=limit,
-        hard_cap=hard_cap,
-        cursors=cursors or {},
-        since_sequence=since_sequence,
-        snapshot_sequence=normalized_snapshot_sequence,
-    )
-
-
-def _pull_window(
-    ctx: _PullContext, model: Any, key: str
-) -> tuple[tuple[Any, ...], tuple[Any, ...], str]:
-
-    sequence = _parse_sequence_cursor(
-        ctx.cursors.get(key),
-        default_since=ctx.since_sequence,
-        snapshot_sequence=ctx.snapshot_sequence,
-    )
-    return (
-        (
-            model.change_sequence > sequence,
-            model.change_sequence <= ctx.snapshot_sequence,
-        ),
-        (model.change_sequence.asc(),),
-        _encode_sequence_cursor(sequence),
-    )
-
-
-def _finish_pull_page(
-    rows: list[Any],
-    *,
-    ctx: _PullContext,
-    limit: int | None,
-    base_cursor: str,
-    joined: bool = False,
-) -> _PullPage:
-    has_more = bool(limit and len(rows) > limit)
-    if has_more:
-        rows = rows[:limit]
-    last = rows[-1][0] if rows and joined else (rows[-1] if rows else None)
-    if last is None:
-        cursor = base_cursor
-    else:
-        cursor = _encode_sequence_cursor(int(last.change_sequence))
-    return _PullPage(rows=rows, has_more=has_more, cursor=cursor)
-
-
-def _pull_item_page(ctx: _PullContext, item_type: str, key: str) -> _PullPage:
-    window, ordering, base_cursor = _pull_window(ctx, Item, key)
-    query = (
-        select(Item)
-        .where(
-            Item.project_id == ctx.project_id,
-            Item.type == item_type,
-            *window,
-        )
-        .order_by(*ordering)
-    )
-    rows = (
-        ctx.db.execute(query.limit(ctx.limit + 1) if ctx.limit else query)
-        .scalars()
-        .all()
-    )
-    return _finish_pull_page(
-        list(rows),
-        ctx=ctx,
-        limit=ctx.limit,
-        base_cursor=base_cursor,
-    )
-
-
-def _pull_joined_page(
-    ctx: _PullContext,
-    model: Any,
-    cursor_key: str,
-    project_filter: Any,
-) -> _PullPage:
-    window, ordering, base_cursor = _pull_window(ctx, model, cursor_key)
-    query = (
-        select(model, Item.type)
-        .join(Item, model.item_id == Item.id)
-        .where(
-            project_filter,
-            *window,
-        )
-        .order_by(*ordering)
-    )
-    rows = ctx.db.execute(query.limit(ctx.limit + 1) if ctx.limit else query).all()
-    return _finish_pull_page(
-        list(rows),
-        ctx=ctx,
-        limit=ctx.limit,
-        base_cursor=base_cursor,
-        joined=True,
-    )
-
-
-def _pull_simple_page(
-    ctx: _PullContext,
-    model: Any,
-    cursor_key: str,
-    project_filter: Any,
-) -> _PullPage:
-    window, ordering, base_cursor = _pull_window(ctx, model, cursor_key)
-    query = (
-        select(model)
-        .where(
-            project_filter,
-            *window,
-        )
-        .order_by(*ordering)
-    )
-    rows = (
-        ctx.db.execute(query.limit(ctx.limit + 1) if ctx.limit else query)
-        .scalars()
-        .all()
-    )
-    return _finish_pull_page(
-        list(rows),
-        ctx=ctx,
-        limit=ctx.limit,
-        base_cursor=base_cursor,
-    )
-
-
-def _serialize_action_rows(rows: list[Any]) -> list[dict[str, Any]]:
-    return [
-        ActionOut(
-            id=action.id,
-            project_id=action.project_id,
-            risk_id=action.item_id if item_type == "risk" else None,
-            opportunity_id=action.item_id if item_type == "opportunity" else None,
-            kind=action.kind,
-            title=action.title,
-            description=action.description,
-            status=action.status,
-            owner_user_id=action.owner_user_id,
-            updated_at=action.updated_at,
-            version=action.version,
-            is_deleted=action.is_deleted,
-        ).model_dump(mode="json")
-        for action, item_type in rows
-    ]
-
-
-def _serialize_assessment_rows(rows: list[Any]) -> list[dict[str, Any]]:
-    assessments: list[dict[str, Any]] = []
-    for assessment, item_type in rows:
-        record = model_to_dict(assessment)
-        if "item_id" not in record and "risk_id" in record:
-            record["item_id"] = record["risk_id"]
-        item_id = record.get("item_id")
-        record["risk_id"] = item_id if item_type == "risk" else None
-        record["opportunity_id"] = item_id if item_type == "opportunity" else None
-        assessments.append(record)
-    return assessments
-
-
-def pull_since(
-    db: Session,
-    project_id: uuid.UUID,
-    *,
-    since_sequence: int,
-    limit_per_entity: int | None = None,
-    cursors: dict[str, str] | None = None,
-    snapshot_sequence: int | None = None,
-) -> dict[str, Any]:
-    ctx = _prepare_pull_context(
-        db,
-        project_id,
-        limit_per_entity,
-        cursors,
-        since_sequence,
-        snapshot_sequence,
-    )
-    risks = _pull_item_page(ctx, "risk", "risks")
-    opportunities = _pull_item_page(ctx, "opportunity", "opportunities")
-    actions = _pull_joined_page(ctx, Action, "actions", Action.project_id == project_id)
-    assessments = _pull_joined_page(
-        ctx, Assessment, "assessments", Item.project_id == project_id
-    )
-    helpdesk = _pull_simple_page(
-        ctx,
-        HelpDeskTicket,
-        "helpdesk_tickets",
-        HelpDeskTicket.project_id == project_id,
-    )
-
-    pages = {
-        "risks": risks,
-        "opportunities": opportunities,
-        "actions": actions,
-        "assessments": assessments,
-        "helpdesk_tickets": helpdesk,
-    }
-
-    has_more = {key: page.has_more for key, page in pages.items()}
-
-    out: dict[str, Any] = {
-        "server_time": ctx.server_time,
-        "server_sequence": ctx.snapshot_sequence,
-        "risks": [model_to_dict(row) for row in risks.rows],
-        "opportunities": [model_to_dict(row) for row in opportunities.rows],
-        "actions": _serialize_action_rows(actions.rows),
-        "assessments": _serialize_assessment_rows(assessments.rows),
-        "helpdesk_tickets": [
-            HelpDeskTicketOut.model_validate(row).model_dump(mode="json")
-            for row in helpdesk.rows
-        ],
-    }
-
-    if ctx.hard_cap and any(has_more.values()):
-        raise HTTPException(
-            status_code=413,
-            detail=("Sync pull too large. Paginate using limit_per_entity + cursors."),
-        )
-
-    if limit_per_entity is not None:
-        out["has_more"] = has_more
-        out["cursors"] = {key: page.cursor for key, page in pages.items()}
-    return out
-
-
-class ConflictError(Exception):
-    def __init__(
-        self,
-        reason: str,
-        entity_id: uuid.UUID | None,
-        server_version: int | None,
-        server_record: dict[str, Any] | None = None,
-    ) -> None:
-        super().__init__(reason)
-        self.reason = reason
-        self.entity_id = entity_id
-        self.server_version = server_version
-        self.server_record = server_record
-        self.server_updated_at = (
-            str(server_record.get("updated_at"))
-            if server_record and server_record.get("updated_at") is not None
-            else None
-        )
+def _dialect_name(db: Session) -> str:
+    return db.get_bind().dialect.name
 
 
 def _begin_push_transaction(db: Session) -> None:
@@ -515,11 +55,7 @@ def _begin_push_transaction(db: Session) -> None:
     transaction failing later with SQLITE_BUSY_SNAPSHOT instead of producing a
     deterministic version conflict.
     """
-    get_bind = getattr(db, "get_bind", None)
-    if not callable(get_bind):
-        return
-    bind = get_bind()
-    if getattr(getattr(bind, "dialect", None), "name", None) != "sqlite":
+    if _dialect_name(db) != "sqlite":
         return
     if db.in_transaction():
         # Authentication/authorization may already have opened a read-only
@@ -530,11 +66,7 @@ def _begin_push_transaction(db: Session) -> None:
 
 def _lock_receipt_ids(db: Session, changes: list[SyncChange]) -> None:
     """Serialize globally unique change IDs even across different projects."""
-    get_bind = getattr(db, "get_bind", None)
-    if not callable(get_bind):
-        return
-    bind = get_bind()
-    if getattr(getattr(bind, "dialect", None), "name", None) != "postgresql":
+    if _dialect_name(db) != "postgresql":
         return  # SQLite already holds a global writer reservation.
     # Sorted acquisition avoids lock-order deadlocks for multi-change batches.
     for change_id in sorted({ch.change_id for ch in changes}):
@@ -542,103 +74,16 @@ def _lock_receipt_ids(db: Session, changes: list[SyncChange]) -> None:
         db.execute(select(func.pg_advisory_xact_lock(key)))
 
 
-def _change_result(
-    *,
-    change_id: uuid.UUID,
-    status: str,
-    entity: str,
-    op: str,
-    entity_id: uuid.UUID | str | None,
-    response: dict[str, Any] | None = None,
-    replayed: bool = False,
-) -> dict[str, Any]:
-    """Build the stable per-change result returned for new and replayed work."""
-    payload = response if isinstance(response, dict) else {}
-    stored_entity_id = payload.get("entity_id") or entity_id
-    result: dict[str, Any] = {
-        "change_id": str(change_id),
-        "status": status,
-        "replayed": bool(replayed),
-        "entity": entity,
-        "op": op,
-        "entity_id": str(stored_entity_id) if stored_entity_id else None,
-    }
-    for key in (
-        "reason",
-        "detail",
-        "server_version",
-        "server_record",
-        "server_updated_at",
-        "failure_kind",
-        "retryable",
-    ):
-        if key in payload:
-            result[key] = payload[key]
-    return result
-
-
-def _receipt_result(receipt: SyncReceipt) -> dict[str, Any]:
-    return _change_result(
-        change_id=receipt.change_id,
-        status=receipt.status,
-        entity=receipt.entity,
-        op=receipt.op,
-        entity_id=receipt.entity_id,
-        response=receipt.response,
-        replayed=True,
-    )
-
-
-def _refresh_accepted_replay(
-    ctx: _PushContext,
-    replay: dict[str, Any],
-) -> dict[str, Any]:
-    """Return current server state for an accepted idempotency replay.
-
-    A client can move its pull watermark past a row while the row has a local
-    retry pending. Replaying the original receipt must therefore reconcile the
-    current row, not restore the older snapshot stored with that receipt.
-    """
-    if replay.get("status") != "accepted":
-        return replay
-    entity = str(replay.get("entity") or "")
-    raw_entity_id = replay.get("entity_id")
-    if entity not in ENTITY_MODELS or not raw_entity_id:
-        return replay
-    try:
-        entity_id = uuid.UUID(str(raw_entity_id))
-    except TypeError, ValueError:
-        return replay
-    server_version, server_record = _current_server_state(
-        ctx.db,
-        entity,
-        entity_id,
-        ctx.project_id,
-        ctx.user_id,
-    )
-    if server_record is None:
-        return replay
-    refreshed = dict(replay)
-    receipt_server_version = refreshed.get("server_version")
-    if isinstance(receipt_server_version, int) and not isinstance(
-        receipt_server_version, bool
-    ):
-        refreshed["receipt_server_version"] = receipt_server_version
-    refreshed["server_version"] = server_version
-    refreshed["server_record"] = server_record
-    refreshed["server_updated_at"] = (
-        str(server_record.get("updated_at"))
-        if server_record.get("updated_at") is not None
-        else None
-    )
-    return refreshed
-
-
-def _payload_hash(change: SyncChange) -> str:
-    """Hash the parsed, key-order-independent request, excluding its receipt ID."""
-    payload = change.model_dump(mode="json", exclude={"change_id"})
-    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+def classify_http_failure(status_code: int) -> tuple[str, bool]:
+    """Map an operation-level HTTP failure to a stable client action."""
+    status = int(status_code or 0)
+    if status == 401:
+        return "authentication", False
+    if status == 403:
+        return "permission", False
+    if status in {408, 425, 429} or status >= 500:
+        return "transient", True
+    return "validation", False
 
 
 @dataclass
@@ -648,111 +93,61 @@ class _PushContext:
     project_id: uuid.UUID
     role: str
     existing_receipts: dict[uuid.UUID, SyncReceipt]
-    seen_change_ids: set[uuid.UUID]
     results: list[dict[str, Any]] = field(default_factory=list)
     batch_results: dict[uuid.UUID, dict[str, Any]] = field(default_factory=dict)
     batch_hashes: dict[uuid.UUID, str] = field(default_factory=dict)
     wrote: int = 0
 
+    def seen(self, change_id: uuid.UUID) -> bool:
+        return change_id in self.existing_receipts or change_id in self.batch_hashes
 
-def _load_existing_receipts(
-    db: Session,
-    changes: list[SyncChange],
-) -> dict[uuid.UUID, SyncReceipt]:
-    change_ids = [change.change_id for change in changes]
-    if not change_ids:
-        return {}
-    receipts = (
-        db.execute(
-            select(SyncReceipt).where(
-                SyncReceipt.change_id.in_(change_ids),
-            )
-        )
-        .scalars()
-        .all()
-    )
-    return {receipt.change_id: receipt for receipt in receipts}
-
-
-def _prepare_push_context(
-    db: Session,
-    user_id: uuid.UUID,
-    project_id: uuid.UUID,
-    role: str,
-    changes: list[SyncChange],
-) -> _PushContext:
-    existing_receipts = _load_existing_receipts(db, changes)
-    return _PushContext(
-        db=db,
-        user_id=user_id,
-        project_id=project_id,
-        role=role,
-        existing_receipts=existing_receipts,
-        seen_change_ids=set(existing_receipts),
-    )
-
-
-def _evict_push_identity_map_if_needed(ctx: _PushContext) -> None:
-    if (
-        SYNC_PUSH_EXPUNGE_EVERY
-        and ctx.wrote
-        and ctx.wrote % SYNC_PUSH_EXPUNGE_EVERY == 0
-    ):
-        # Keep the transaction atomic and limit identity-map growth.
-        ctx.db.flush()
-        ctx.db.expunge_all()
-
-
-def _record_push_result(
-    ctx: _PushContext,
-    change: SyncChange,
-    result: dict[str, Any],
-    *,
-    persisted: bool,
-) -> None:
-    ctx.results.append(result)
-    ctx.batch_results[change.change_id] = result
-    if persisted:
-        ctx.wrote += 1
-        _evict_push_identity_map_if_needed(ctx)
+    def record(
+        self, change: SyncChange, result: dict[str, Any], *, persisted: bool
+    ) -> None:
+        self.results.append(result)
+        self.batch_results[change.change_id] = result
+        if not persisted:
+            return
+        self.wrote += 1
+        if self.wrote % SYNC_PUSH_EXPUNGE_EVERY == 0:
+            # Keep the transaction atomic and limit identity-map growth.
+            self.db.flush()
+            self.db.expunge_all()
 
 
 def _record_duplicate(ctx: _PushContext, change: SyncChange) -> None:
     receipt = ctx.existing_receipts.get(change.change_id)
-    if receipt and (
-        receipt.user_id != ctx.user_id or receipt.project_id != ctx.project_id
-    ):
-        reason = "change_id_in_use"
-    elif receipt and receipt.payload_hash is None:
-        reason = "receipt_unverifiable"
-    elif (
-        receipt.payload_hash if receipt else ctx.batch_hashes.get(change.change_id)
-    ) != _payload_hash(change):
-        reason = "change_id_payload_mismatch"
-    else:
-        reason = None
+    reason = duplicate_error_reason(
+        change,
+        receipt,
+        ctx.batch_hashes.get(change.change_id),
+        user_id=ctx.user_id,
+        project_id=ctx.project_id,
+    )
     if reason:
-        result = _change_result(
-            change_id=change.change_id,
-            status="error",
-            entity=change.entity,
-            op=change.op,
-            entity_id=_maybe_entity_id(change.record),
-            response={
-                "reason": reason,
-                "failure_kind": "validation",
-                "retryable": False,
-            },
+        ctx.results.append(
+            change_result(
+                change_id=change.change_id,
+                status="error",
+                entity=change.entity,
+                op=change.op,
+                entity_id=maybe_entity_id(change.record),
+                response={
+                    "reason": reason,
+                    "failure_kind": "validation",
+                    "retryable": False,
+                },
+            )
         )
-        ctx.results.append(result)
         return
     replay = (
-        _receipt_result(receipt)
+        receipt_result(receipt)
         if receipt is not None
         else {**ctx.batch_results[change.change_id], "replayed": True}
     )
-    replay = _refresh_accepted_replay(ctx, replay)
-    ctx.results.append(replay)
+    ctx.results.append(
+        refresh_accepted_replay(ctx.db, ctx.project_id, ctx.user_id, replay)
+    )
 
 
 def _reject_push_change(
@@ -763,30 +158,51 @@ def _reject_push_change(
     *,
     failure_kind: str,
     retryable: bool = False,
-    store_receipt: bool = True,
+    store: bool = True,
 ) -> None:
-    result = _receipt_err(
-        ctx.db,
-        change,
-        ctx.user_id,
-        ctx.project_id,
-        reason,
-        detail,
-        failure_kind=failure_kind,
-        retryable=retryable,
-        store_receipt=store_receipt,
+    entity = change.entity.strip().lower()
+    op = change.op.strip().lower()
+    entity_id = maybe_entity_id(change.record or {})
+    response: dict[str, Any] = {
+        "reason": reason,
+        "failure_kind": failure_kind,
+        "retryable": bool(retryable),
+    }
+    if detail:
+        response["detail"] = detail
+    if store:
+        with ctx.db.begin_nested():
+            store_receipt(
+                ctx.db,
+                change,
+                ctx.user_id,
+                ctx.project_id,
+                entity=entity,
+                entity_id=entity_id,
+                op=op,
+                status="error",
+                response=response,
+            )
+            ctx.db.flush()
+    result = change_result(
+        change_id=change.change_id,
+        status="error",
+        entity=entity,
+        op=op,
+        entity_id=entity_id,
+        response=response,
     )
-    _record_push_result(ctx, change, result, persisted=store_receipt)
+    ctx.record(change, result, persisted=store)
 
 
-def _is_privileged_soft_delete_transition(
-    ctx: _PushContext,
-    entity: str,
-    op: str,
-    record: dict[str, Any],
+def _requires_manager(
+    ctx: _PushContext, entity: str, op: str, record: dict[str, Any]
 ) -> bool:
-    if not ENTITY_REGISTRY[entity]["manager_delete"] or op != "upsert":
+    """Deletes, and upserts that delete or undelete, of manager-only entities."""
+    if not ENTITY_REGISTRY[entity]["manager_delete"]:
         return False
+    if op == "delete":
+        return True
     if entity in {"risk", "opportunity"}:
         status = str(record.get("status") or "").lower().strip()
         if status == RiskStatus.deleted.value:
@@ -795,14 +211,13 @@ def _is_privileged_soft_delete_transition(
         return True
     if "is_deleted" not in record:
         return False
-
     # A false value is harmless on an active row but is an undelete on a
     # tombstone. Check the persisted transition instead of treating every
     # ordinary upsert (whose payload may include false) as manager-only.
-    entity_id = _maybe_entity_id(record)
+    entity_id = maybe_entity_id(record)
     if entity_id is None:
         return False
-    existing = _fetch_obj(ctx.db, entity, entity_id, ctx.project_id)
+    existing = fetch_obj(ctx.db, entity, entity_id, ctx.project_id)
     return bool(existing is not None and getattr(existing, "is_deleted", False))
 
 
@@ -813,17 +228,13 @@ def _authorize_push_change(
     op: str,
     record: dict[str, Any],
 ) -> bool:
+    required = "manager" if _requires_manager(ctx, entity, op, record) else "member"
     try:
-        if _is_privileged_soft_delete_transition(ctx, entity, op, record):
-            ensure_role_at_least(ctx.role, "manager")
-        ensure_role_at_least(ctx.role, _min_role_for_change(entity, op))
+        ensure_role_at_least(ctx.role, required)
         return True
     except HTTPException:
         _reject_push_change(
-            ctx,
-            change,
-            "insufficient_permissions",
-            failure_kind="permission",
+            ctx, change, "insufficient_permissions", failure_kind="permission"
         )
         return False
 
@@ -835,63 +246,43 @@ def _apply_push_change(
     op: str,
     record: dict[str, Any],
 ) -> None:
+    apply = _apply_upsert if op == "upsert" else _apply_delete
     with ctx.db.begin_nested():
-        entity_id = (
-            _apply_upsert(
-                ctx.db,
-                ctx.user_id,
-                ctx.project_id,
-                entity,
-                change.base_version,
-                record,
-                change.change_id,
-            )
-            if op == "upsert"
-            else _apply_delete(
-                ctx.db,
-                ctx.user_id,
-                ctx.project_id,
-                entity,
-                change.base_version,
-                record,
-                change.change_id,
-            )
+        entity_id = apply(
+            ctx.db,
+            ctx.user_id,
+            ctx.project_id,
+            entity,
+            change.base_version,
+            record,
+            change.change_id,
         )
         # Flush the mutation before reading it back so the receipt carries the
         # canonical version and any server-assigned fields (notably item code).
         ctx.db.flush()
-        server_version, server_record = _current_server_state(
-            ctx.db,
-            entity,
-            entity_id,
-            ctx.project_id,
-            ctx.user_id,
+        server_version, server_record = current_server_state(
+            ctx.db, entity, entity_id, ctx.project_id, ctx.user_id
         )
         response = {
             "entity_id": str(entity_id),
             "server_version": server_version,
             "server_record": server_record,
-            "server_updated_at": (
-                str(server_record.get("updated_at"))
-                if server_record and server_record.get("updated_at") is not None
-                else None
-            ),
+            "server_updated_at": updated_at_text(server_record),
         }
-        _store_receipt(
+        store_receipt(
             ctx.db,
-            change.change_id,
+            change,
             ctx.user_id,
             ctx.project_id,
-            entity,
-            entity_id,
-            op,
-            "accepted",
-            response,
-            _payload_hash(change),
+            entity=entity,
+            entity_id=entity_id,
+            op=op,
+            status="accepted",
+            response=response,
         )
         ctx.db.flush()
 
-    result = _change_result(
+    result = change_result(
         change_id=change.change_id,
         status="accepted",
         entity=entity,
@@ -899,7 +290,7 @@ def _apply_push_change(
         entity_id=entity_id,
         response=response,
     )
-    _record_push_result(ctx, change, result, persisted=True)
+    ctx.record(change, result, persisted=True)
 
 
 def _record_push_conflict(
@@ -917,19 +308,18 @@ def _record_push_conflict(
         "failure_kind": "conflict",
         "retryable": False,
     }
-    _store_receipt(
+    store_receipt(
         ctx.db,
-        change.change_id,
+        change,
         ctx.user_id,
         ctx.project_id,
-        entity,
-        conflict.entity_id,
-        op,
-        "conflict",
-        response,
-        _payload_hash(change),
+        entity=entity,
+        entity_id=conflict.entity_id,
+        op=op,
+        status="conflict",
+        response=response,
     )
-    result = _change_result(
+    result = change_result(
         change_id=change.change_id,
         status="conflict",
         entity=entity,
@@ -937,7 +327,7 @@ def _record_push_conflict(
         entity_id=conflict.entity_id,
         response=response,
     )
-    _record_push_result(ctx, change, result, persisted=True)
+    ctx.record(change, result, persisted=True)
 
 
 def _process_new_push_change(ctx: _PushContext, change: SyncChange) -> None:
@@ -958,7 +348,7 @@ def _process_new_push_change(ctx: _PushContext, change: SyncChange) -> None:
     except ConflictError as exc:
         _record_push_conflict(ctx, change, entity, op, exc)
     except HTTPException as exc:
-        failure_kind, retryable = _classify_http_failure(exc.status_code)
+        failure_kind, retryable = classify_http_failure(exc.status_code)
         _reject_push_change(
             ctx,
             change,
@@ -966,10 +356,10 @@ def _process_new_push_change(ctx: _PushContext, change: SyncChange) -> None:
             str(exc.detail),
             failure_kind=failure_kind,
             retryable=retryable,
-            store_receipt=not retryable,
+            store=not retryable,
         )
     except IntegrityError:
-        logging.getLogger("riskapp_server.sync").info(
+        logger.info(
             "Rejected sync change %s because it violates a database constraint",
             change.change_id,
         )
@@ -983,44 +373,15 @@ def _process_new_push_change(ctx: _PushContext, change: SyncChange) -> None:
     # This boundary converts an unexpected per-change failure to a retryable result.
     # pylint: disable-next=broad-exception-caught
     except Exception:
-        logging.getLogger("riskapp_server.sync").exception(
-            "Unexpected error processing sync change %s", change.change_id
-        )
+        logger.exception("Unexpected error processing sync change %s", change.change_id)
         _reject_push_change(
             ctx,
             change,
             "internal_error",
             failure_kind="transient",
             retryable=True,
-            store_receipt=False,
+            store=False,
         )
-
-
-def _process_push_change(ctx: _PushContext, change: SyncChange) -> None:
-    if change.change_id in ctx.seen_change_ids:
-        _record_duplicate(ctx, change)
-        return
-    # The initial receipt query cannot see receipts written later in this
-    # transaction, so track IDs from the request as they are encountered.
-    ctx.seen_change_ids.add(change.change_id)
-    ctx.batch_hashes[change.change_id] = _payload_hash(change)
-    _process_new_push_change(ctx, change)
-
-
-def _commit_push(ctx: _PushContext) -> None:
-    try:
-        ctx.db.commit()
-    except Exception as exc:
-        ctx.db.rollback()
-        logging.getLogger("riskapp_server.sync").exception("Failed to commit sync push")
-        raise HTTPException(status_code=500, detail="Sync push commit failed") from exc
-
-
-def _push_response(ctx: _PushContext) -> dict[str, Any]:
-    return {
-        "results": ctx.results,
-        "server_time": utcnow(),
-    }
 
 
 def push_changes(
@@ -1038,597 +399,25 @@ def push_changes(
         ).scalar_one_or_none()
         if state_id is None:
             raise HTTPException(status_code=500, detail="Project sync state is missing")
-    role = ensure_member(db, project_id, user_id)
-    ctx = _prepare_push_context(db, user_id, project_id, role, changes)
+    ctx = _PushContext(
+        db=db,
+        user_id=user_id,
+        project_id=project_id,
+        role=ensure_member(db, project_id, user_id),
+        existing_receipts=load_existing_receipts(db, changes),
+    )
     for change in changes:
-        _process_push_change(ctx, change)
-    _commit_push(ctx)
-    return _push_response(ctx)
-
-
-def _store_receipt(
-    db: Session,
-    change_id: uuid.UUID,
-    user_id: uuid.UUID,
-    project_id: uuid.UUID,
-    entity: str,
-    entity_id: uuid.UUID | None,
-    op: str,
-    status: str,
-    response: dict[str, Any],
-    payload_hash: str,
-) -> None:
-    db.add(
-        SyncReceipt(
-            change_id=change_id,
-            user_id=user_id,
-            project_id=project_id,
-            entity=entity,
-            entity_id=entity_id,
-            op=op,
-            status=status,
-            response=response or {},
-            payload_hash=payload_hash,
-            processed_at=utcnow(),
-        )
-    )
-
-
-def _classify_http_failure(status_code: int) -> tuple[str, bool]:
-    """Map an operation-level HTTP failure to a stable client action."""
-    status = int(status_code or 0)
-    if status == 401:
-        return "authentication", False
-    if status == 403:
-        return "permission", False
-    if status in {408, 425, 429} or status >= 500:
-        return "transient", True
-    return "validation", False
-
-
-def _receipt_err(
-    db: Session,
-    ch: SyncChange,
-    user_id: uuid.UUID,
-    project_id: uuid.UUID,
-    reason: str,
-    detail: str | None = None,
-    *,
-    failure_kind: str = "error",
-    retryable: bool = False,
-    store_receipt: bool = True,
-) -> dict[str, Any]:
-    entity = ch.entity.strip().lower()
-    op = ch.op.strip().lower()
-    entity_id = _maybe_entity_id(ch.record or {})
-    resp: dict[str, Any] = {
-        "reason": reason,
-        "failure_kind": failure_kind,
-        "retryable": bool(retryable),
-    }
-    if detail:
-        resp["detail"] = detail
-
-    if store_receipt:
-        with db.begin_nested():
-            _store_receipt(
-                db,
-                ch.change_id,
-                user_id,
-                project_id,
-                entity,
-                entity_id,
-                op,
-                "error",
-                resp,
-                _payload_hash(ch),
-            )
-            db.flush()
-
-    return _change_result(
-        change_id=ch.change_id,
-        status="error",
-        entity=entity,
-        op=op,
-        entity_id=entity_id,
-        response=resp,
-    )
-
-
-def _maybe_entity_id(record: dict[str, Any]) -> uuid.UUID | None:
-    rid = record.get("id")
+        if ctx.seen(change.change_id):
+            _record_duplicate(ctx, change)
+            continue
+        # The initial receipt query cannot see receipts written later in this
+        # transaction, so track IDs from the request as they are encountered.
+        ctx.batch_hashes[change.change_id] = payload_hash(change)
+        _process_new_push_change(ctx, change)
     try:
-        return uuid.UUID(str(rid)) if rid else None
-    except ValueError, TypeError:
-        logging.getLogger(__name__).debug("UUID conversion failed", exc_info=True)
-        return None
-
-
-def _parse_record(entity: str, record: dict) -> dict:
-    try:
-        schema_cls = ENTITY_REGISTRY[entity]["schema"]
-        val = schema_cls(**record).model_dump(exclude_unset=True)
-
-        if entity in {"action", "assessment"}:
-            rid, oid = val.pop("risk_id", None), val.pop("opportunity_id", None)
-            if entity == "action" and not val.get("item_id") and bool(rid) == bool(oid):
-                raise HTTPException(
-                    status_code=400,
-                    detail="Action must have exactly one of risk_id/opportunity_id",
-                )
-            if not val.get("item_id"):
-                val["item_id"] = rid or oid
-            # If the client sets a target field, enforce the item type.
-            val["_target_type"] = "risk" if rid else ("opportunity" if oid else None)
-        # Normalize status=deleted into a soft-delete flag.
-        if entity in {"risk", "opportunity"}:
-            st = val.get("status")
-            st_s = str(getattr(st, "value", st) or "").lower().strip()
-            if st_s == RiskStatus.deleted.value:
-                val["is_deleted"] = True
-
-        return val
+        db.commit()
     except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Validation error: {exc}") from exc
-
-
-def _validate_relationships(
-    db: Session, project_id: uuid.UUID, entity: str, val: dict, obj: Any = None
-) -> None:
-    """Validate parent/child relationships."""
-    config = ENTITY_REGISTRY[entity]
-    parent_field = config.get("parent_field")
-    if parent_field is not None:
-        target_parent = (
-            val.get(parent_field)
-            if obj is None
-            else (val.get(parent_field) or getattr(obj, parent_field))
-        )
-
-        if not target_parent and obj is None:
-            raise HTTPException(status_code=400, detail=f"{parent_field} is required")
-
-        if target_parent:
-            _ensure_item_in_project(
-                db,
-                project_id,
-                parse_uuid(target_parent, parent_field),
-                expected_type=val.get("_target_type"),
-            )
-
-    if entity == "action" and val.get("item_id"):
-        _ensure_item_in_project(
-            db,
-            project_id,
-            parse_uuid(val["item_id"], "item_id"),
-            expected_type=val.get("_target_type"),
-        )
-
-
-def _ensure_item_in_project(
-    db: Session,
-    project_id: uuid.UUID,
-    item_id: uuid.UUID,
-    *,
-    expected_type: str | None = None,
-) -> None:
-    t = db.execute(
-        select(Item.type).where(
-            Item.project_id == project_id,
-            Item.id == item_id,
-        )
-    ).scalar()
-    if not t or (expected_type and t != expected_type):
-        raise HTTPException(status_code=400, detail="Target not found in project")
-
-
-def _fetch_obj(
-    db: Session, entity: str, entity_id: uuid.UUID, project_id: uuid.UUID
-) -> Any | None:
-    model_cls = ENTITY_MODELS[entity]
-    config = ENTITY_REGISTRY[entity]
-
-    if "parent_model" not in config:
-        return (
-            db.execute(
-                select(model_cls).where(
-                    model_cls.id == entity_id, model_cls.project_id == project_id
-                )
-            )
-            .scalars()
-            .first()
-        )
-
-    # Parent-scoped entity.
-    return (
-        db.execute(
-            select(model_cls)
-            .join(Item, model_cls.item_id == Item.id)
-            .where(model_cls.id == entity_id, Item.project_id == project_id)
-        )
-        .scalars()
-        .first()
-    )
-
-
-def _check_base_version(
-    obj: Any,
-    base_version: Any,
-    entity_id: uuid.UUID,
-    server_record: dict[str, Any],
-) -> int:
-    server_version = getattr(obj, "version", None)
-    if base_version is None:
-        raise ConflictError(
-            "base_version_required", entity_id, server_version, server_record
-        )
-    try:
-        bv = int(base_version)
-    except (TypeError, ValueError) as exc:
-        raise HTTPException(status_code=400, detail="base_version must be int") from exc
-    if bv < 1:
-        raise ConflictError(
-            "base_version_required", entity_id, server_version, server_record
-        )
-    if server_version != bv:
-        raise ConflictError(
-            "version_mismatch", entity_id, server_version, server_record
-        )
-    return bv
-
-
-def _version_scope(
-    entity: str,
-    entity_id: uuid.UUID,
-    project_id: uuid.UUID,
-    user_id: uuid.UUID,
-) -> tuple[Any, list[Any]]:
-    model_cls = ENTITY_MODELS[entity]
-    where: list[Any] = [model_cls.id == entity_id]
-    if entity in {"risk", "opportunity"}:
-        where.extend((model_cls.project_id == project_id, model_cls.type == entity))
-    elif entity == "assessment":
-        where.extend(
-            (
-                model_cls.assessor_user_id == user_id,
-                model_cls.item_id.in_(
-                    select(Item.id).where(Item.project_id == project_id)
-                ),
-            )
-        )
-    else:
-        where.append(model_cls.project_id == project_id)
-    return model_cls, where
-
-
-def _current_server_state(
-    db: Session,
-    entity: str,
-    entity_id: uuid.UUID,
-    project_id: uuid.UUID,
-    user_id: uuid.UUID,
-) -> tuple[int | None, dict[str, Any] | None]:
-    model_cls, where = _version_scope(entity, entity_id, project_id, user_id)
-    obj = (
-        db.execute(
-            select(model_cls).where(*where).execution_options(populate_existing=True)
-        )
-        .scalars()
-        .first()
-    )
-    if obj is None:
-        return None, None
-    version = getattr(obj, "version", None)
-    return (
-        int(version) if version is not None else None,
-        model_to_sync_dict(db, entity, obj),
-    )
-
-
-def _claim_base_version(
-    db: Session,
-    entity: str,
-    entity_id: uuid.UUID,
-    project_id: uuid.UUID,
-    user_id: uuid.UUID,
-    base_version: int,
-) -> None:
-    """Atomically advance one row only when its version still matches."""
-    model_cls, where = _version_scope(entity, entity_id, project_id, user_id)
-    # A single UPDATE returns a cursor result with the matched-row count.
-    result = cast(
-        CursorResult[Any],
-        db.execute(
-            update(model_cls)
-            .where(*where, model_cls.version == base_version)
-            .values(version=model_cls.version + 1, updated_at=utcnow())
-            .execution_options(synchronize_session=False)
-        ),
-    )
-    if result.rowcount != 1:
-        server_version, server_record = _current_server_state(
-            db, entity, entity_id, project_id, user_id
-        )
-        raise ConflictError(
-            "version_mismatch",
-            entity_id,
-            server_version,
-            server_record,
-        )
-
-
-def _validate_existing_obj(
-    db: Session,
-    obj: Any,
-    entity: str,
-    entity_id: uuid.UUID,
-    project_id: uuid.UUID,  # pylint: disable=unused-argument
-    user_id: uuid.UUID,
-    base_version: Any,
-) -> int:
-    """Validate access and version checks."""
-    if entity in {"risk", "opportunity"} and getattr(obj, "type", None) != entity:
-        raise ConflictError(
-            "type_mismatch",
-            entity_id,
-            getattr(obj, "version", None),
-            model_to_sync_dict(db, entity, obj),
-        )
-
-    if entity == "assessment" and getattr(obj, "assessor_user_id", None) != user_id:
-        raise HTTPException(
-            status_code=403, detail="Cannot modify another user's assessment"
-        )
-
-    return _check_base_version(
-        obj,
-        base_version,
-        entity_id,
-        model_to_sync_dict(db, entity, obj),
-    )
-
-
-def _apply_upsert(
-    db: Session,
-    user_id: uuid.UUID,
-    project_id: uuid.UUID,
-    entity: str,
-    base_version: Any,
-    record: dict[str, Any],
-    change_id: uuid.UUID,
-) -> uuid.UUID:
-    entity_id = parse_uuid(record.get("id"), "record.id")
-    obj = _fetch_obj(db, entity, entity_id, project_id)
-
-    if obj is None:
-        obj = _create_new(db, user_id, project_id, entity, entity_id, record)
-        _audit(
-            db,
-            user_id,
-            project_id,
-            change_id,
-            entity,
-            entity_id,
-            "upsert",
-            None,
-            model_to_dict(obj),
-        )
-        return entity_id
-
-    expected_version = _validate_existing_obj(
-        db, obj, entity, entity_id, project_id, user_id, base_version
-    )
-    before = model_to_dict(obj)
-    _claim_base_version(
-        db,
-        entity,
-        entity_id,
-        project_id,
-        user_id,
-        expected_version,
-    )
-    _update_existing(db, user_id, project_id, entity, obj, record)
-    _audit(
-        db,
-        user_id,
-        project_id,
-        change_id,
-        entity,
-        entity_id,
-        "upsert",
-        before,
-        model_to_dict(obj),
-    )
-    return entity_id
-
-
-def _apply_delete(
-    db: Session,
-    user_id: uuid.UUID,
-    project_id: uuid.UUID,
-    entity: str,
-    base_version: Any,
-    record: dict[str, Any],
-    change_id: uuid.UUID,
-) -> uuid.UUID:
-    entity_id = parse_uuid(record.get("id"), "record.id")
-    obj = _fetch_obj(db, entity, entity_id, project_id)
-    if not obj:
-        return entity_id
-
-    expected_version = _validate_existing_obj(
-        db, obj, entity, entity_id, project_id, user_id, base_version
-    )
-    before = model_to_dict(obj)
-    _claim_base_version(
-        db,
-        entity,
-        entity_id,
-        project_id,
-        user_id,
-        expected_version,
-    )
-    obj.soft_delete(utcnow())
-    _audit(
-        db,
-        user_id,
-        project_id,
-        change_id,
-        entity,
-        entity_id,
-        "delete",
-        before,
-        model_to_dict(obj),
-    )
-    return entity_id
-
-
-def _canonical_item_code(
-    db: Session,
-    project_id: uuid.UUID,
-    entity: str,
-    requested: Any,
-) -> str | None:
-    """Keep an available offline code or allocate the next server-safe code."""
-    code = str(requested or "").strip()
-    if not code:
-        return None
-    collision = db.execute(
-        select(Item.id).where(
-            Item.project_id == project_id,
-            Item.code == code,
-        )
-    ).scalar_one_or_none()
-    if collision is None:
-        return code
-
-    prefix = "R" if entity == "risk" else "O"
-    existing_codes = db.execute(
-        select(Item.code).where(
-            Item.project_id == project_id,
-            Item.code.like(f"{prefix}-%"),
-        )
-    ).scalars()
-    used: set[int] = set()
-    for existing_code in existing_codes:
-        raw = str(existing_code or "")
-        head, separator, suffix = raw.partition("-")
-        if separator and head.upper() == prefix and suffix.isdigit():
-            used.add(int(suffix))
-    number = 1
-    while number in used:
-        number += 1
-    return f"{prefix}-{number:03d}"
-
-
-def _create_new(
-    db: Session,
-    user_id: uuid.UUID,
-    project_id: uuid.UUID,
-    entity: str,
-    entity_id: uuid.UUID,
-    record: dict[str, Any],
-) -> Any:
-    now = utcnow()
-    val = _parse_record(entity, record)
-    model_cls = ENTITY_MODELS[entity]
-    config = ENTITY_REGISTRY[entity]
-    defaults = dict(config.get("defaults") or {})
-
-    if entity in {"risk", "opportunity"} and "code" in val:
-        # Offline devices may independently choose R-001/O-001. The project
-        # sync-state lock serializes this allocation on PostgreSQL, while the
-        # SQLite push transaction already holds the writer reservation.
-        val["code"] = _canonical_item_code(
-            db,
-            project_id,
-            entity,
-            val.get("code"),
-        )
-
-    common = {"id": entity_id, "version": 1, "updated_at": now, "created_at": now}
-    if entity != "assessment":
-        common |= {"project_id": project_id, "created_by": user_id}
-
-    # Apply defaults before record values.
-    common |= defaults
-
-    _validate_relationships(db, project_id, entity, val)
-
-    if "parent_model" in config:
-        # Assessments belong to the assessor.
-        common |= {"assessor_user_id": user_id}
-
-    obj = model_cls(**common)
-
-    for k, v in val.items():
-        if k.startswith("_"):
-            continue
-        if hasattr(obj, k) and k not in {"score", "assessor_user_id"}:
-            setattr(obj, k, getattr(v, "value", v))
-
-    _maybe_recalculate_scores(obj)
-    db.add(obj)
-    return obj
-
-
-def _update_existing(
-    db: Session,
-    user_id: uuid.UUID,  # pylint: disable=unused-argument
-    project_id: uuid.UUID,
-    entity: str,
-    obj: Any,
-    record: dict[str, Any],
-) -> None:
-    now = utcnow()
-    val = _parse_record(entity, record)
-    _validate_relationships(db, project_id, entity, val, obj)
-
-    for k, v in val.items():
-        if k.startswith("_"):
-            continue
-        if hasattr(obj, k) and k not in {"score", "assessor_user_id"}:
-            v = getattr(v, "value", v)
-            if k == "status" and hasattr(obj, "change_status"):
-                obj.change_status(v, now)
-            else:
-                setattr(obj, k, v)
-
-    did_soft_delete = False
-    if val.get("is_deleted") is not None:
-        if bool(val.get("is_deleted")):
-            obj.soft_delete(now)
-            did_soft_delete = True
-        else:
-            obj.is_deleted = False
-
-    _maybe_recalculate_scores(obj)
-    obj.updated_at = now
-    if not did_soft_delete:
-        obj.version = int(getattr(obj, "version", 0)) + 1
-
-
-def _audit(
-    db: Session,
-    user_id: uuid.UUID,
-    project_id: uuid.UUID,
-    change_id: uuid.UUID,
-    entity: str,
-    entity_id: uuid.UUID,
-    op: str,
-    before: dict[str, Any] | None,
-    after: dict[str, Any] | None,
-) -> None:
-    db.add(
-        AuditLog(
-            user_id=user_id,
-            project_id=project_id,
-            change_id=change_id,
-            entity=entity,
-            entity_id=entity_id,
-            op=op,
-            before=before,
-            after=after,
-            ts=utcnow(),
-        )
-    )
+        db.rollback()
+        logger.exception("Failed to commit sync push")
+        raise HTTPException(status_code=500, detail="Sync push commit failed") from exc
+    return {"results": ctx.results, "server_time": utcnow()}

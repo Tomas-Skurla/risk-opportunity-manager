@@ -10,15 +10,11 @@ from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import QModelIndex
 from riskapp_client.adapters.export import csv_data_exporter as export_csv
-from riskapp_client.services import entity_filters as filters
 from riskapp_client.ui_v2.mixins.scored_entity_mixin import ScoredEntityMixin
 
 if TYPE_CHECKING:
     from PySide6.QtWidgets import (
-        QComboBox,
         QLabel,
-        QLineEdit,
-        QSpinBox,
         QTableWidget,
         QTableWidgetItem,
     )
@@ -34,15 +30,6 @@ class RisksMixin(ScoredEntityMixin):
     current_project_id: str | None
     current_risk_id: str | None
     editor_label: QLabel
-    filter_category: QLineEdit
-    filter_from: QLineEdit
-    filter_max_score: QSpinBox
-    filter_min_score: QSpinBox
-    filter_owner: QComboBox
-    filter_report: QLabel
-    filter_search: QLineEdit
-    filter_status: QComboBox
-    filter_to: QLineEdit
     risk_form: RiskForm
     risks_tab: RisksTab
     risks_table: QTableWidget
@@ -68,30 +55,12 @@ class RisksMixin(ScoredEntityMixin):
         pid = self.current_project_id
         if not pid:
             return
-        filters_dict = {
-            "min_score": self.filter_min_score,
-            "max_score": self.filter_max_score,
-            "search": self.filter_search,
-            "status": self.filter_status,
-            "category": self.filter_category,
-            "owner": self.filter_owner,
-            "from_date": self.filter_from,
-            "to_date": self.filter_to,
-        }
+
         res = self._refresh_entity(
             pid,
+            self.risks_tab,
             self.backend.list_risks,
-            filters.filter_risks,
-            filters.ScoredFilterCriteria,
-            self.filter_report,
-            self.risks_table,
-            filters_dict,
-            self._mk_item,
-            (
-                getattr(self.backend, "risks_report", None)
-                if use_remote_report
-                else None
-            ),
+            getattr(self.backend, "risks_report", None) if use_remote_report else None,
             select_id,
         )
         if res is not None:
@@ -127,19 +96,27 @@ class RisksMixin(ScoredEntityMixin):
     def _mark_editor_dirty(self, *_args: object) -> None:
         self._editor_dirty = True
 
+    def _refresh_after_risk_change(self, select_id: str | None = None) -> None:
+        """Redraw every view that shows risks, including action target titles.
+
+        Saving, committing pending edits and deleting all use this, so a rename
+        reaches the Actions tab whichever way it was saved.
+        """
+        self._refresh_risks(select_id)
+        self._refresh_action_risk_combo()
+        self._refresh_actions()
+        self._refresh_matrix()
+
     def _commit_editor_changes(
         self, *, refresh: bool, select_id: str | None = None
     ) -> None:
-        def ref_cb(select_id: str | None) -> None:
-            self._refresh_risks(select_id)
-            self._refresh_matrix()
 
         if self._commit_entity_editor_changes(
             self.current_risk_id,
             self._editor_dirty,
             self.risk_form,
             self.backend.update_risk,
-            ref_cb if refresh else None,
+            self._refresh_after_risk_change if refresh else None,
             select_id,
             base_version=self._risk_editor_base_version,
         ):
@@ -157,21 +134,16 @@ class RisksMixin(ScoredEntityMixin):
 
     def _save_risk(self, payload: dict) -> None:
         was_new = self.current_risk_id is None
-        extra = [
-            self._refresh_action_risk_combo,
-            self._refresh_actions,
-            self._refresh_matrix,
-        ]
         saved_id = self._save_entity(
             payload,
             self.current_risk_id,
             self.backend.update_risk,
             self.backend.create_risk,
-            self._refresh_risks,
+            self._refresh_after_risk_change,
             self.risk_form,
             self.editor_label,
             "Editor",
-            extra,
+            [],
             base_version=self._risk_editor_base_version,
         )
         if saved_id:
@@ -185,15 +157,9 @@ class RisksMixin(ScoredEntityMixin):
             self._sync_assessment_state("risk", saved_id, self.risks_tab)
 
     def _delete_risk(self) -> None:
-        def refresh_all() -> None:
-            self._refresh_risks()
-            self._refresh_action_risk_combo()
-            self._refresh_actions()
-            self._refresh_matrix()
-
         self._delete_entity(
             current_id=self.current_risk_id,
             delete_backend_fn=self.backend.delete_risk,
-            refresh_fn=refresh_all,
+            refresh_fn=self._refresh_after_risk_change,
             start_new_fn=self._start_new_risk,
         )

@@ -29,6 +29,7 @@ class ActionsMixin:
     _action_editor_base_version: int | None
     _risk_title_by_id: dict[str, str]
     _opp_title_by_id: dict[str, str]
+    _action_by_id: dict[str, Any]
 
     _call_backend: Callable[..., Any]
     _mk_item: Callable[..., QTableWidgetItem]
@@ -107,7 +108,7 @@ class ActionsMixin:
         if not it:
             return
         aid = str(it.data(Qt.ItemDataRole.UserRole))
-        a = getattr(self, "_action_by_id", {}).get(aid)
+        a = self._action_by_id.get(aid)
         if not a:
             return
         self.current_action_id = a.id

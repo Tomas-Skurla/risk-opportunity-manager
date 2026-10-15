@@ -7,7 +7,10 @@ from collections.abc import Callable
 from PySide6.QtCore import QDateTime, Qt, QTimer
 from PySide6.QtWidgets import QAbstractScrollArea, QHeaderView, QSizePolicy, QWidget
 
-from riskapp_client.ui_v2.components.custom_gui_widgets import setup_readonly_table
+from riskapp_client.ui_v2.components.custom_gui_widgets import (
+    set_header_tooltips,
+    setup_readonly_table,
+)
 from riskapp_client.ui_v2.ui.ui_top_history_tab import Ui_Form as Ui_TopHistoryTab
 
 
@@ -41,18 +44,17 @@ class TopHistoryTab(QWidget):
         self.ui.splitter.setStretchFactor(0, 17)
         self.ui.splitter.setStretchFactor(1, 3)
         self.ui.splitter.setSizes([85000, 15000])
-        tooltips = {
-            0: "Captured: The date and time this snapshot was recorded",
-            1: "Rank: The position of this item in the top list based on its score",
-            2: "Title: The name or summary of the risk/opportunity",
-            3: "P: The assessed Probability (1-5) at the time of the snapshot",
-            4: "I: The assessed Impact (1-5) at the time of the snapshot",
-            5: "Score: The calculated score (P × I) at the time of the snapshot",
-        }
-        for col, text in tooltips.items():
-            header_item = self.ui.top_table.horizontalHeaderItem(col)
-            if header_item is not None:
-                header_item.setToolTip(text)
+        set_header_tooltips(
+            self.ui.top_table,
+            [
+                "Captured: The date and time this snapshot was recorded",
+                "Rank: The position of this item in the top list based on its score",
+                "Title: The name or summary of the risk/opportunity",
+                "P: The assessed Probability (1-5) at the time of the snapshot",
+                "I: The assessed Impact (1-5) at the time of the snapshot",
+                "Score: The calculated score (P × I) at the time of the snapshot",
+            ],
+        )
         now = QDateTime.currentDateTime()
         self.ui.top_to.setDateTime(now)
         self.ui.top_from.setDateTime(now.addDays(-30))

@@ -1,28 +1,20 @@
 # RiskApp local Kubernetes runbook
 
-This lab runs on an Ubuntu 26.04 VM in Hyper-V with rootless Docker and a
-Minikube cluster using the Docker driver and containerd. Commands below run
-**inside Ubuntu**, from `~/Desktop/src/risk-opportunity-manager`. The deployed
-API stays inside the cluster, access from Ubuntu uses a temporary port-forward
-bound to `127.0.0.1`.
+This lab runs on an Ubuntu 26.04 VM in Hyper-V with rootless Docker and a Minikube cluster using the Docker driver and containerd. Run the commands inside Ubuntu, from `~/Desktop/src/risk-opportunity-manager`. The API stays inside the cluster; Ubuntu reaches it through a temporary port-forward bound to `127.0.0.1`.
 
 ## What is deployed
 
-| File | Kubernetes resource | Job |
+| File | Resource | Purpose |
 | --- | --- | --- |
-| `deploy/k8s/configmap.yaml` | ConfigMap `riskapp-config` | Non-secret app settings, including the SQLite URL |
-| `deploy/k8s/pvc.yaml` | PVC `riskapp-data` | Requests 1 GiB of persistent storage |
-| `deploy/k8s/deployment.yaml` | Deployment `riskapp-api` | Runs one API Pod, mounts the PVC at `/data`, checks `/health` |
-| `deploy/k8s/service.yaml` | Service `riskapp-api` | Stable cluster-internal address on port 8000 |
+| `deploy/k8s/configmap.yaml` | ConfigMap `riskapp-config` | Non-secret settings, including the SQLite URL |
+| `deploy/k8s/pvc.yaml` | PVC `riskapp-data` | 1 GiB of persistent storage |
+| `deploy/k8s/deployment.yaml` | Deployment `riskapp-api` | One API Pod with the PVC at `/data` and a `/health` readiness probe |
+| `deploy/k8s/services.yaml` | Service `riskapp-api` | Cluster-internal address on port 8000 |
+| `deploy/swagger/` | Deployment and Service `riskapp-swagger`, ConfigMap `riskapp-swagger-env` | Optional Swagger UI that works offline, see step 6 |
 
-The Deployment also reads a separately created Secret named `riskapp-secrets`.
-The image tag in the Deployment is `riskapp-api:lab-1`, its pull policy is
-`Never`, so this exact image must be loaded into Minikube before applying the
-manifests. None of these commands pushes an image to a public registry.
+The Deployment also reads a Secret `riskapp-secrets`, created in step 2. It uses the image `riskapp-api:lab-1` with pull policy `Never`, so that image must be loaded into Minikube first. Nothing is pushed to a registry.
 
 ## 1. Build and load the image
-
-From the repository root:
 
 ```bash
 docker context show                   # expected: rootless
@@ -34,21 +26,17 @@ minikube -p minikube image ls | grep riskapp-api
 kubectl --context minikube get nodes  # expected: Ready
 ```
 
-The initial image build or cluster setup may need internet access for
-uncached dependencies. After the image and Kubernetes components are cached,
-the running lab and loopback access can work offline.
+The first build and cluster start may need internet access; once everything is cached, the lab works offline.
 
 ## 2. Create the namespace and Secret
 
-Create the namespace once, skip this command when `riskapp` already exists:
+Create the namespace once:
 
 ```bash
 kubectl --context minikube create namespace riskapp
 ```
 
-Generate `.env.k8s.local` **only if it does not already exist**. This file
-holds the signing keys and the initial admin login. Keep it in the repository
-root, `.gitignore` and `.dockerignore` should exclude `.env.*`.
+Generate `.env.k8s.local` **only if it does not exist yet**. It holds the signing keys and the initial admin login, and Git ignores it (`.env.*`):
 
 ```bash
 umask 077
@@ -59,12 +47,9 @@ INITIAL_SUPERUSER_EMAIL=admin@example.com
 INITIAL_SUPERUSER_PASSWORD=Lab1!$(openssl rand -hex 16)
 EOF
 git check-ignore -v .env.k8s.local
-ls -l .env.k8s.local
 ```
 
-Do not regenerate this file while keeping the database: changed signing keys
-affect existing authentication, and the bootstrap password is used only when
-the admin account is first created. Create the namespaced Secret once:
+Do not regenerate it while keeping the database: new keys invalidate existing tokens, and the bootstrap password is only used when the admin account is first created. Create the Secret once:
 
 ```bash
 kubectl --context minikube -n riskapp create secret generic riskapp-secrets \
@@ -72,59 +57,38 @@ kubectl --context minikube -n riskapp create secret generic riskapp-secrets \
 kubectl --context minikube -n riskapp describe secret riskapp-secrets
 ```
 
-`describe` shows key names and sizes without displaying their values. The
-Secret is a Kubernetes object, the `.env.k8s.local` file remains on Ubuntu.
+`describe` shows key names and sizes, not values.
 
-## 3. Validate and deploy
-
-Confirm `deploy/k8s/` contains the four YAML manifests. A server dry run
-validates them without creating resources, but does not check whether a Pod
-can start or whether the referenced Secret exists.
+## 3. Deploy
 
 ```bash
-ls deploy/k8s/*.yaml
 kubectl --context minikube apply --dry-run=server -f deploy/k8s/
 kubectl --context minikube apply -f deploy/k8s/
 kubectl --context minikube -n riskapp get pods,pvc,svc
 ```
 
-Expect a Pod at `READY 1/1`, a `Bound` PVC, and a `ClusterIP` Service on
-8000/TCP. To observe Pod creation, run `kubectl --context minikube -n riskapp
-get pods --watch` in another terminal before applying. `kubectl rollout
-status deployment/riskapp-api` is an optional **watch**, `apply` already made
-Kubernetes create the Pod.
+The dry run validates the manifests, but not whether the Pod can start or the Secret exists. Expect a Pod at `READY 1/1`, a `Bound` PVC and a `ClusterIP` Service on 8000/TCP. If the Pod gets stuck:
 
-If it gets stuck, inspect the Pod and application output:
 
 ```bash
 kubectl --context minikube -n riskapp describe pods -l app=riskapp-api
 kubectl --context minikube -n riskapp logs deployment/riskapp-api
 ```
 
-## 4. Reach the local API
+## 4. Reach the API
 
-In Ubuntu terminal A, leave this running:
+In terminal A, leave the port-forward running:
 
 ```bash
 kubectl --context minikube -n riskapp port-forward \
   --address 127.0.0.1 service/riskapp-api 8000:8000
 ```
 
-In Ubuntu terminal B:
+In terminal B, `curl --fail --show-error http://127.0.0.1:8000/health` returns `{"status":"ok","db":"ok"}`. Use `http`: the API does not terminate TLS.
 
-```bash
-curl --fail --show-error http://127.0.0.1:8000/health
-```
+## 5. Show that the data survives a Pod replacement
 
-The observed response was `{"status":"ok","db":"ok"}`. Use `http`, not
-`https`: this API does not terminate TLS on port 8000. The `ClusterIP`
-Service remains inside Kubernetes, the port-forward is temporary and only
-listens on Ubuntu's loopback address.
-
-## 5. Prove the database survives Pod replacement
-
-In terminal B, from the repository root, load the local admin credentials and
-obtain an access token without printing either credential:
+In terminal B, log in and create a project without printing the credentials:
 
 ```bash
 . ./.env.k8s.local
@@ -133,12 +97,6 @@ RISKAPP_TOKEN="$(curl --fail --silent --show-error \
   --data-urlencode "username=$INITIAL_SUPERUSER_EMAIL" \
   --data-urlencode "password=$INITIAL_SUPERUSER_PASSWORD" |
   python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')"
-test -n "$RISKAPP_TOKEN" && echo 'Login succeeded'
-```
-
-Create one disposable project and retain its ID in **the same terminal**:
-
-```bash
 RISKAPP_PROJECT_ID="$(curl --fail --silent --show-error \
   http://127.0.0.1:8000/projects \
   -H "Authorization: Bearer $RISKAPP_TOKEN" \
@@ -147,107 +105,32 @@ RISKAPP_PROJECT_ID="$(curl --fail --silent --show-error \
 test -n "$RISKAPP_PROJECT_ID" && echo 'Project created'
 ```
 
-`rollout restart` deliberately replaces the Pod, `rollout status` then waits
-for its replacement to become ready. The PVC is retained:
+Replace the Pod and wait for the new one; the PVC stays:
 
 ```bash
 kubectl --context minikube -n riskapp rollout restart deployment/riskapp-api
-kubectl --context minikube -n riskapp rollout status \
-  deployment/riskapp-api --timeout=180s
-kubectl --context minikube -n riskapp get pods,pvc
+kubectl --context minikube -n riskapp rollout status deployment/riskapp-api --timeout=180s
 ```
 
-The old port-forward can exit when its Pod disappears. Restart the command
-from section 4 in terminal A, then read the project from terminal B:
+The port-forward exits with the old Pod, so restart it in terminal A, then read the project in terminal B:
 
 ```bash
-curl --fail --show-error \
-  "http://127.0.0.1:8000/projects/$RISKAPP_PROJECT_ID" \
+curl --fail --show-error "http://127.0.0.1:8000/projects/$RISKAPP_PROJECT_ID" \
   -H "Authorization: Bearer $RISKAPP_TOKEN"
 ```
 
-The same project ID and name after the Pod replacement demonstrate that
-SQLite data survived on the PVC. If the request returns `401`, obtain a fresh
-access token and repeat the GET. This procedure was completed successfully
-for the `Kubernetes PVC demo` project.
+The same ID and name show that the SQLite data survived on the PVC. A `401` means the access token expired; log in again and repeat the request.
 
-## 6. Make Swagger UI usable offline
+## 6. Swagger UI offline
 
-FastAPI's default `/docs` HTML loads Swagger JavaScript and CSS from an
-external CDN. When the VM is offline, Firefox can show a blank page with
-`SwaggerUIBundle is not defined`, even while `/health` works. Browser cache is
-not a reliable project dependency. Serve versioned Swagger assets from the
-RiskApp image instead. FastAPI documents this approach in its
-[self-hosted docs guide](https://fastapi.tiangolo.com/how-to/custom-docs-ui-assets/).
-
-While online **once**, download matching files from a pinned Swagger UI
-release, or download them on another machine and copy them into this folder.
-Keep the upstream license and any notices when adding third-party assets to
-the public repository.
+FastAPI's `/docs` page loads Swagger UI from a CDN, so it stays blank while the VM is offline. `deploy/swagger/` runs the Swagger UI image in the cluster instead, pointed at `http://127.0.0.1:8000/openapi.json`; the API's ConfigMap already allows its origin, `http://127.0.0.1:8081`. Its pull policy is also `Never`, so load the image while online:
 
 ```bash
-mkdir -p server/riskapp_server/static
-curl -fsSL \
-  https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.32.0/swagger-ui-bundle.js \
-  -o server/riskapp_server/static/swagger-ui-bundle.js
-curl -fsSL \
-  https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.32.0/swagger-ui.css \
-  -o server/riskapp_server/static/swagger-ui.css
+docker pull docker.swagger.io/swaggerapi/swagger-ui:v5.32.0
+minikube -p minikube image load docker.swagger.io/swaggerapi/swagger-ui:v5.32.0
+kubectl --context minikube apply -f deploy/swagger/
+kubectl --context minikube -n riskapp port-forward \
+  --address 127.0.0.1 service/riskapp-swagger 8081:8080
 ```
 
-In `server/riskapp_server/main/app.py`:
-
-1. Import `Path` from `pathlib`, `get_swagger_ui_html` and
-   `get_swagger_ui_oauth2_redirect_html` from `fastapi.openapi.docs`,
-   `StaticFiles` from `fastapi.staticfiles`, and `HTMLResponse` from
-   `fastapi.responses`.
-2. In `create_app()`, add `docs_url=None, redoc_url=None` to the existing
-   `FastAPI(...)` call. This disables the default pages that request CDN
-   assets.
-3. After the `FastAPI(...)` call, add the following mount and handlers
-   (using the existing local variable `application`):
-
-```python
-    static_dir = Path(__file__).resolve().parents[1] / "static"
-    application.mount(
-        "/static", StaticFiles(directory=static_dir), name="docs-static"
-    )
-
-    @application.get("/docs", include_in_schema=False)
-    def local_swagger_ui() -> HTMLResponse:
-        return get_swagger_ui_html(
-            openapi_url=application.openapi_url,
-            title=f"{application.title} - Swagger UI",
-            swagger_js_url="/static/swagger-ui-bundle.js",
-            swagger_css_url="/static/swagger-ui.css",
-            swagger_favicon_url="data:,",
-            oauth2_redirect_url=application.swagger_ui_oauth2_redirect_url,
-            swagger_ui_parameters={"validatorUrl": None},
-        )
-
-    @application.get(
-        application.swagger_ui_oauth2_redirect_url, include_in_schema=False
-    )
-    def local_swagger_redirect() -> HTMLResponse:
-        return get_swagger_ui_oauth2_redirect_html()
-```
-
-The Dockerfile already uses `COPY server ./server`, so it includes these files
-in new server images. Build and load a **new** tag, update the image in
-`deploy/k8s/deployment.yaml` to `riskapp-api:lab-2`, then apply it:
-
-```bash
-docker compose build api
-docker tag riskapp-api:local riskapp-api:lab-2
-minikube -p minikube image load riskapp-api:lab-2
-kubectl --context minikube apply -f deploy/k8s/deployment.yaml
-kubectl --context minikube -n riskapp rollout status \
-  deployment/riskapp-api --timeout=180s
-```
-
-Restart the port-forward if it exited. Confirm `curl -I` gets HTTP 200 for
-both `/static/swagger-ui-bundle.js` and `/static/swagger-ui.css`, then reload
-`http://127.0.0.1:8000/docs` in Firefox while the VM is offline. In the
-browser Network panel, the JavaScript and CSS should load from
-`127.0.0.1:8000/static/`, with no request to the CDN. This is a future change
-to implement and verify, the initial `lab-1` image still uses CDN assets.
+With the API port-forward from step 4 still running, open `http://127.0.0.1:8081`.

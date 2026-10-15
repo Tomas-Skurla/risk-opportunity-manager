@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections import Counter
-from collections.abc import Callable, Sequence
-from contextlib import suppress
+from collections.abc import Callable
 from datetime import UTC, datetime
 from sqlite3 import Error as SQLiteError
 from typing import TYPE_CHECKING, Any, TypeVar, cast
@@ -22,7 +20,6 @@ from PySide6.QtWidgets import (
     QTableWidgetItem,
     QWidget,
 )
-from riskapp_client.domain.scored_entity_fields import ALL_STATUSES, DEFAULT_STATUS
 from riskapp_client.ui_v2.window_state import MainWindowState
 from riskapp_client.utils.roles import role_at_least
 
@@ -35,6 +32,7 @@ if TYPE_CHECKING:
     from riskapp_client.ui_v2.tabs.opportunities_tab import OpportunitiesTab
     from riskapp_client.ui_v2.tabs.risks_tab import RisksTab
     from riskapp_client.ui_v2.tabs.top_history_tab import TopHistoryTab
+    from riskapp_client.ui_v2.ui.ui_main_window_design import Ui_MainWindow
 
 T = TypeVar("T")
 
@@ -58,6 +56,7 @@ class CoreMixin:
     assessments_tab: AssessmentsTab
     members_tab: MembersTab
     top_tab: TopHistoryTab
+    ui: Ui_MainWindow
 
     if TYPE_CHECKING:
         # Implemented by sibling mixins in the concrete MainWindow class. Keeping
@@ -182,8 +181,6 @@ class CoreMixin:
 
     def _init_state(self) -> None:
         """Initialize state owned by individual features, not shared context."""
-        if not hasattr(self, "state"):
-            self.state = MainWindowState()
         # Role cache per project.
         self._role_by_project: dict[str, str] = {}
         # Auto-snapshot throttle.
@@ -193,14 +190,13 @@ class CoreMixin:
         self._risk_cache: dict[str, Risk] = {}
         self._opp_editor_dirty: bool = False
         self._editor_dirty: bool = False
-        self._risks_col_widths: dict[str, list[int]] = {}
-        self._risks_last_pid: str | None = None
         self._risk_title_by_id: dict[str, str] = {}
         # Help Desk state.
         self._current_ticket_id: str | None = None
         self._all_tickets: list = []
         # Members cache.
         self._cached_members: list = []
+        self._action_by_id: dict = {}
 
     def _detect_offline_mode(self) -> bool:
         """Return True if this is the OfflineBackend running without connection."""
@@ -244,79 +240,68 @@ class CoreMixin:
 
     def _apply_permissions(self) -> None:
         """Enable/disable UI controls based on the user's role and state."""
-        pid = self.state.project_id
-        role_for_local = self._role_for_local_edits()
-        assumed_member_offline = bool(
-            self.state.offline_mode and self.state.role == "unknown"
+        has_project = bool(self.state.project_id)
+        online = not self.state.offline_mode
+        can_edit = has_project and role_at_least(self._role_for_local_edits(), "member")
+        can_snapshot = (
+            has_project and online and role_at_least(self.state.role, "manager")
         )
-        can_edit_local = bool(pid) and role_at_least(role_for_local, "member")
-        can_take_snapshots = (
-            bool(pid)
-            and (not self.state.offline_mode)
-            and role_at_least(self.state.role, "manager")
-        )
-        can_manage_members = (
-            bool(pid)
-            and (not self.state.offline_mode)
-            and role_at_least(self.state.role, "admin")
-        )
-        can_set_deleted = self._can_mark_deleted()
-        # Update the role label if we assumed member offline.
-        if assumed_member_offline and not self.state.role_assumed:
-            suffix = ""
-            if self.state.offline_mode:
-                suffix += " (offline)"
-            suffix += " (assumed)"
-            self.role_status.setText(f"Role: {role_for_local}{suffix}")
+        can_manage = has_project and online and role_at_least(self.state.role, "admin")
+        can_delete = self._can_mark_deleted()
+        if not online and self.state.role == "unknown" and not self.state.role_assumed:
+            self.role_status.setText("Role: member (offline) (assumed)")
             self.state.role_assumed = True
-        # Risks / opportunities editors
-        for btn, form in [
+        for btn, form in (
             (self.new_risk_btn, self.risk_form),
             (self.new_opp_btn, self.opp_form),
-        ]:
-            btn.setEnabled(can_edit_local)
-            if hasattr(form, "set_editable"):
-                form.set_editable(can_edit_local)
-            elif hasattr(form, "btn"):
-                form.btn.setEnabled(can_edit_local)
-            # Only managers and admins can mark items deleted.
-            if hasattr(form, "set_allow_deleted_status"):
-                with suppress(AttributeError, RuntimeError):
-                    form.set_allow_deleted_status(bool(can_set_deleted))
-        # Actions editor
-        for action_widget in (
-            self.actions_tab.action_target_type,
-            self.actions_tab.action_risk_combo,
-            self.actions_tab.action_opp_combo,
-            self.actions_tab.action_kind,
-            self.actions_tab.action_status,
-            self.actions_tab.action_title,
-            self.actions_tab.action_desc,
-            self.actions_tab.action_owner,
-            self.actions_tab.action_save_btn,
-            self.actions_tab.action_new_btn,
         ):
-            action_widget.setEnabled(can_edit_local)
-        # Assessments
-        for assessment_widget in (
-            self.assessments_tab.assess_p,
-            self.assessments_tab.assess_i,
-            self.assessments_tab.assess_notes,
-            self.assessments_tab.assess_save_btn,
+            btn.setEnabled(can_edit)
+            form.set_editable(can_edit)
+            form.set_allow_deleted_status(can_delete)
+        actions, assess = self.actions_tab, self.assessments_tab
+        top, members = self.top_tab, self.members_tab
+        for enabled, widgets in (
+            (
+                can_edit,
+                (
+                    actions.action_target_type,
+                    actions.action_risk_combo,
+                    actions.action_opp_combo,
+                    actions.action_kind,
+                    actions.action_status,
+                    actions.action_title,
+                    actions.action_desc,
+                    actions.action_owner,
+                    actions.action_save_btn,
+                    actions.action_new_btn,
+                    assess.assess_p,
+                    assess.assess_i,
+                    assess.assess_notes,
+                    assess.assess_save_btn,
+                ),
+            ),
+            (
+                can_snapshot,
+                (
+                    top.snapshot_btn,
+                    top.auto_snapshot_chk,
+                    top.auto_snapshot_kind,
+                    top.auto_snapshot_days,
+                ),
+            ),
+            (
+                can_manage,
+                (
+                    members.member_email,
+                    members.member_role,
+                    members.member_add_btn,
+                    members.member_remove_btn,
+                ),
+            ),
+            (has_project, (members.member_refresh_btn,)),
         ):
-            assessment_widget.setEnabled(can_edit_local)
-        # Snapshots / history
-        self.top_tab.snapshot_btn.setEnabled(can_take_snapshots)
-        self.top_tab.auto_snapshot_chk.setEnabled(can_take_snapshots)
-        self.top_tab.auto_snapshot_kind.setEnabled(can_take_snapshots)
-        self.top_tab.auto_snapshot_days.setEnabled(can_take_snapshots)
-        # Members management
-        self.members_tab.member_email.setEnabled(can_manage_members)
-        self.members_tab.member_role.setEnabled(can_manage_members)
-        self.members_tab.member_add_btn.setEnabled(can_manage_members)
-        self.members_tab.member_remove_btn.setEnabled(can_manage_members)
-        # Refresh is allowed even offline.
-        self.members_tab.member_refresh_btn.setEnabled(bool(pid))
+            for widget in widgets:
+                widget.setEnabled(enabled)
 
     def _mk_item(
         self,
@@ -365,90 +350,6 @@ class CoreMixin:
             QMessageBox.critical(cast(QWidget, self), error_title, str(exc))
             return None
 
-    def _update_scored_filter_report(
-        self,
-        label: QLabel,
-        full_count: int,
-        filtered: Sequence[object],
-        *,
-        server_report: dict | None = None,
-    ) -> None:
-        """Render a common filter report for Risk/Opportunity tabs.
-
-        If `server_report` is provided, prefer its aggregate stats (it reflects the
-        full server-side dataset, not only what the UI loaded).
-        """
-        if not filtered and not server_report:
-            label.setText(f"Showing 0/{full_count}")
-            return
-        if server_report:
-            total = server_report.get("total")
-            proj_total = server_report.get("project_total")
-            mn = server_report.get("min_score")
-            mx = server_report.get("max_score")
-            avg_raw = server_report.get("avg_score")
-            avg = float(avg_raw) if avg_raw is not None else None
-            status_counts = server_report.get("status_counts") or {}
-            category_counts = server_report.get("category_counts") or {}
-            top_cats = [
-                f"{c} {n}"
-                for c, n in sorted(
-                    category_counts.items(),
-                    key=lambda kv: int(kv[1] or 0),
-                    reverse=True,
-                )[:3]
-                if c and c != "(none)" and int(n or 0) > 0
-            ]
-            local_bits = f"Local {len(filtered)}/{full_count}"
-            server_bits = (
-                f"Server {int(total) if total is not None else '?'}"
-                f"/{int(proj_total) if proj_total is not None else '?'}"
-            )
-            lines = [
-                (
-                    f"{local_bits} · {server_bits} · score min {mn} · max {mx} · avg {avg:.1f}"
-                    if avg is not None
-                    else f"{local_bits} · {server_bits}"
-                ),
-            ]
-            order = list(ALL_STATUSES)
-            status_bits = [
-                f"{st} {status_counts.get(st, 0)}"
-                for st in order
-                if int(status_counts.get(st, 0) or 0) > 0
-            ]
-            if status_bits:
-                lines.append(f"Status: {', '.join(status_bits)}")
-            if top_cats:
-                lines.append(f"Top categories: {', '.join(top_cats)}")
-            label.setText("<br>".join(lines))
-            return
-        scores = [int(getattr(x, "score", 0) or 0) for x in filtered]
-        avg = sum(scores) / len(scores)
-        status_counts = Counter(
-            (getattr(x, "status", None) or DEFAULT_STATUS) for x in filtered
-        )
-        order = list(ALL_STATUSES)
-        status_bits = [
-            f"{st} {status_counts[st]}" for st in order if status_counts.get(st)
-        ]
-        for st, n in status_counts.most_common():
-            if st not in order:
-                status_bits.append(f"{st} {n}")
-        cat_counts = Counter(
-            (getattr(x, "category", None) or "(none)") for x in filtered
-        )
-        top_cats = [
-            f"{c} {n}" for c, n in cat_counts.most_common(3) if c and c != "(none)"
-        ]
-        lines = [
-            f"Showing {len(filtered)}/{full_count} · score min {min(scores)} · max {max(scores)} · avg {avg:.1f}",
-            f"Status: {', '.join(status_bits) if status_bits else '(none)'}",
-        ]
-        if top_cats:
-            lines.append(f"Top categories: {', '.join(top_cats)}")
-        label.setText("<br>".join(lines))
-
     def _clear_table_selection(self, table: QTableWidget) -> None:
         table.clearSelection()
         table.setCurrentIndex(QModelIndex())
@@ -482,26 +383,20 @@ class CoreMixin:
             (tab_widget, table_widget, editor_card, commit_fn, clear_selection_fn)
             or None if the active tab is not a scored-entity tab.
         """
-        ui = getattr(self, "ui", None)
-        if ui is None:
-            return None
-        current = ui.main_stacked_widget.currentWidget()
-        if current is getattr(self, "risks_tab", None):
+        current = self.ui.main_stacked_widget.currentWidget()
+        if current is self.risks_tab:
             return (
                 self.risks_tab,
                 self.risks_table,
-                getattr(self, "_editor_card", None),
+                self.risks_tab.editor_card,
                 lambda: self._commit_editor_changes(refresh=True),
                 lambda: self._clear_table_selection(self.risks_table),
             )
-        if current is getattr(self, "opps_tab", None):
-            editor = getattr(self, "_opp_editor_card", None)
-            if editor is None and hasattr(self, "opps_tab"):
-                editor = getattr(self.opps_tab, "editor_card", None)
+        if current is self.opps_tab:
             return (
                 self.opps_tab,
                 self.opps_table,
-                editor,
+                self.opps_tab.editor_card,
                 lambda: self._commit_opp_editor_changes(refresh=True),
                 lambda: self._clear_table_selection(self.opps_table),
             )

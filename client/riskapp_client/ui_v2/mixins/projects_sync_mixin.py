@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from sqlite3 import Error as SQLiteError
 from typing import TYPE_CHECKING, Any, cast
 
-from PySide6.QtCore import Qt  # pylint: disable=no-name-in-module
+from PySide6.QtCore import QSignalBlocker, Qt  # pylint: disable=no-name-in-module
 from PySide6.QtWidgets import (  # pylint: disable=no-name-in-module
     QDialog,
     QLabel,
@@ -20,10 +20,9 @@ from PySide6.QtWidgets import (  # pylint: disable=no-name-in-module
     QListWidgetItem,
     QMessageBox,
     QPushButton,
-    QTableWidget,
     QWidget,
 )
-from riskapp_client.domain.domain_models import Project
+from riskapp_client.domain.domain_models import Member, Project
 from riskapp_client.ui_v2.components.conflict_center_dialog import (
     ConflictCenterDialog,
 )
@@ -43,6 +42,17 @@ _EDITOR_BASES = (
 )
 
 
+def _project_label(project: Project, owners: dict[str, str]) -> str:
+    if str(project.id).startswith("local-"):
+        note = "offline, will sync" if project.created_by else "local only"
+    else:
+        created_by = project.created_by or ""
+        note = owners.get(project.created_by, "") or (
+            created_by if "@" in created_by else ""
+        )
+    return f"{project.name}  ({note})" if note else project.name
+
+
 class ProjectsSyncMixin:
     """MainWindow mixin: ProjectsSyncMixin"""
 
@@ -57,14 +67,13 @@ class ProjectsSyncMixin:
     editor_label: QLabel
     project_list: QListWidget
     risk_form: RiskForm
-    risks_table: QTableWidget
     sync_btn: QPushButton
     sync_status: QLabel
+    _cached_members: list[Member]
     _editor_dirty: bool
     _offline_mode: bool
     _opp_editor_dirty: bool
     _role_assumed: bool
-    _risks_col_widths: dict[str, list[int]]
     _call_backend: Callable[..., Any]
     _commit_editor_changes: Callable[..., Any]
     _commit_opp_editor_changes: Callable[..., Any]
@@ -148,15 +157,17 @@ class ProjectsSyncMixin:
             select_id=select_id,
             use_remote_report=include_remote,
         )
+        self._refresh_opportunities(use_remote_report=include_remote)
+        # The combos also refresh the target titles that actions and
+        # assessments display, so they must run first.
         for fn in (
             self._refresh_action_risk_combo,
+            self._refresh_action_opp_combo,
             self._refresh_actions,
             self._refresh_matrix,
             self._refresh_assessments,
         ):
             fn()
-        self._refresh_opportunities(use_remote_report=include_remote)
-        self._refresh_action_opp_combo()
         if include_remote:
             self._refresh_top_history()
             self._refresh_members()
@@ -175,60 +186,49 @@ class ProjectsSyncMixin:
         if projects is None:
             return
         self.project_list.clear()
-        # Build a uid→email map for resolving project owners.
-        owner_map: dict[str, str] = {}
-        try:
-            # Ensure user_id is cached in meta (first call populates it).
-            self.backend.current_user_id()
-            my_email = self.backend.store.get_meta("last_email") or ""
-            my_uid = self.backend.store.get_meta("user_id") or ""
-            if my_uid and my_email:
-                owner_map[my_uid] = my_email
-            for m in getattr(self, "_cached_members", []):
-                owner_map[str(m.user_id)] = m.email
-        except AttributeError, KeyError, RuntimeError:
-            logging.getLogger(__name__).debug(
-                "Failed to build owner map for projects", exc_info=True
-            )
-
+        owners = self._project_owner_emails()
         for p in projects:
-            display_name = p.name
-            if str(p.id).startswith("local-"):
-                if p.created_by:
-                    display_name = f"{p.name}  (offline, will sync)"
-                else:
-                    display_name = f"{p.name}  (local only)"
-            else:
-                # Resolve the owner email for server projects.
-                owner_email = owner_map.get(p.created_by, "")
-                if not owner_email and "@" in (p.created_by or ""):
-                    owner_email = p.created_by
-                if owner_email:
-                    display_name = f"{p.name}  ({owner_email})"
-            item = QListWidgetItem(display_name)
+            item = QListWidgetItem(_project_label(p, owners))
             item.setData(Qt.ItemDataRole.UserRole, p.id)
             item.setData(_PROJECT_NAME_ROLE, p.name)
             self.project_list.addItem(item)
         if self.project_list.count() <= 0:
             return
+        wanted = str(select_project_id) if select_project_id else None
+        row = next(
+            (
+                i
+                for i in range(self.project_list.count())
+                if str(self.project_list.item(i).data(Qt.ItemDataRole.UserRole))
+                == wanted
+            ),
+            0,
+        )
+        blocker = (
+            contextlib.nullcontext()
+            if notify_selection
+            else QSignalBlocker(self.project_list)
+        )
+        with blocker:
+            self.project_list.setCurrentRow(row)
 
-        def select_row(row: int) -> None:
-            if notify_selection:
-                self.project_list.setCurrentRow(row)
-                return
-            previously_blocked = self.project_list.blockSignals(True)
-            try:
-                self.project_list.setCurrentRow(row)
-            finally:
-                self.project_list.blockSignals(previously_blocked)
+    def _project_owner_emails(self) -> dict[str, str]:
+        """Map user IDs to emails for labelling who owns each server project."""
+        owners: dict[str, str] = {}
+        try:
+            self.backend.current_user_id()  # the first call caches user_id in meta
+            my_email = self.backend.store.get_meta("last_email") or ""
+            my_uid = self.backend.store.get_meta("user_id") or ""
+            if my_uid and my_email:
+                owners[my_uid] = my_email
+            for m in self._cached_members:
+                owners[str(m.user_id)] = m.email
+        except AttributeError, KeyError, RuntimeError:
+            logging.getLogger(__name__).debug(
+                "Failed to build owner map for projects", exc_info=True
+            )
 
-        if select_project_id:
-            for i in range(self.project_list.count()):
-                it = self.project_list.item(i)
-                if str(it.data(Qt.ItemDataRole.UserRole)) == str(select_project_id):
-                    select_row(i)
-                    return
-        select_row(0)
+        return owners
 
     def _on_project_selected(self) -> None:
         with contextlib.suppress(AttributeError, RuntimeError):
@@ -238,11 +238,6 @@ class ProjectsSyncMixin:
         items = self.project_list.selectedItems()
         if not items:
             return
-        if self.current_project_id:
-            self._risks_col_widths[self.current_project_id] = [
-                self.risks_table.columnWidth(c)
-                for c in range(self.risks_table.columnCount())
-            ]
         self.current_project_id = items[0].data(Qt.ItemDataRole.UserRole)
         self.current_risk_id = None
         self.current_opportunity_id = None
@@ -369,6 +364,15 @@ class ProjectsSyncMixin:
             if hasattr(self, "conflicts_btn"):
                 self.conflicts_btn.setEnabled(False)
 
+    def _backend_query(self, name: str, default: Any, *args: object) -> Any:
+        """Return `default` when the backend lacks this method or it fails."""
+        if not hasattr(self.backend, name):
+            return default
+        try:
+            return getattr(self.backend, name)(*args)
+        except AttributeError, RuntimeError:
+            return default
+
     def _read_sync_status(self) -> None:
         pid = self.current_project_id
         if self._is_unsyncable_local_project(pid):
@@ -378,61 +382,25 @@ class ProjectsSyncMixin:
                 self.conflicts_btn.setText("Conflicts (0)")
                 self.conflicts_btn.setEnabled(False)
             return
-        pending = 0
-        deferred = 0
-        conflicts = 0
-        errors = 0
-        last_sync: object = None
-        can_sync = False
-        if hasattr(self.backend, "pending_count"):
-            try:
-                pending = self.backend.pending_count(pid)
-            except AttributeError, RuntimeError:
-                pending = 0
-        if hasattr(self.backend, "conflict_count"):
-            try:
-                conflicts = self.backend.conflict_count(pid)
-            except AttributeError, RuntimeError:
-                conflicts = 0
-        if hasattr(self.backend, "deferred_count"):
-            try:
-                deferred = self.backend.deferred_count(pid)
-            except AttributeError, RuntimeError:
-                deferred = 0
-        if hasattr(self.backend, "error_count"):
-            try:
-                errors = self.backend.error_count(pid)
-            except AttributeError, RuntimeError:
-                errors = 0
-        if hasattr(self.backend, "last_sync_time"):
-            try:
-                last_sync = self.backend.last_sync_time(pid)
-            except AttributeError, RuntimeError:
-                last_sync = None
-        if hasattr(self.backend, "can_sync"):
-            try:
-                can_sync = bool(self.backend.can_sync())
-            except AttributeError, RuntimeError:
-                can_sync = False
-        reconnect_available = getattr(self.backend, "can_auto_sync", None)
-        can_reconnect = callable(reconnect_available) and bool(reconnect_available())
+
+        pending = self._backend_query("pending_count", 0, pid)
+        conflicts = self._backend_query("conflict_count", 0, pid)
+        deferred = self._backend_query("deferred_count", 0, pid)
+        errors = self._backend_query("error_count", 0, pid)
+        last_sync = self._backend_query("last_sync_time", None, pid)
+        can_sync = bool(self._backend_query("can_sync", False))
+        can_reconnect = bool(self.backend.can_auto_sync())
         self.sync_btn.setEnabled(bool(pid) and (can_sync or can_reconnect))
-        mode = "ONLINE" if can_sync else "OFFLINE"
-        formatted_last_sync = self._format_last_sync_time(last_sync)
-        self.sync_status.setText(
-            f"{mode} · queued: {pending} · retrying: {deferred} "
-            f"· conflicts: {conflicts} "
-            f"· errors: {errors} · last sync: {formatted_last_sync}"
+        status = (
+            f"{'ONLINE' if can_sync else 'OFFLINE'} · queued: {pending} "
+            f"· retrying: {deferred} · conflicts: {conflicts} · errors: {errors} "
+            f"· last sync: {self._format_last_sync_time(last_sync)}"
         )
         if self.state.sync_errors:
-            self.sync_status.setText(
-                self.sync_status.text() + " · sync needs attention"
-            )
+            status += " · sync needs attention"
+        self.sync_status.setText(status)
         self.sync_status.setToolTip(
-            "\n".join(
-                f"{project_id}: {detail}"
-                for project_id, detail in self.state.sync_errors.items()
-            )
+            "\n".join(f"{p}: {detail}" for p, detail in self.state.sync_errors.items())
         )
         if hasattr(self, "conflicts_btn"):
             self.conflicts_btn.setText(f"Conflicts ({conflicts})")
@@ -600,8 +568,7 @@ class ProjectsSyncMixin:
         """Start a silent all-project sync when the UI is safe to refresh."""
         if self._editor_dirty or self._opp_editor_dirty:
             return False
-        available = getattr(self.backend, "can_auto_sync", None)
-        if callable(available) and not bool(available()):
+        if not self.backend.can_auto_sync():
             return False
         can_sync = getattr(self.backend, "can_sync", None)
         export_remote = callable(can_sync) and not bool(can_sync())
@@ -631,7 +598,16 @@ class ProjectsSyncMixin:
 
     def _remember_sync_errors(self, summaries: Iterable[dict[str, Any]]) -> None:
         for summary in summaries:
-            project_id = str(summary.get("project_id") or self.current_project_id or "")
+            # A promoted project keeps its sync state under its server id.
+            migrated_from = summary.get("project_id_migrated_from")
+            if migrated_from:
+                self.state.sync_errors.pop(str(migrated_from), None)
+            project_id = str(
+                summary.get("project_id_migrated_to")
+                or summary.get("project_id")
+                or self.current_project_id
+                or ""
+            )
             if not project_id:
                 continue
             error = summary.get("sync_error")

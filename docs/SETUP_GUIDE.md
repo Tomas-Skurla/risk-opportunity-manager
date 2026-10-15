@@ -1,37 +1,12 @@
-# RiskApp — Setup Guide
+# Setup guide
 
-This guide describes the recommended local setup using the repository scripts.
+Use Python 3.14 and one virtual environment, `.venv`, for both the server and client. Run commands from the repository root. Choose the instructions for your operating system: Linux/WSL uses `.venv/bin`, while native Windows uses `.venv/Scripts`. Keep separate environments for Windows and WSL; do not reuse one across them.
 
-## Prerequisites
+## 1. Install
 
-- Python 3.14. Docker, CI, Black, Ruff, mypy, and dependency relocking all use this same minor version.
-- A shell capable of running Bash scripts.
-- Two terminal windows for running the server and client.
-- Ubuntu 24.04 or newer. Other distributions need the equivalent packages from step 2.
+### Linux and WSL installation
 
-The project uses a **single virtual environment at the repository root**:
-
-```text
-.venv/
-```
-
-Do not create separate `server/.venv` and `client/.venv` environments for normal local testing.
-
----
-
-## 1. Open the repository root
-
-Change into the directory that contains `server/`, `client/`, `tests/`, and `scripts/`.
-
-```bash
-cd /path/to/risk-opportunity-manager
-```
-
-If you downloaded a ZIP, extract it first and then `cd` into the extracted project root.
-
----
-
-## 2. Install OS prerequisites
+On Ubuntu 24.04 or newer, install the packages below. Other distributions need their equivalents.
 
 ```bash
 sudo apt install -y git curl python3-venv \
@@ -39,310 +14,247 @@ sudo apt install -y git curl python3-venv \
   libxkbcommon-x11-0 libxcb1 libxcb-cursor0 libxcb-icccm4 libxcb-image0 \
   libxcb-keysyms1 libxcb-randr0 libxcb-render0 libxcb-render-util0 \
   libxcb-shape0 libxcb-shm0 libxcb-sync1 libxcb-xfixes0 libxcb-xinerama0 libxcb-xkb1
-```
-
-The `lib*` packages are the Qt runtime libraries PySide6 needs, for both the desktop client and the headless test suite. A desktop install already has most of them, and apt skips those. Every locked Python dependency ships as a prebuilt wheel, so no compiler or Python headers are needed. If the client still fails to start, the diagnostic script in step 4 names the missing library.
-
----
-
-## 3. Create the Python environment
-
-Install server/client dependencies from the lock files and tooling from `requirements-dev.txt`:
-
-```bash
 bash scripts/setup_python_env.sh
-```
-
-If your default `python3` is not the version you want, provide an interpreter explicitly:
-
-```bash
-PYTHON_BIN=python3.14 bash scripts/setup_python_env.sh
-```
-
-The script requires Python 3.14. It creates `.venv`, installs:
-
-```text
-server/requirements.txt
-client/requirements.txt
-requirements-dev.txt
-```
-
-and verifies imports for FastAPI, Pydantic, SQLAlchemy, PySide6, `qdarktheme`, and pytest.
-
----
-
-## 4. Diagnose Qt/PySide runtime libraries
-
-Run this once after setting up the Python environment:
-
-```bash
 bash scripts/diagnose_qt_runtime.sh
 ```
 
-If it reports missing shared libraries such as `libglib-2.0.so.0` or missing `xcb` plugin dependencies, install the corresponding OS package and rerun the diagnostic.
+The `lib*` packages are the Qt runtime libraries PySide6 needs, for the desktop client and for the headless tests. On releases without `t64` packages, install `libglib2.0-0` instead of `libglib2.0-0t64`. Every locked dependency ships as a prebuilt wheel, so no compiler is needed.
 
-On Debian/Ubuntu family systems, the most common missing GLib package is one of:
+`setup_python_env.sh` creates `.venv`, installs `server/requirements.txt`, `client/requirements.txt` and `requirements-dev.txt`, and checks the main imports. If your default `python3` is not 3.14, run it as `PYTHON_BIN=python3.14 bash scripts/setup_python_env.sh`. `diagnose_qt_runtime.sh` names any Qt library that is still missing.
 
-```bash
-sudo apt install -y libglib2.0-0
-# or on newer t64-based releases:
-sudo apt install -y libglib2.0-0t64
+### Windows installation
+
+Install native Windows Python 3.14 and Git for Windows. Use **PowerShell** for setup and launch commands, use **Git Bash** for the project's Bash check scripts. The Linux setup and launch scripts assume `.venv/bin` and are not the native Windows setup path.
+
+Paste each complete `& { ... }` block at once. It stops the remaining commands in that block when a checked operation fails. `>>` is PowerShell's continuation prompt, not text to copy. These blocks use the virtual environment's Python directly, so PowerShell activation is not required.
+
+```powershell
+& {
+    $ErrorActionPreference = "Stop"
+    if (-not (Test-Path -LiteralPath ".venv")) {
+        py -3.14 -m venv .venv
+        if ($LASTEXITCODE -ne 0) { throw "Could not create the Python 3.14 environment." }
+    }
+    $python = (Resolve-Path ".venv\Scripts\python.exe").Path
+    & $python -c "import sys; sys.exit(0 if sys.version_info[:2] == (3, 14) else 'This project needs Python 3.14.')"
+    if ($LASTEXITCODE -ne 0) { throw "Use a Python 3.14 virtual environment." }
+    & $python -m pip install -r server/requirements.txt -r client/requirements.txt -r requirements-dev.txt
+    if ($LASTEXITCODE -ne 0) { throw "Dependency installation failed." }
+    & $python -m pip check
+    if ($LASTEXITCODE -ne 0) { throw "Dependency consistency check failed." }
+}
 ```
 
----
+If `py` is unavailable, use the installed Python 3.14 executable for the `-m venv` command. An existing environment from another Python version or operating system must be replaced deliberately before rerunning setup.
 
-## 5. Run automated checks
+Create the private `.env` once. This fills the same four placeholders as `dev-init.sh`, uses exclusive file creation and leaves an existing `.env` unchanged:
+
+```powershell
+& {
+    $ErrorActionPreference = "Stop"
+    $python = (Resolve-Path ".venv\Scripts\python.exe").Path
+    @'
+from pathlib import Path
+import secrets
+
+path = Path(".env")
+if path.exists():
+    print(".env already exists; left unchanged.")
+else:
+    values = {
+        "SECRET_KEY": secrets.token_hex(32),
+        "TOKEN_HASH_KEY": secrets.token_hex(32),
+        "INITIAL_SUPERUSER_EMAIL": "admin@example.com",
+        "INITIAL_SUPERUSER_PASSWORD": secrets.token_urlsafe(24) + "Aa1!",
+    }
+    lines = Path(".env.example").read_text(encoding="utf-8").splitlines()
+    for name, value in values.items():
+        placeholder = f"{name}="
+        if lines.count(placeholder) != 1:
+            raise SystemExit(f"Expected one blank {name} in .env.example.")
+        lines[lines.index(placeholder)] = f"{name}={value}"
+    with path.open("x", encoding="utf-8") as output:
+        output.write("\n".join(lines) + "\n")
+    print("Created .env. Read the bootstrap login credentials there locally.")
+'@ | & $python -
+    if ($LASTEXITCODE -ne 0) { throw ".env creation failed." }
+}
+```
+
+Keep this file private and retain its keys when restoring a database. It is already excluded from Git. If it already exists, review its settings locally rather than regenerating it or printing its credentials.
+
+## 2. Run the checks
+
+On Linux/WSL:
 
 ```bash
 bash scripts/check_project.sh
 ```
 
-It uses an already active environment, or activates `.venv` when present, and runs these steps in order:
+On native Windows, open **Git Bash** at the repository root and activate the Windows environment before checking:
 
-1. `python scripts/check_migrations.py`: migrates an empty database to the Alembic head, then checks the models for drift
+```bash
+source .venv/Scripts/activate && bash scripts/check_project.sh
+```
+
+It uses the active environment or activates `.venv`, then runs in order:
+
+1. `python scripts/check_migrations.py`: migrates an empty database to the Alembic head and checks the models for drift
 2. `bash scripts/test.sh`: the test suite, with 90% combined, 92% line and 80% branch coverage gates
 3. `bash scripts/typecheck.sh`: mypy on both application packages
-4. `bash scripts/lint.sh`: Ruff
+4. `bash scripts/lint.sh`: Ruff, including its Bandit-derived `S` security rules
 5. `python -m compileall -q server client scripts`
 6. `python -m pip check`
 
-Each step also runs on its own. If Ruff reports safe fixable issues, `bash scripts/check_project.sh --fix` applies them before checking. `bash scripts/format.sh` runs Black and rewrites files, so it is not part of the check.
+`--fix` applies Ruff's safe fixes first. `bash scripts/format.sh` runs Black and rewrites files, so it is not part of the check. The tests need no display. To run one area, pass its folder to pytest, for example `python -m pytest tests/server/api/sync`, the coverage gates apply only to the full run. Tool settings live in `pyproject.toml`.
 
-The suite includes headless Qt tests. It needs the client dependencies and the OS packages from step 2, but no display.
+## 3. Start the server and the client
 
-The tests are grouped by what they exercise:
-
-```text
-tests/
-  server/unit/          server code without HTTP requests
-  server/api/           requests to the API: auth/, projects/, records/, sync/, http/
-  server/migrations/    the Alembic migrations
-  server/ops/           the SQLite backup and restore tool
-  client/unit/          client code: app/, services/, storage/, sync/
-  client/gui/           the desktop UI layer
-  client/integration/   the client and a real server together
-  support/              shared helpers for accounts, projects, items and sync changes
-```
-
-To run one area, pass its folder to pytest, for example `python -m pytest tests/server/api/sync`. Running a single area skips the coverage gates, which only apply to a full run of `bash scripts/check_project.sh`.
-
-Configuration for pytest, mypy, Ruff and Black lives in `pyproject.toml`. Mypy checks every module under `server/riskapp_server` and `client/riskapp_client` with strict function annotations, unreachable-code, extra and unused-ignore checks. Only the generated Qt `ui_*.py` modules have a narrow override, because they are regenerated from Designer forms rather than maintained by hand. Ruff includes its Bandit-derived `S` security rules. The test exceptions cover assertions, obvious fixture credentials and two narrowly scoped platform fixtures; suppressions in application code are line-specific and document why the flagged operation is safe.
-
----
-
-## 6. Start the server
-
-Use Terminal 1:
+### Linux and WSL startup
 
 ```bash
-bash scripts/dev-init.sh
-bash scripts/run_server_dev.sh
+bash scripts/dev-init.sh          # once: creates .env with random keys and an admin password
+bash scripts/run_server_dev.sh    # terminal 1: API at http://127.0.0.1:8000
+bash scripts/run_client_dev.sh    # terminal 2: desktop client
 ```
 
-The setup script creates a private, Git-ignored `.env` with random signing and token-hash keys and an administrator password. Reruns preserve existing values. The launcher loads that file, with exported settings taking precedence. Read `INITIAL_SUPERUSER_EMAIL` and `INITIAL_SUPERUSER_PASSWORD` from `.env` to log in. Existing database accounts are never changed by bootstrap settings.
+`dev-init.sh` writes a private, Git-ignored `.env` and never overwrites an existing one. Log in with `INITIAL_SUPERUSER_EMAIL` and `INITIAL_SUPERUSER_PASSWORD` from it. On startup the server creates that account if the email does not exist yet; it never changes an existing account.
 
-The server runs at:
+The server launcher loads `.env` (exported variables take precedence), reloads on code changes and listens on `127.0.0.1` only, `RISKAPP_HOST` and `RISKAPP_PORT` change that. Check it with `curl http://127.0.0.1:8000/health`, which returns `{"status":"ok","db":"ok"}`. The client launcher sets `RISKAPP_URL=http://127.0.0.1:8000` and `RISKAPP_ALLOW_HTTP=1`. Using the app is covered in the [client guide](../client/README_CLIENT.md).
 
-```text
-http://127.0.0.1:8000
-```
-
-The launcher binds to `127.0.0.1`, so the API is reachable only from this machine. `RISKAPP_HOST` and `RISKAPP_PORT` change the address and port.
-
-Verify from another terminal:
+Without the launchers, activate `.venv` with `source .venv/bin/activate`, then run the server from `server/` and the client from `client/`:
 
 ```bash
-curl -s -o /tmp/riskapp-health.json -w "HTTP %{http_code}\n" http://127.0.0.1:8000/health
-cat /tmp/riskapp-health.json
-```
-
-Expected:
-
-```text
-HTTP 200
-{"status":"ok","db":"ok"}
-```
-
-To run the server without the launcher, for example to change uvicorn options:
-
-```bash
-source .venv/bin/activate
-cd server
 uvicorn riskapp_server.main.app:create_app --factory --env-file ../.env --reload --host 127.0.0.1 --port 8000
+RISKAPP_ALLOW_HTTP=1 RISKAPP_URL=http://127.0.0.1:8000 python -m riskapp_client.app
 ```
 
-Deliberately resetting the development database still requires `RESET_SERVER_DB=1`, which deletes all server data.
+### Windows startup
 
-For staging or production, run the migration job once before starting API workers. `DATABASE_URL` is intentionally required:
+Use fresh PowerShell terminals so earlier rehearsal settings do not carry over. First complete Windows installation and `.env` creation above. In the **server terminal**:
+
+```powershell
+& {
+    $ErrorActionPreference = "Stop"
+    $repoPath = (Resolve-Path .).Path
+    $python = Join-Path $repoPath ".venv\Scripts\python.exe"
+    $env:ENV = "development"
+    $env:AUTO_CREATE_SCHEMA = "1"
+    $env:ENFORCE_HTTPS = "0"
+    $env:ALLOWED_HOSTS = "127.0.0.1,localhost"
+    $env:DATABASE_URL = "sqlite+pysqlite:///" + ((Join-Path $repoPath "server\riskapp.db").Replace("\", "/"))
+    Push-Location (Join-Path $repoPath "server")
+    try {
+        & $python -m uvicorn riskapp_server.main.app:create_app --factory `
+            --env-file (Join-Path $repoPath ".env") --host 127.0.0.1 --port 8000
+    } finally {
+        Pop-Location
+    }
+}
+```
+
+Wait for `Application startup complete`. In another terminal, `Invoke-RestMethod "http://127.0.0.1:8000/health"` should report `status: ok` and `db: ok`. In the **client terminal**, at the repository root:
+
+```powershell
+& {
+    $ErrorActionPreference = "Stop"
+    $repoPath = (Resolve-Path .).Path
+    $python = Join-Path $repoPath ".venv\Scripts\python.exe"
+    $env:RISKAPP_URL = "http://127.0.0.1:8000"
+    $env:RISKAPP_ALLOW_HTTP = "1"
+    $env:RISKAPP_LOCAL_DB = Join-Path $env:USERPROFILE ".riskapp\client.sqlite3"
+    $env:RISKAPP_AUTO_SYNC_INTERVAL_SECONDS = "60"
+    Push-Location (Join-Path $repoPath "client")
+    try {
+        & $python -m riskapp_client.app
+    } finally {
+        Pop-Location
+    }
+}
+```
+
+Log in using the bootstrap email and password from `.env`. These are normal development paths; startup retains existing data. For disposable databases on port `8001`, use the [Windows rehearsal](DEMO_REHEARSAL.md) instead. Close the client normally and stop the API with **Ctrl+C** when finished.
+
+### Schema migrations
+
+For staging or production, run the migrations once before starting the API, with `DATABASE_URL` set explicitly, and keep `AUTO_CREATE_SCHEMA=0`:
 
 ```bash
-source .venv/bin/activate
 export DATABASE_URL='sqlite+pysqlite:////absolute/path/to/riskapp.db'
 bash scripts/migrate_server.sh
 ```
 
-Keep `AUTO_CREATE_SCHEMA=0` in deployed environments. Existing databases made with automatic schema creation must be backed up and verified before stamping the baseline revision; do not blindly stamp them.
+A database created by automatic schema creation must be backed up and verified before it is stamped with the baseline revision; do not stamp it blindly.
 
----
+## 4. Run the API in Docker
 
-## 7. Start the client
-
-Use Terminal 2:
+Only the API runs in a container; the desktop client stays native.
 
 ```bash
-bash scripts/run_client_dev.sh
+bash scripts/dev-init.sh              # Linux/WSL; Windows uses the .env block above
+docker compose up --build              # API at http://127.0.0.1:8000
+curl http://127.0.0.1:8000/health      # from another terminal
+docker compose down                    # stops it and keeps the data; --volumes deletes it
 ```
 
-This launches the PySide6 desktop client with:
+On Windows, create `.env` with the PowerShell block above, then run the Docker commands from PowerShell; use `Invoke-RestMethod` for the health check.
 
-```text
-RISKAPP_ALLOW_HTTP=1
-RISKAPP_URL=http://127.0.0.1:8000
-```
+Compose reads `.env`, with variables exported in your shell taking precedence, and refuses to start without both keys. `docker compose config --quiet` validates the setup without printing secrets. For another host port, run `RISKAPP_HOST_PORT=8080 docker compose up --build` and start the client with `RISKAPP_URL=http://127.0.0.1:8080 bash scripts/run_client_dev.sh`. `docker build --target test -t riskapp:test .` runs the full project check in a container. This is a development setup, not a production deployment recipe.
 
-Login with:
+## 5. Reset local data
 
-```text
-Server URL: http://127.0.0.1:8000
-Email: <your admin email here>, the INITIAL_SUPERUSER_EMAIL from .env
-Password: <your admin password here>, the INITIAL_SUPERUSER_PASSWORD from .env
-```
-
-To run the client without the launcher:
+**This deletes the server database and the client cache, including unsynced client changes.** Normal startup never deletes data. These are deliberate development resets, not rehearsal cleanup, the [rehearsal cleanup](DEMO_REHEARSAL.md#cleanup) removes only its disposable folder.
 
 ```bash
-source .venv/bin/activate
-cd client
-RISKAPP_ALLOW_HTTP=1 RISKAPP_URL=http://127.0.0.1:8000 python -m riskapp_client.app
+bash scripts/reset_dev_state.sh        # asks first, --yes skips the question
 ```
 
-For using the app, including the login dialog, accounts, offline modes, roles and tabs, see the [client guide](../client/README_CLIENT.md).
+It removes `server/riskapp.db` and `~/.riskapp/client.sqlite3`. To reset one side only, start its launcher with `RESET_SERVER_DB=1` or `RESET_CLIENT_DB=1`.
 
----
+## 6. Update dependencies
 
-## 8. Refresh dependency locks
-
-`server/requirements.in` and `client/requirements.in` hold the allowed version ranges; edit those. The matching `requirements.txt` files are generated from them by [pip-tools](https://github.com/jazzband/pip-tools) and pin every package, including indirect ones. Every install uses the pinned files, so do not edit them by hand.
-
-After changing a range, regenerate the pins and rebuild the environment:
+Version ranges live in `server/requirements.in` and `client/requirements.in`, edit those. The matching `requirements.txt` files are generated by [pip-tools](https://github.com/jazzband/pip-tools), pin every package including indirect ones, and are never edited by hand. After changing a range:
 
 ```bash
-bash scripts/relock_python_deps.sh
+bash scripts/relock_python_deps.sh       # --upgrade for newest allowed, --upgrade-package NAME for one
 bash scripts/setup_python_env.sh --recreate
 ```
 
-The script keeps existing pins that still fit their range. `--upgrade` moves every package to the newest allowed version, and `--upgrade-package NAME` moves one. Dependabot reruns pip-compile with the options in the file header. Its version updates bump only the packages listed in `requirements.in`.
+Existing pins that still fit their range are kept. To resolve a merge conflict in a pinned file, resolve `requirements.in`, take either side of the pinned file, and rerun the script. Dependabot uses the same pip-compile options.
 
-`requirements-dev.txt` adds the development tools, `requirements-test.txt` combines everything the test suite needs, and `pyproject.toml` configures the tools but pins no dependencies.
+## 7. Configuration
 
----
-
-## 9. Reset local dev state
-
-**Destructive:** resetting deletes the server database and the client database, including unsynced client changes. Normal startup in steps 6 and 7 preserves existing data. Use a reset only when you deliberately want an empty database.
-
-Interactive:
-
-```bash
-bash scripts/reset_dev_state.sh
-```
-
-Non-interactive:
-
-```bash
-bash scripts/reset_dev_state.sh --yes
-```
-
-This removes:
-
-```text
-server/riskapp.db
-~/.riskapp/client.sqlite3
-```
-
----
-
-## 10. Environment variables reference
-
-Every setting RiskApp reads is listed here. The server reads them from its environment, and the development launcher also loads them from `.env`.
-
-### Server
+The server reads its settings from the environment; the launcher and Compose also load `.env`. Invalid values stop startup. The ones you are most likely to need:
 
 | Variable | Default | Notes |
 | --- | --- | --- |
-| `DATABASE_URL` | `sqlite+pysqlite:///./riskapp.db` | Server database URL |
-| `ENV` | `development` | One of `development`, `test`, or `production`; invalid values stop startup |
-| `SECRET_KEY` | unset | Random JWT signing key; required and at least 32 characters in every environment |
-| `TOKEN_HASH_KEY` | unset | Separate random HMAC key for stored refresh/password-reset tokens; required and at least 32 characters in every environment |
-| `ACCESS_TOKEN_MINUTES` | `15` | Access-token lifetime |
-| `REFRESH_TOKEN_DAYS` | `30` | Refresh-token lifetime |
-| `REFRESH_TOKEN_REUSE_GRACE_SECONDS` | `30` | One-time recovery window for a rotated token whose response was lost; `0` disables recovery |
-| `LOGIN_RATE_LIMIT_PER_MINUTE` | `10` | Per-IP-and-email login attempts in the configured window |
-| `LOGIN_IP_RATE_LIMIT_PER_MINUTE` | `50` | Aggregate login attempts allowed from one client IP |
-| `LOGIN_RATE_LIMIT_WINDOW_SECONDS` | `60` | Sliding window shared by both login limits |
-| `AUTO_CREATE_SCHEMA` | dev `1`, production `0` | Use explicit migrations in production |
-| `ENFORCE_HTTPS` | production `1` | Reject non-HTTPS requests |
-| `TRUST_X_FORWARDED_PROTO` | `0` | Enable only behind a configured trusted proxy |
-| `ALLOWED_HOSTS` | dev `*`, production required | Comma-separated accepted Host values |
-| `INITIAL_SUPERUSER_EMAIL` | unset | Optional create-only bootstrap superadmin email; existing accounts are never modified |
-| `INITIAL_SUPERUSER_PASSWORD` | unset | Password used only when creating the bootstrap account |
-| `CORS_ORIGINS` | unset | Comma-separated allowed origins |
-| `MAX_REQUEST_BODY_BYTES` | `2097152` | Maximum declared or streamed request body |
-| `RISKAPP_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL` |
-| `RISKAPP_LOG_FORMAT` | `plain` | `plain` for local use or newline-delimited `json` for log collectors |
-| `PASSWORD_RESET_RETURN_TOKEN` | `0` | Development/test only; forbidden in production |
-| `RETENTION_DAYS` | `180` | Default age limit for the `/admin` prune endpoint |
-| `SYNC_RECEIPT_RETENTION_DAYS` | `365` | Sync receipts younger than this are never pruned |
-| `MAX_SYNC_PULL_PER_ENTITY` | `5000` | Sync pull cap |
-| `SYNC_PUSH_EXPUNGE_EVERY` | `200` | Sync push housekeeping interval |
-| `RISKAPP_HOST` | `127.0.0.1` | Address the API listens on; `127.0.0.1` keeps it reachable only from this machine |
-| `RISKAPP_PORT` | `8000` | Port the API listens on |
-| `RISKAPP_RELOAD` | on in development | Restart on code changes when started with `python -m riskapp_server`, the launcher always reloads |
+| `SECRET_KEY` | none | Signs access tokens. Required, at least 32 characters |
+| `TOKEN_HASH_KEY` | none | Hashes stored refresh and reset tokens. Required, at least 32 characters, generated separately from `SECRET_KEY` |
+| `ENV` | `development` | `development`, `test` or `production` |
+| `DATABASE_URL` | `sqlite+pysqlite:///./riskapp.db` | Relative paths resolve against the server's working directory |
+| `AUTO_CREATE_SCHEMA` | `1`; `0` in production | Production uses migrations |
+| `ALLOWED_HOSTS` | `*`; required in production | Comma-separated Host values |
+| `CORS_ORIGINS` | none | Comma-separated origins; `*` is rejected |
+| `ENFORCE_HTTPS` | `0`; `1` in production | Rejects plain HTTP requests |
+| `TRUST_X_FORWARDED_PROTO` | `0` | Enable only behind a trusted proxy |
+| `INITIAL_SUPERUSER_EMAIL`, `INITIAL_SUPERUSER_PASSWORD` | none | Create-only bootstrap account; set both or neither |
+| `ACCESS_TOKEN_MINUTES`, `REFRESH_TOKEN_DAYS` | `15`, `30` | Token lifetimes |
+| `LOGIN_RATE_LIMIT_PER_MINUTE`, `LOGIN_IP_RATE_LIMIT_PER_MINUTE` | `10`, `50` | Login attempts per IP and email, and per IP |
+| `MAX_REQUEST_BODY_BYTES` | `2097152` | Larger requests get HTTP 413 |
+| `RETENTION_DAYS`, `SYNC_RECEIPT_RETENTION_DAYS` | `180`, `365` | Default age for audit pruning; receipts younger than the second are never pruned |
+| `RISKAPP_LOG_LEVEL`, `RISKAPP_LOG_FORMAT` | `INFO`, `plain` | `json` for log collectors |
+| `RISKAPP_HOST`, `RISKAPP_PORT` | `127.0.0.1`, `8000` | Listen address and port |
 
-`SECRET_KEY` signs access tokens. `TOKEN_HASH_KEY` hashes refresh and password-reset tokens before they are stored, so rotating the signing key does not invalidate them. Generate the two independently and keep both in the deployment's secret manager. Rotating `TOKEN_HASH_KEY` invalidates existing refresh and password-reset tokens.
+The other settings, such as the password policy, refresh-token reuse grace, database pool, gzip and sync limits, are defined with their defaults and allowed ranges in `server/riskapp_server/core/config.py`. Compose also reads `RISKAPP_HOST_ADDR` and `RISKAPP_HOST_PORT` (default `127.0.0.1` and `8000`) for the address it publishes the API on.
 
-### Advanced server settings
-
-The defaults suit most setups. These tune the password policy, performance and internal limits.
+The client reads:
 
 | Variable | Default | Notes |
 | --- | --- | --- |
-| `ALGORITHM` | `HS256` | JWT signing algorithm: `HS256`, `HS384` or `HS512` |
-| `PASSWORD_MIN_LENGTH` | `12` | Minimum password length, 8 to 128 |
-| `PASSWORD_MAX_LENGTH` | `128` | Maximum password length, up to 1024 |
-| `PASSWORD_REQUIRE_UPPER` | `1` | Require an uppercase letter |
-| `PASSWORD_REQUIRE_LOWER` | `1` | Require a lowercase letter |
-| `PASSWORD_REQUIRE_DIGIT` | `1` | Require a digit |
-| `PASSWORD_REQUIRE_SYMBOL` | `1` | Require a symbol |
-| `PASSWORD_RESET_TOKEN_MINUTES` | `15` | Lifetime of a password-reset token |
-| `PASSWORD_RESET_RATE_LIMIT_PER_HOUR` | `5` | Password-reset requests allowed per client IP and email address |
-| `RATE_LIMIT_MAX_KEYS` | `10000` | Most clients the in-memory rate limiters track at once |
-| `DB_POOL_SIZE` | `5` | Database connection pool size; not used with SQLite |
-| `DB_MAX_OVERFLOW` | `10` | Extra connections allowed beyond the pool; not used with SQLite |
-| `DB_POOL_RECYCLE` | `1800` | Seconds before a pooled connection is replaced; not used with SQLite |
-| `DB_STATEMENT_TIMEOUT_MS` | `30000` | PostgreSQL statement timeout; `0` disables it |
-| `GZIP_ENABLED` | `1` | Compress responses |
-| `GZIP_MINIMUM_SIZE` | `1024` | Smallest response, in bytes, that gets compressed |
-| `SNAPSHOT_INSERT_CHUNK` | `1000` | Rows written per batch when saving a score snapshot |
-
-### Docker Compose
-
-| Variable | Default | Notes |
-| --- | --- | --- |
-| `RISKAPP_HOST_ADDR` | `127.0.0.1` | Host address the API container is published on |
-| `RISKAPP_HOST_PORT` | `8000` | Host port the API container is published on |
-
-Inside the container the API listens on `0.0.0.0`, which is needed for Docker's port forwarding. It is published only on `RISKAPP_HOST_ADDR`.
-
-### Client
-
-| Variable | Default | Notes |
-| --- | --- | --- |
-| `RISKAPP_URL` | `http://localhost:8000`; the launcher sets `http://127.0.0.1:8000` | Server URL used by the client |
-| `RISKAPP_ALLOW_HTTP` | unset | Set to `1` for local plain HTTP |
-| `RISKAPP_LOCAL_DB` | `~/.riskapp/client.sqlite3` | Local SQLite cache |
-| `RISKAPP_EMAIL` | unset | Optional login prefill/automation |
-| `RISKAPP_PASSWORD` | unset | Optional login prefill/automation |
+| `RISKAPP_URL` | `http://localhost:8000` | Server URL; the launcher uses `http://127.0.0.1:8000` |
+| `RISKAPP_ALLOW_HTTP` | unset | `1` allows plain HTTP to hosts other than localhost |
+| `RISKAPP_LOCAL_DB` | `~/.riskapp/client.sqlite3` | Local cache and outbox |
+| `RISKAPP_EMAIL`, `RISKAPP_PASSWORD` | unset | When both are set, the client logs in without showing the login dialog |
+| `RISKAPP_AUTO_SYNC_INTERVAL_SECONDS` | `60` | `0` turns automatic sync off |
+| `RISKAPP_AUTO_SYNC_MAX_BACKOFF_SECONDS` | `300` | Longest wait between retries after failures |
 | `RISKAPP_LOG_LEVEL` | `INFO` | Python log level |
-| `RISKAPP_AUTO_SYNC_INTERVAL_SECONDS` | `60` | Periodic background-sync interval; `0` disables it |
-| `RISKAPP_AUTO_SYNC_MAX_BACKOFF_SECONDS` | `300` | Maximum retry delay after transient sync/reconnect failures |

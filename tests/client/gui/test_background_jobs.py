@@ -68,7 +68,7 @@ def test_worker_automatic_sync_isolates_project_failure(qtbot, caplog) -> None:
 
     class Backend:
         @staticmethod
-        def list_projects():
+        def list_sync_projects():
             return [
                 Project("project-1", "Broken"),
                 Project("project-2", "Healthy"),
@@ -113,7 +113,7 @@ def test_worker_automatic_syncs_all_projects_and_exports_reconnect(qtbot) -> Non
 
     class Backend:
         @staticmethod
-        def list_projects():
+        def list_sync_projects():
             return [
                 Project("project-1", "One"),
                 Project("project-2", "Two"),
@@ -169,7 +169,7 @@ def test_worker_automatic_sync_stops_after_shared_authentication_failure(qtbot) 
 
     class Backend:
         @staticmethod
-        def list_projects():
+        def list_sync_projects():
             return [
                 Project("project-1", "One"),
                 Project("project-2", "Two"),
@@ -213,11 +213,13 @@ def test_worker_automatic_sync_stops_after_shared_authentication_failure(qtbot) 
 def test_worker_automatic_sync_refreshes_projects_after_promotion(qtbot) -> None:
     list_calls = 0
     fail_refresh = False
+    cancel_during_sync = False
+    cancel_event = threading.Event()
     outcomes: list[object] = []
 
     class Backend:
         @staticmethod
-        def list_projects():
+        def list_sync_projects():
             nonlocal list_calls
             list_calls += 1
             if list_calls == 1:
@@ -228,6 +230,8 @@ def test_worker_automatic_sync_refreshes_projects_after_promotion(qtbot) -> None
 
         @staticmethod
         def sync_project(_project_id, **_kwargs):
+            if cancel_during_sync:
+                cancel_event.set()
             return {
                 "state": "complete",
                 "project_id_migrated_to": "project-1",
@@ -238,7 +242,7 @@ def test_worker_automatic_sync_refreshes_projects_after_promotion(qtbot) -> None
         owns_backend=False,
         kind="automatic_sync",
         payload={},
-        cancel_event=threading.Event(),
+        cancel_event=cancel_event,
     )
     worker.succeeded.connect(lambda _kind, result: outcomes.append(result))
 
@@ -270,6 +274,21 @@ def test_worker_automatic_sync_refreshes_projects_after_promotion(qtbot) -> None
         Project("project-1", "Draft", created_by="user@example.test")
     ]
     assert list_calls == 2
+
+    # Cancelling after the promotion skips the refresh but not the new IDs.
+    list_calls = 0
+    fail_refresh = False
+    cancel_during_sync = True
+    outcomes.clear()
+    worker.run()
+
+    result = outcomes[0]
+    assert isinstance(result, dict)
+    assert result["project_id_migrations"] == {"local-1": "project-1"}
+    assert result["_visible_projects"] == [
+        Project("project-1", "Draft", created_by="user@example.test")
+    ]
+    assert list_calls == 1
 
 
 def test_worker_dispatches_history_and_preserves_snapshot_after_history_error(  # pylint: disable-next=unused-argument
@@ -311,6 +330,7 @@ def test_worker_dispatches_history_and_preserves_snapshot_after_history_error(  
 
 def test_worker_reports_prestart_cancellation_invalid_results_and_unknown_jobs(  # pylint: disable-next=unused-argument
     qtbot,
+    caplog,
 ) -> None:
     factory_called = False
     cancelled: list[str] = []
@@ -337,19 +357,28 @@ def test_worker_reports_prestart_cancellation_invalid_results_and_unknown_jobs( 
 
     class InvalidBackend:
         @staticmethod
-        def sync_project(_project_id):
+        def sync_project(_project_id, **_callbacks):
             return "invalid"
+
+        @staticmethod
+        def close() -> None:
+            raise RuntimeError("test cleanup failure")
 
     failures: list[tuple[str, str]] = []
     invalid = jobs._BackgroundJobWorker(
         InvalidBackend,  # pyright: ignore[reportArgumentType]
-        owns_backend=False,
+        owns_backend=True,
         kind="sync",
         payload={"project_id": "project-1"},
         cancel_event=threading.Event(),
     )
     invalid.failed.connect(lambda kind, message: failures.append((kind, message)))
+    finished = Mock()
+    invalid.finished.connect(finished)
     invalid.run()
+    finished.assert_called_once_with()
+    assert "Could not close background backend" in caplog.text
+    assert "test cleanup failure" in caplog.text
 
     unknown = jobs._BackgroundJobWorker(
         object,  # pyright: ignore[reportArgumentType]
@@ -376,12 +405,9 @@ def test_runner_constructs_uses_and_closes_backend_in_worker_thread(qtbot) -> No
     progress: list[str] = []
     event_loop_ticks: list[int] = []
 
-    class Store:
+    class Backend:
         def close(self) -> None:
             calls["close"] = threading.get_ident()
-
-    class Backend:
-        store = Store()
 
         def sync_project(self, project_id, *, should_cancel, progress):
             assert project_id == "project-1"
@@ -464,7 +490,7 @@ def test_failed_shutdown_wait_restores_runner_until_job_finishes(qtbot) -> None:
     results: list[object] = []
 
     class Backend:
-        def sync_project(self, _project_id):
+        def sync_project(self, _project_id, **_callbacks):
             started.set()
             assert release.wait(timeout=2)
             return {"state": "complete"}
@@ -622,7 +648,7 @@ def test_offline_facade_worker_recovers_remote_then_main_adopts_it(local_store) 
         assert backend.can_sync()
         assert calls == ["reconnect", "fork"]
     finally:
-        worker_backend.store.close()
+        worker_backend.close()
 
 
 def test_results_arriving_during_shutdown_are_ignored(qtbot) -> None:
@@ -655,7 +681,7 @@ def test_shutdown_waits_for_a_running_job_and_drops_its_result(qtbot) -> None:
     results: list[object] = []
 
     class Backend:
-        def sync_project(self, _project_id):
+        def sync_project(self, _project_id, **_callbacks):
             started.set()
             assert release.wait(timeout=5)
             return {"state": "complete"}
@@ -692,7 +718,7 @@ def test_shutdown_waits_for_a_running_job_and_drops_its_result(qtbot) -> None:
 def test_worker_classifies_api_failure(qtbot, status, state, retryable):
     class Backend:
         @staticmethod
-        def list_projects():
+        def list_sync_projects():
             return [Project("p1", "Project")]
 
         @staticmethod

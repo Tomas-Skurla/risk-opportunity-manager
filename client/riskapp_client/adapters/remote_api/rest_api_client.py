@@ -1,7 +1,10 @@
+"""HTTP client for the RiskApp server API."""
+
 from __future__ import annotations
 
 import base64
 import binascii
+import contextlib
 import json
 import logging
 import os
@@ -34,6 +37,8 @@ from riskapp_client.domain.scored_entity_fields import SCORED_ENTITY_META_KEYS
 from riskapp_client.utils.urls import UrlPolicy, validate_base_url
 
 _MAX_RESPONSE_BYTES = 5_000_000
+_BASE_HEADERS = {"Accept": "application/json", "User-Agent": "RiskAppClient/1.0"}
+_HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
 
 logger = logging.getLogger(__name__)
 
@@ -197,6 +202,39 @@ def _http_error_detail(exc: urllib.error.HTTPError) -> str:
     return str(detail or exc.reason)
 
 
+def _default_url_policy() -> UrlPolicy:
+    """Plain HTTP to remote hosts is allowed only with RISKAPP_ALLOW_HTTP=1."""
+    return UrlPolicy(
+        allow_http_anywhere=os.getenv("RISKAPP_ALLOW_HTTP", "").strip() == "1"
+    )
+
+
+def _encode_body(
+    json_body: object | None, form_body: dict[str, str] | None
+) -> tuple[bytes | None, dict[str, str]]:
+    """Return the request body and its Content-Type header; JSON wins over a form."""
+    if json_body is not None:
+        content_type = {"Content-Type": "application/json"}
+        return json.dumps(json_body).encode("utf-8"), content_type
+    if form_body is not None:
+        content_type = {"Content-Type": "application/x-www-form-urlencoded"}
+        return urllib.parse.urlencode(form_body).encode("utf-8"), content_type
+    return None, {}
+
+
+def _read_json_response(resp: Any) -> object | None:
+    """Parse a JSON reply; an empty body is None, other content types an error."""
+    content_type = (
+        (resp.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+    )
+    raw_bytes = _read_limited(resp)
+    if not raw_bytes:
+        return None
+    if content_type not in {"application/json", ""}:
+        raise ApiError(0, f"Unexpected Content-Type: {content_type}")
+    return _load_json(raw_bytes)
+
+
 def register_account(
     base_url: str,
     email: str,
@@ -206,31 +244,15 @@ def register_account(
     url_policy: UrlPolicy | None = None,
 ) -> dict:
     if url_policy is None:
-        url_policy = UrlPolicy(
-            allow_http_anywhere=os.getenv("RISKAPP_ALLOW_HTTP", "").strip() == "1"
-        )
+        url_policy = _default_url_policy()
     validated_url = validate_base_url(base_url, url_policy)
-    parsed = urllib.parse.urlparse(validated_url)
-    url = f"{validated_url}/register"
     data = json.dumps({"email": email, "password": password}).encode("utf-8")
-    headers = {
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-        "User-Agent": "RiskAppClient/1.0",
-    }
-    handlers: list[urllib.request.BaseHandler] = [
-        _SameOriginRedirectHandler(
-            allowed_scheme=parsed.scheme,
-            allowed_netloc=parsed.netloc,
-        )
-    ]
-    if parsed.scheme == "https":
-        handlers.insert(
-            0,
-            urllib.request.HTTPSHandler(context=ssl.create_default_context()),
-        )
-    opener = urllib.request.build_opener(*handlers)
-    req = _http_request(url, data=data, headers=headers, method="POST")
+
+    headers = {"Content-Type": "application/json", **_BASE_HEADERS}
+    opener = _build_api_opener(validated_url)
+    req = _http_request(
+        f"{validated_url}/register", data=data, headers=headers, method="POST"
+    )
     try:
         with opener.open(req, timeout=timeout_s) as resp:
             payload = _load_json(_read_limited(resp))
@@ -256,9 +278,7 @@ class ApiBackend:
         url_policy: UrlPolicy | None = None,
     ) -> None:
         if url_policy is None:
-            url_policy = UrlPolicy(
-                allow_http_anywhere=os.getenv("RISKAPP_ALLOW_HTTP", "").strip() == "1"
-            )
+            url_policy = _default_url_policy()
         self.base_url = validate_base_url(base_url, url_policy)
         self._opener = _build_api_opener(self.base_url)
         self.email = email
@@ -341,6 +361,45 @@ class ApiBackend:
         # pylint: enable=protected-access
         return clone
 
+    def _build_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        json_body: object | None,
+        form_body: dict[str, str] | None,
+        auth: bool,
+    ) -> tuple[urllib.request.Request, str | None]:
+        """Return the request and the access token it carries, if any."""
+        if not path.startswith("/"):
+            raise ValueError("API path must start with '/'")
+        method_up = (method or "").strip().upper()
+        if method_up not in _HTTP_METHODS:
+            raise ValueError(f"Unsupported HTTP method: {method_up}")
+        headers = dict(_BASE_HEADERS)
+        used_token: str | None = None
+        if auth:
+            used_token = self.token
+            if not used_token:
+                raise ApiError(401, "Not logged in")
+            headers["Authorization"] = f"Bearer {used_token}"
+        data, content_type = _encode_body(json_body, form_body)
+        headers.update(content_type)
+        url = f"{self.base_url}{path}"
+        req = _http_request(url, data=data, headers=headers, method=method_up)
+        return req, used_token
+
+    def _refresh_unless_rotated(self, used_token: str | None) -> None:
+        """Refresh the access token unless another thread already replaced it.
+
+        Only the client that used the current access token rotates the shared
+        refresh token.
+        """
+        state = self._get_auth_state()
+        with state.lock:
+            if state.token == used_token:
+                self._refresh_access_token()
+
     def _req(
         self,
         method: str,
@@ -351,55 +410,18 @@ class ApiBackend:
         auth: bool = True,
         _retry_on_401: bool = True,
     ) -> object | None:
-        if not path.startswith("/"):
-            raise ValueError("API path must start with '/'")
-        method_up = (method or "").strip().upper()
-        if method_up not in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
-            raise ValueError(f"Unsupported HTTP method: {method_up}")
-        url = f"{self.base_url}{path}"
-        headers: dict[str, str] = {
-            "Accept": "application/json",
-            "User-Agent": "RiskAppClient/1.0",
-        }
-        data: bytes | None = None
-        used_token: str | None = None
-        if auth:
-            used_token = self.token
-            if not used_token:
-                raise ApiError(401, "Not logged in")
-            headers["Authorization"] = f"Bearer {used_token}"
-        if json_body is not None:
-            data = json.dumps(json_body).encode("utf-8")
-            headers["Content-Type"] = "application/json"
-        elif form_body is not None:
-            data = urllib.parse.urlencode(form_body).encode("utf-8")
-            headers["Content-Type"] = "application/x-www-form-urlencoded"
-        req = _http_request(url, data=data, headers=headers, method=method_up)
+        req, used_token = self._build_request(
+            method, path, json_body=json_body, form_body=form_body, auth=auth
+        )
         try:
             with self._opener.open(req, timeout=self.timeout_s) as resp:
-                content_type = (
-                    (resp.headers.get("Content-Type") or "")
-                    .split(";", 1)[0]
-                    .strip()
-                    .lower()
-                )
-                raw_bytes = _read_limited(resp)
-                if not raw_bytes:
-                    return None
-                if content_type not in {"application/json", ""}:
-                    raise ApiError(0, f"Unexpected Content-Type: {content_type}")
-                return _load_json(raw_bytes)
+                return _read_json_response(resp)
         except urllib.error.HTTPError as exc:
             if exc.code == 401 and auth and _retry_on_401 and self.refresh_token:
-                try:
-                    state = self._get_auth_state()
-                    with state.lock:
-                        # A request in another thread may already have rotated
-                        # the shared refresh token while this request was in
-                        # flight. Only the client that used the current access
-                        # token performs the rotation.
-                        if state.token == used_token:
-                            self._refresh_access_token()
+                # Retry once with a new access token; if refreshing fails with
+                # ValueError or TypeError, report the original 401.
+                with contextlib.suppress(ValueError, TypeError):
+                    self._refresh_unless_rotated(used_token)
                     return self._req(
                         method,
                         path,
@@ -408,8 +430,6 @@ class ApiBackend:
                         auth=auth,
                         _retry_on_401=False,
                     )
-                except ValueError, TypeError:
-                    pass
             raise ApiError(exc.code, _http_error_detail(exc)) from exc
         except urllib.error.URLError as exc:
             raise ApiError(0, f"Cannot reach server: {exc}") from exc

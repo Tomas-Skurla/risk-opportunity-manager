@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from typing import Any
 
 from riskapp_client.domain.scored_entity_fields import SCORED_ENTITY_META_SQLITE_COLUMNS
@@ -18,26 +18,188 @@ _ALLOWED_COLUMN_TYPES = {
     "TEXT NOT NULL DEFAULT 'risk'",
 }
 
+_ASSESSMENTS_TABLE = """
+    CREATE TABLE IF NOT EXISTS assessments (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        risk_id TEXT,
+        opportunity_id TEXT,
+        item_id TEXT NOT NULL DEFAULT '',
+        item_type TEXT NOT NULL DEFAULT 'risk',
+        assessor_user_id TEXT NOT NULL DEFAULT '',
+        probability INTEGER NOT NULL,
+        impact INTEGER NOT NULL,
+        score INTEGER NOT NULL DEFAULT 0,
+        notes TEXT NOT NULL DEFAULT '',
+        version INTEGER NOT NULL DEFAULT 0,
+        is_deleted INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL DEFAULT '',
+        dirty INTEGER NOT NULL DEFAULT 0,
+        FOREIGN KEY(project_id) REFERENCES projects(id)
+        -- NOTE: Do NOT FK to risks/opportunities; assessments can target either.
+    );
+"""
 
-def _checked_identifier(value: str) -> str:
+_TABLES = (
+    """
+    CREATE TABLE IF NOT EXISTS projects (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT ''
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS risks (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        probability INTEGER NOT NULL,
+        impact INTEGER NOT NULL,
+        version INTEGER NOT NULL DEFAULT 0,
+        is_deleted INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL DEFAULT '',
+        dirty INTEGER NOT NULL DEFAULT 0,
+        FOREIGN KEY(project_id) REFERENCES projects(id)
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS opportunities (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        probability INTEGER NOT NULL,
+        impact INTEGER NOT NULL,
+        version INTEGER NOT NULL DEFAULT 0,
+        is_deleted INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL DEFAULT '',
+        dirty INTEGER NOT NULL DEFAULT 0,
+        FOREIGN KEY(project_id) REFERENCES projects(id)
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS actions (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        risk_id TEXT,
+        opportunity_id TEXT,
+
+        kind TEXT NOT NULL,
+        title TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'open',
+        owner_user_id TEXT,
+        version INTEGER NOT NULL DEFAULT 0,
+        is_deleted INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL DEFAULT '',
+        dirty INTEGER NOT NULL DEFAULT 0
+    );
+    """,
+    _ASSESSMENTS_TABLE,
+    """
+    CREATE TABLE IF NOT EXISTS sync_state (
+        project_id TEXT PRIMARY KEY,
+        last_server_time TEXT NOT NULL,
+        last_server_sequence INTEGER NOT NULL DEFAULT 0
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS outbox (
+        change_id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        entity TEXT NOT NULL,
+        op TEXT NOT NULL,
+        entity_id TEXT NOT NULL,
+        base_version INTEGER,
+        record_json TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending', -- pending|retry|blocked
+        last_error TEXT NOT NULL DEFAULT '',
+        failure_kind TEXT NOT NULL DEFAULT '',
+        result_json TEXT NOT NULL DEFAULT '',
+        retry_count INTEGER NOT NULL DEFAULT 0,
+        next_retry_at TEXT NOT NULL DEFAULT '',
+        last_attempt_at TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS helpdesk_tickets (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        category TEXT NOT NULL DEFAULT 'other',
+        priority TEXT NOT NULL DEFAULT 'medium',
+        status TEXT NOT NULL DEFAULT 'open',
+        reporter_email TEXT NOT NULL DEFAULT '',
+        version INTEGER NOT NULL DEFAULT 0,
+        is_deleted INTEGER NOT NULL DEFAULT 0,
+        dirty INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT '',
+        updated_at TEXT NOT NULL DEFAULT '',
+        FOREIGN KEY(project_id) REFERENCES projects(id)
+    );
+    """,
+)
+
+# Columns added after a table was first released; older databases gain them.
+_ADDED_COLUMNS: dict[str, Sequence[tuple[str, str]]] = {
+    "risks": SCORED_ENTITY_META_SQLITE_COLUMNS,
+    "opportunities": SCORED_ENTITY_META_SQLITE_COLUMNS,
+    "projects": [("created_by", "TEXT NOT NULL DEFAULT ''")],
+    "helpdesk_tickets": [
+        ("version", "INTEGER NOT NULL DEFAULT 0"),
+        ("is_deleted", "INTEGER NOT NULL DEFAULT 0"),
+        ("dirty", "INTEGER NOT NULL DEFAULT 0"),
+    ],
+    "assessments": [
+        ("item_id", "TEXT NOT NULL DEFAULT ''"),
+        ("item_type", "TEXT NOT NULL DEFAULT 'risk'"),
+        ("score", "INTEGER NOT NULL DEFAULT 0"),
+        ("opportunity_id", "TEXT"),
+    ],
+    "sync_state": [("last_server_sequence", "INTEGER NOT NULL DEFAULT 0")],
+    "outbox": [
+        ("failure_kind", "TEXT NOT NULL DEFAULT ''"),
+        ("result_json", "TEXT NOT NULL DEFAULT ''"),
+        ("retry_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("next_retry_at", "TEXT NOT NULL DEFAULT ''"),
+        ("last_attempt_at", "TEXT NOT NULL DEFAULT ''"),
+    ],
+}
+
+_INDEXES = (
+    "CREATE INDEX IF NOT EXISTS risks_project_idx ON risks(project_id, is_deleted, updated_at);",
+    "CREATE INDEX IF NOT EXISTS opps_project_idx ON opportunities(project_id, is_deleted, updated_at);",
+    "CREATE INDEX IF NOT EXISTS actions_project_idx ON actions(project_id, is_deleted, updated_at);",
+    "CREATE INDEX IF NOT EXISTS outbox_pending_idx ON outbox(project_id, status, created_at);",
+    "CREATE INDEX IF NOT EXISTS outbox_retry_idx ON outbox(project_id, status, next_retry_at);",
+    "CREATE INDEX IF NOT EXISTS outbox_entity_idx ON outbox(project_id, entity, entity_id);",
+    "CREATE INDEX IF NOT EXISTS assessments_item_idx ON assessments(project_id, item_id, item_type, is_deleted);",
+    "CREATE INDEX IF NOT EXISTS assessments_risk_idx ON assessments(project_id, risk_id, is_deleted);",
+    "CREATE INDEX IF NOT EXISTS assessments_opp_idx ON assessments(project_id, opportunity_id, is_deleted);",
+    "CREATE INDEX IF NOT EXISTS assessments_user_idx ON assessments(project_id, assessor_user_id);",
+    "CREATE UNIQUE INDEX IF NOT EXISTS risks_project_code_uq ON risks(project_id, code);",
+    "CREATE UNIQUE INDEX IF NOT EXISTS opps_project_code_uq ON opportunities(project_id, code);",
+    "CREATE INDEX IF NOT EXISTS helpdesk_project_idx ON helpdesk_tickets(project_id, status, created_at);",
+)
+
+
+def check_identifier(value: str) -> str:
     """Reject unsafe SQL identifiers before SQLite string interpolation."""
     if not _SQL_IDENTIFIER.fullmatch(value):
         raise ValueError(f"Unsafe SQLite identifier: {value!r}")
     return value
 
 
-def _exec(conn: sqlite3.Connection, sql: str) -> None:
-    conn.execute(sql)
-
-
-def _exec_many(conn: sqlite3.Connection, ddls: Iterable[str]) -> None:
-    for ddl in ddls:
-        _exec(conn, ddl)
-
-
 def _existing_columns(conn: sqlite3.Connection, table: str) -> set[str]:
     # PRAGMA table_info returns rows: (cid, name, type, notnull, dflt_value, pk)
-    table = _checked_identifier(table)
+    table = check_identifier(table)
     rows = conn.execute(f"PRAGMA table_info({table});").fetchall()
     return {str(r[1]) for r in rows}
 
@@ -50,13 +212,21 @@ def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
 
 
 def _has_fk_to_table(conn: sqlite3.Connection, table: str, *, ref_table: str) -> bool:
-    table = _checked_identifier(table)
+    table = check_identifier(table)
     try:
         rows = conn.execute(f"PRAGMA foreign_key_list({table});").fetchall()
     except sqlite3.Error:
         return False
     # PRAGMA foreign_key_list columns: (id, seq, table, from, to, on_update, on_delete, match)
     return any(str(r[2]) == ref_table for r in (rows or []))
+
+
+def _row_get(row: sqlite3.Row, key: str, default: Any = None) -> Any:
+    """Read a column that an older schema may not have."""
+    try:
+        return row[key]
+    except IndexError, sqlite3.Error:
+        return default
 
 
 def _migrate_assessments_table(conn: sqlite3.Connection) -> None:
@@ -74,26 +244,7 @@ def _migrate_assessments_table(conn: sqlite3.Connection) -> None:
     - keeps `risk_id` for backward compatibility (nullable).
     """
     conn.execute("ALTER TABLE assessments RENAME TO assessments_old;")
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS assessments (
-        id TEXT PRIMARY KEY,
-        project_id TEXT NOT NULL,
-        risk_id TEXT,
-        opportunity_id TEXT,
-        item_id TEXT NOT NULL DEFAULT '',
-        item_type TEXT NOT NULL DEFAULT 'risk',
-        assessor_user_id TEXT NOT NULL DEFAULT '',
-        probability INTEGER NOT NULL,
-        impact INTEGER NOT NULL,
-        score INTEGER NOT NULL DEFAULT 0,
-        notes TEXT NOT NULL DEFAULT '',
-        version INTEGER NOT NULL DEFAULT 0,
-        is_deleted INTEGER NOT NULL DEFAULT 0,
-        updated_at TEXT NOT NULL DEFAULT '',
-        dirty INTEGER NOT NULL DEFAULT 0,
-        FOREIGN KEY(project_id) REFERENCES projects(id)
-        );
-        """)
+    conn.execute(_ASSESSMENTS_TABLE)
     old_cols = _existing_columns(conn, "assessments_old")
     select_cols = [
         c
@@ -123,27 +274,9 @@ def _migrate_assessments_table(conn: sqlite3.Connection) -> None:
     else:
         rows = []
 
-    def _row_get(row: sqlite3.Row, key: str, default: Any = None) -> Any:
-        """Best-effort sqlite3.Row getter.
-
-        sqlite3.Row is indexable by column name but doesn't implement .get.
-        """
-        try:
-            return row[key]
-        except IndexError, sqlite3.Error:
-            return default
-
     for r in rows:
-        # Resolve the target item.
-        item_id = str((r["item_id"] if "item_id" in old_cols else "") or "")
-        if not item_id:
-            item_id = str((r["risk_id"] if "risk_id" in old_cols else "") or "")
-        item_type = str(
-            (r["item_type"] if "item_type" in old_cols else "risk") or "risk"
-        )
-        item_type = item_type.strip().lower() or "risk"
-        risk_id = item_id if item_type == "risk" else None
-        opp_id = item_id if item_type == "opportunity" else None
+        item_id = str(_row_get(r, "item_id") or _row_get(r, "risk_id") or "")
+        item_type = str(_row_get(r, "item_type") or "risk").strip().lower() or "risk"
         conn.execute(
             """
             INSERT INTO assessments (
@@ -155,8 +288,8 @@ def _migrate_assessments_table(conn: sqlite3.Connection) -> None:
             (
                 str(_row_get(r, "id", "")),
                 str(_row_get(r, "project_id", "")),
-                risk_id,
-                opp_id,
+                item_id if item_type == "risk" else None,
+                item_id if item_type == "opportunity" else None,
                 item_id,
                 item_type,
                 str(_row_get(r, "assessor_user_id", "")),
@@ -177,10 +310,10 @@ def ensure_columns(
     conn: sqlite3.Connection, table: str, columns: Sequence[tuple[str, str]]
 ) -> None:
     """Add any missing columns to a table."""
-    table = _checked_identifier(table)
+    table = check_identifier(table)
     existing = _existing_columns(conn, table)
     for name, col_type in columns:
-        name = _checked_identifier(name)
+        name = check_identifier(name)
         if col_type not in _ALLOWED_COLUMN_TYPES:
             raise ValueError(f"Unsafe SQLite column type: {col_type!r}")
         if name in existing:
@@ -190,10 +323,9 @@ def ensure_columns(
 
 def ensure_schema(conn: sqlite3.Connection) -> None:
     """Create/upgrade schema for the local offline-first store."""
-    cur = conn.cursor()
-    cur.execute("PRAGMA journal_mode=WAL;")
-    cur.execute("PRAGMA synchronous=NORMAL;")
-    cur.execute("PRAGMA foreign_keys=ON;")
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA synchronous=NORMAL;")
+    conn.execute("PRAGMA foreign_keys=ON;")
     if _table_exists(conn, "assessments") and _has_fk_to_table(
         conn, "assessments", ref_table="risks"
     ):
@@ -203,196 +335,12 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         except Exception:
             conn.rollback()
             raise
-    _exec_many(
-        conn,
-        [
-            """
-            CREATE TABLE IF NOT EXISTS projects (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                description TEXT NOT NULL DEFAULT ''
-            );
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS meta (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            );
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS risks (
-                id TEXT PRIMARY KEY,
-                project_id TEXT NOT NULL,
-                title TEXT NOT NULL,
-                probability INTEGER NOT NULL,
-                impact INTEGER NOT NULL,
-                version INTEGER NOT NULL DEFAULT 0,
-                is_deleted INTEGER NOT NULL DEFAULT 0,
-                updated_at TEXT NOT NULL DEFAULT '',
-                dirty INTEGER NOT NULL DEFAULT 0,
-                FOREIGN KEY(project_id) REFERENCES projects(id)
-            );
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS opportunities (
-                id TEXT PRIMARY KEY,
-                project_id TEXT NOT NULL,
-                title TEXT NOT NULL,
-                probability INTEGER NOT NULL,
-                impact INTEGER NOT NULL,
-                version INTEGER NOT NULL DEFAULT 0,
-                is_deleted INTEGER NOT NULL DEFAULT 0,
-                updated_at TEXT NOT NULL DEFAULT '',
-                dirty INTEGER NOT NULL DEFAULT 0,
-                FOREIGN KEY(project_id) REFERENCES projects(id)
-            );
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS actions (
-                id TEXT PRIMARY KEY,
-                project_id TEXT NOT NULL,
-                risk_id TEXT,
-                opportunity_id TEXT,
-
-                kind TEXT NOT NULL,
-                title TEXT NOT NULL,
-                description TEXT NOT NULL DEFAULT '',
-                status TEXT NOT NULL DEFAULT 'open',
-                owner_user_id TEXT,
-
-                version INTEGER NOT NULL DEFAULT 0,
-                is_deleted INTEGER NOT NULL DEFAULT 0,
-                updated_at TEXT NOT NULL DEFAULT '',
-                dirty INTEGER NOT NULL DEFAULT 0
-            );
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS assessments (
-                id TEXT PRIMARY KEY,
-                project_id TEXT NOT NULL,
-                risk_id TEXT,
-                opportunity_id TEXT,
-                item_id TEXT NOT NULL DEFAULT '',
-                item_type TEXT NOT NULL DEFAULT 'risk',
-                assessor_user_id TEXT NOT NULL DEFAULT '',
-                probability INTEGER NOT NULL,
-                impact INTEGER NOT NULL,
-                score INTEGER NOT NULL DEFAULT 0,
-                notes TEXT NOT NULL DEFAULT '',
-                version INTEGER NOT NULL DEFAULT 0,
-                is_deleted INTEGER NOT NULL DEFAULT 0,
-                updated_at TEXT NOT NULL DEFAULT '',
-                dirty INTEGER NOT NULL DEFAULT 0,
-                FOREIGN KEY(project_id) REFERENCES projects(id)
-                -- NOTE: Do NOT FK to risks/opportunities; assessments can target either.
-            );
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS sync_state (
-                project_id TEXT PRIMARY KEY,
-                last_server_time TEXT NOT NULL,
-                last_server_sequence INTEGER NOT NULL DEFAULT 0
-            );
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS outbox (
-                change_id TEXT PRIMARY KEY,
-                project_id TEXT NOT NULL,
-                entity TEXT NOT NULL,
-                op TEXT NOT NULL,
-                entity_id TEXT NOT NULL,
-                base_version INTEGER,
-                record_json TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'pending', -- pending|retry|blocked
-                last_error TEXT NOT NULL DEFAULT '',
-                failure_kind TEXT NOT NULL DEFAULT '',
-                result_json TEXT NOT NULL DEFAULT '',
-                retry_count INTEGER NOT NULL DEFAULT 0,
-                next_retry_at TEXT NOT NULL DEFAULT '',
-                last_attempt_at TEXT NOT NULL DEFAULT '',
-                created_at TEXT NOT NULL
-            );
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS helpdesk_tickets (
-                id TEXT PRIMARY KEY,
-                project_id TEXT NOT NULL,
-                title TEXT NOT NULL,
-                description TEXT NOT NULL DEFAULT '',
-                category TEXT NOT NULL DEFAULT 'other',
-                priority TEXT NOT NULL DEFAULT 'medium',
-                status TEXT NOT NULL DEFAULT 'open',
-                reporter_email TEXT NOT NULL DEFAULT '',
-                version INTEGER NOT NULL DEFAULT 0,
-                is_deleted INTEGER NOT NULL DEFAULT 0,
-                dirty INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL DEFAULT '',
-                updated_at TEXT NOT NULL DEFAULT '',
-                FOREIGN KEY(project_id) REFERENCES projects(id)
-            );
-            """,
-        ],
-    )
-    ensure_columns(conn, "risks", SCORED_ENTITY_META_SQLITE_COLUMNS)
-    ensure_columns(conn, "opportunities", SCORED_ENTITY_META_SQLITE_COLUMNS)
-    ensure_columns(
-        conn,
-        "projects",
-        [("created_by", "TEXT NOT NULL DEFAULT ''")],
-    )
-    ensure_columns(
-        conn,
-        "helpdesk_tickets",
-        [
-            ("version", "INTEGER NOT NULL DEFAULT 0"),
-            ("is_deleted", "INTEGER NOT NULL DEFAULT 0"),
-            ("dirty", "INTEGER NOT NULL DEFAULT 0"),
-        ],
-    )
-    ensure_columns(
-        conn,
-        "assessments",
-        [
-            ("item_id", "TEXT NOT NULL DEFAULT ''"),
-            ("item_type", "TEXT NOT NULL DEFAULT 'risk'"),
-            ("score", "INTEGER NOT NULL DEFAULT 0"),
-            ("opportunity_id", "TEXT"),
-        ],
-    )
-    ensure_columns(
-        conn,
-        "sync_state",
-        [("last_server_sequence", "INTEGER NOT NULL DEFAULT 0")],
-    )
-    ensure_columns(
-        conn,
-        "outbox",
-        [
-            ("failure_kind", "TEXT NOT NULL DEFAULT ''"),
-            ("result_json", "TEXT NOT NULL DEFAULT ''"),
-            ("retry_count", "INTEGER NOT NULL DEFAULT 0"),
-            ("next_retry_at", "TEXT NOT NULL DEFAULT ''"),
-            ("last_attempt_at", "TEXT NOT NULL DEFAULT ''"),
-        ],
-    )
-    _exec_many(
-        conn,
-        [
-            "CREATE INDEX IF NOT EXISTS risks_project_idx ON risks(project_id, is_deleted, updated_at);",
-            "CREATE INDEX IF NOT EXISTS opps_project_idx ON opportunities(project_id, is_deleted, updated_at);",
-            "CREATE INDEX IF NOT EXISTS actions_project_idx ON actions(project_id, is_deleted, updated_at);",
-            "CREATE INDEX IF NOT EXISTS outbox_pending_idx ON outbox(project_id, status, created_at);",
-            "CREATE INDEX IF NOT EXISTS outbox_retry_idx ON outbox(project_id, status, next_retry_at);",
-            "CREATE INDEX IF NOT EXISTS outbox_entity_idx ON outbox(project_id, entity, entity_id);",
-            "CREATE INDEX IF NOT EXISTS assessments_item_idx ON assessments(project_id, item_id, item_type, is_deleted);",
-            "CREATE INDEX IF NOT EXISTS assessments_risk_idx ON assessments(project_id, risk_id, is_deleted);",
-            "CREATE INDEX IF NOT EXISTS assessments_opp_idx ON assessments(project_id, opportunity_id, is_deleted);",
-            "CREATE INDEX IF NOT EXISTS assessments_user_idx ON assessments(project_id, assessor_user_id);",
-            "CREATE UNIQUE INDEX IF NOT EXISTS risks_project_code_uq ON risks(project_id, code);",
-            "CREATE UNIQUE INDEX IF NOT EXISTS opps_project_code_uq ON opportunities(project_id, code);",
-            "CREATE INDEX IF NOT EXISTS helpdesk_project_idx ON helpdesk_tickets(project_id, status, created_at);",
-        ],
-    )
+    for ddl in _TABLES:
+        conn.execute(ddl)
+    for table, columns in _ADDED_COLUMNS.items():
+        ensure_columns(conn, table, columns)
+    for ddl in _INDEXES:
+        conn.execute(ddl)
     conn.commit()
     # Guard against regressions where toggling PRAGMA inside a transaction leaves
     # enforcement disabled for the lifetime of this connection.

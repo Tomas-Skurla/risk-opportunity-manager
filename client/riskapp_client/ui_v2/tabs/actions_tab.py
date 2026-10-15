@@ -7,7 +7,10 @@ from collections.abc import Callable
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QAbstractScrollArea, QHeaderView, QSizePolicy, QWidget
 
-from riskapp_client.ui_v2.components.custom_gui_widgets import setup_readonly_table
+from riskapp_client.ui_v2.components.custom_gui_widgets import (
+    set_header_tooltips,
+    setup_readonly_table,
+)
 from riskapp_client.ui_v2.ui.ui_actions_tab import Ui_Form as Ui_ActionsTab
 
 
@@ -42,17 +45,16 @@ class ActionsTab(QWidget):
         self.ui.splitter.setStretchFactor(0, 3)
         self.ui.splitter.setStretchFactor(1, 1)
         self.ui.splitter.setSizes([75000, 25000])
-        tooltips = {
-            0: "Title: The name or description of the action",
-            1: "Kind: The type of action (e.g., mitigation, contingency)",
-            2: "Status: The current progress of the action",
-            3: "Target: The specific risk or opportunity this addresses",
-            4: "Owner: The person responsible for this action",
-        }
-        for col, text in tooltips.items():
-            header_item = self.actions_table.horizontalHeaderItem(col)
-            if header_item is not None:
-                header_item.setToolTip(text)
+        set_header_tooltips(
+            self.actions_table,
+            [
+                "Title: The name or description of the action",
+                "Kind: The type of action (e.g., mitigation, contingency)",
+                "Status: The current progress of the action",
+                "Target: The specific risk or opportunity this addresses",
+                "Owner: The person responsible for this action",
+            ],
+        )
         # PySide exposes bound signals dynamically to Pylint.
         # pylint: disable=no-member
         self.actions_table.cellClicked.connect(on_action_clicked)

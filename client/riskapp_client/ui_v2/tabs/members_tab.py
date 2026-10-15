@@ -6,7 +6,10 @@ from collections.abc import Callable
 
 from PySide6.QtWidgets import QAbstractScrollArea, QHeaderView, QSizePolicy, QWidget
 
-from riskapp_client.ui_v2.components.custom_gui_widgets import setup_readonly_table
+from riskapp_client.ui_v2.components.custom_gui_widgets import (
+    set_header_tooltips,
+    setup_readonly_table,
+)
 from riskapp_client.ui_v2.ui.ui_members_tab import Ui_Form as Ui_MembersTab
 
 
@@ -35,16 +38,15 @@ class MembersTab(QWidget):
             QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Maximum
         )
         self.ui.verticalLayout.addStretch()
-        tooltips = {
-            0: "Member email",
-            1: "Project role",
-            2: "User ID",
-            3: "Added",
-        }
-        for col, text in tooltips.items():
-            header_item = self.ui.members_table.horizontalHeaderItem(col)
-            if header_item is not None:
-                header_item.setToolTip(text)
+        set_header_tooltips(
+            self.ui.members_table,
+            [
+                "Member email",
+                "Project role",
+                "User ID",
+                "Added",
+            ],
+        )
         # PySide exposes bound signals dynamically to Pylint.
         # pylint: disable=no-member
         self.ui.members_table.itemSelectionChanged.connect(on_member_selected)

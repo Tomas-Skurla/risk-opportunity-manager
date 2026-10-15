@@ -30,30 +30,6 @@ from riskapp_client.ui_v2.ui.ui_main_window_design import Ui_MainWindow
 
 logger = logging.getLogger(__name__)
 
-_RISKS_ALIASES = (
-    "filter_search",
-    "filter_min_score",
-    "filter_max_score",
-    "filter_report",
-    "filter_status",
-    "filter_category",
-    "filter_owner",
-    "filter_from",
-    "filter_to",
-)
-
-_OPPS_ALIASES = (
-    "opp_filter_search",
-    "opp_filter_min_score",
-    "opp_filter_max_score",
-    "opp_filter_status",
-    "opp_filter_category",
-    "opp_filter_owner",
-    "opp_filter_from",
-    "opp_filter_to",
-    "opp_filter_report",
-)
-
 
 def _set_titlebar_dark(window: QMainWindow, dark: bool) -> None:
     """Set the title bar to dark or light mode."""
@@ -98,8 +74,9 @@ class LayoutMixin:
     _cancel_background_job: Callable[..., Any]
     _create_new_project: Callable[..., Any]
     _delete_current_project: Callable[..., Any]
-    _delete_entity: Callable[..., Any]
     _delete_helpdesk_ticket: Callable[..., Any]
+    _delete_opportunity: Callable[..., Any]
+    _delete_risk: Callable[..., Any]
     _export_opportunities_csv: Callable[..., Any]
     _export_risks_csv: Callable[..., Any]
     _mark_editor_dirty: Callable[..., Any]
@@ -142,6 +119,20 @@ class LayoutMixin:
         self.sync_btn = self.ui.sync_btn
         self.new_project_btn = self.ui.new_project_btn
         self.delete_project_btn = self.ui.delete_project_btn
+        self._build_status_bar()
+        self._set_sidebar_tooltips()
+        # pylint: disable-next=no-member
+        self.ui.theme_toggle.toggled.connect(self._apply_theme)
+        self._apply_theme(self.ui.theme_toggle.isChecked())
+        self._build_tabs()
+        self._connect_signals()
+        self._on_top_period_changed(self.top_tab.top_period.currentText())
+        self.ui.sidebar_list.setCurrentRow(0)
+        app = cast(QApplication | None, QApplication.instance())
+        if app:
+            app.installEventFilter(window)
+
+    def _build_status_bar(self) -> None:
         self.role_status = QLabel("Role: Initializing...")
         self.sync_status = QLabel("Sync: Initializing...")
         self.background_progress = QProgressBar()
@@ -160,11 +151,16 @@ class LayoutMixin:
         self.conflicts_btn.setObjectName("conflicts_btn")
         self.conflicts_btn.setEnabled(False)
         self.conflicts_btn.setToolTip("Review synchronization conflicts")
-        self.ui.statusbar.addPermanentWidget(self.role_status)
-        self.ui.statusbar.addPermanentWidget(self.sync_status)
-        self.ui.statusbar.addPermanentWidget(self.background_progress)
-        self.ui.statusbar.addPermanentWidget(self.cancel_background_btn)
-        self.ui.statusbar.addPermanentWidget(self.conflicts_btn)
+        for widget in (
+            self.role_status,
+            self.sync_status,
+            self.background_progress,
+            self.cancel_background_btn,
+            self.conflicts_btn,
+        ):
+            self.ui.statusbar.addPermanentWidget(widget)
+
+    def _set_sidebar_tooltips(self) -> None:
         self.project_list.setToolTip("Select a project to load its data")
         self.sync_btn.setToolTip(
             "Manually synchronize local offline changes with the server"
@@ -178,11 +174,11 @@ class LayoutMixin:
             "Navigate between different views and tools for the current project"
         )
 
-        def apply_theme(is_dark: bool) -> None:
-            theme = "dark" if is_dark else "light"
-            bg_color = "#1e1e1e" if is_dark else "#ffffff"
-            text_color = "#e0e0e0" if is_dark else "#000000"
-            extra_css = f"""
+    def _apply_theme(self, is_dark: bool) -> None:
+        theme = "dark" if is_dark else "light"
+        bg_color = "#1e1e1e" if is_dark else "#ffffff"
+        text_color = "#e0e0e0" if is_dark else "#000000"
+        extra_css = f"""
             QMainWindow, QWidget, QDialog, QStackedWidget, QTabWidget::pane,
             QGroupBox, QScrollArea {{
                 background-color: {bg_color};
@@ -197,33 +193,21 @@ class LayoutMixin:
                 padding: 4px;
             }}
             """
-            try:
-                qdarktheme.setup_theme(theme, additional_qss=extra_css)
-            except AttributeError:
-                app = cast(QApplication | None, QApplication.instance())
-                if app:
-                    app.setStyleSheet(qdarktheme.load_stylesheet(theme) + extra_css)
-            _set_titlebar_dark(window, is_dark)
+        try:
+            qdarktheme.setup_theme(theme, additional_qss=extra_css)
+        except AttributeError:
+            app = cast(QApplication | None, QApplication.instance())
+            if app:
+                app.setStyleSheet(qdarktheme.load_stylesheet(theme) + extra_css)
+        _set_titlebar_dark(cast(QMainWindow, self), is_dark)
 
-        # PySide exposes bound signals dynamically; Pylint cannot infer their
-        # ``connect`` member from the generated UI class.
-        # pylint: disable=no-member
-        self.ui.theme_toggle.toggled.connect(apply_theme)
-        # pylint: enable=no-member
-        apply_theme(self.ui.theme_toggle.isChecked())
-
-        def bind(src: object, names: tuple[str, ...], **renamed: str) -> None:
-            """Bind item."""
-            for name in names:
-                setattr(self, name, getattr(src, name))
-            for dst, src_name in renamed.items():
-                setattr(self, dst, getattr(src, src_name))
-
-        while self.ui.main_stacked_widget.count() > 0:
-            widget = self.ui.main_stacked_widget.widget(0)
+    def _build_tabs(self) -> None:
+        stack = self.ui.main_stacked_widget
+        while stack.count() > 0:  # drop the placeholder pages from the .ui file
+            widget = stack.widget(0)
             if widget is None:
                 break
-            self.ui.main_stacked_widget.removeWidget(widget)
+            stack.removeWidget(widget)
             widget.deleteLater()
         self.risks_tab = RisksTab(
             on_export_csv=self._export_risks_csv,
@@ -231,24 +215,8 @@ class LayoutMixin:
             on_risk_clicked=self._on_risk_clicked,
             on_new_risk=self._start_new_risk,
             on_save_risk=self._save_risk,
-            on_delete_item=lambda: self._delete_entity(
-                self.current_risk_id,
-                self.backend.delete_risk,
-                self._refresh_risks,
-                self._start_new_risk,
-            ),
+            on_delete_item=self._delete_risk,
             on_mark_dirty=self._mark_editor_dirty,
-        )
-        self.ui.main_stacked_widget.addWidget(self.risks_tab)
-        bind(
-            self.risks_tab,
-            _RISKS_ALIASES,
-            risks_table="table",
-            risk_form="form",
-            new_risk_btn="new_btn",
-            editor_label="editor_label",
-            _table_card="table_card",
-            _editor_card="editor_card",
         )
         self.opps_tab = OpportunitiesTab(
             on_export_csv=self._export_opportunities_csv,
@@ -258,51 +226,29 @@ class LayoutMixin:
             on_opportunity_clicked=self._on_opportunity_clicked,
             on_new_opportunity=self._start_new_opportunity,
             on_save_opportunity=self._save_opportunity,
-            on_delete_item=lambda: self._delete_entity(
-                self.current_opportunity_id,
-                self.backend.delete_opportunity,
-                self._refresh_opportunities,
-                self._start_new_opportunity,
-            ),
+            on_delete_item=self._delete_opportunity,
             on_mark_dirty=self._mark_opp_editor_dirty,
         )
-        self.ui.main_stacked_widget.addWidget(self.opps_tab)
-        bind(
-            self.opps_tab,
-            _OPPS_ALIASES,
-            opps_table="table",
-            opp_form="form",
-            new_opp_btn="new_btn",
-            opp_editor_label="editor_label",
-            _opp_editor_card="editor_card",
-        )
         self.matrix_tab = MatrixTab(on_kind_changed=self._on_matrix_kind_changed)
-        self.ui.main_stacked_widget.addWidget(self.matrix_tab)
-        self.risks_matrix_table = self.matrix_tab.risks_matrix_table
-        self.opps_matrix_table = self.matrix_tab.opps_matrix_table
         self.top_tab = TopHistoryTab(
             on_snapshot_now=self._snapshot_now,
             on_refresh_history=self._refresh_top_history,
             on_period_changed=self._on_top_period_changed,
             on_maybe_auto_snapshot=self._maybe_auto_snapshot,
         )
-        self.ui.main_stacked_widget.addWidget(self.top_tab)
         self.actions_tab = ActionsTab(
             on_action_clicked=self._on_action_clicked,
             on_save_action=self._save_action,
             on_new_action=self._start_new_action,
             on_target_type_changed=lambda _: self._toggle_action_target_inputs(),
         )
-        self.ui.main_stacked_widget.addWidget(self.actions_tab)
         self.assessments_tab = AssessmentsTab(on_save_assessment=self._save_assessment)
-        self.ui.main_stacked_widget.addWidget(self.assessments_tab)
         self.members_tab = MembersTab(
             on_add_or_update_member=self._add_or_update_member,
             on_remove_selected_member=self._remove_selected_member,
             on_refresh_members=self._refresh_members,
             on_member_selected=self._on_member_selected,
         )
-        self.ui.main_stacked_widget.addWidget(self.members_tab)
         self.helpdesk_tab = HelpDeskTab(
             on_ticket_clicked=self._on_helpdesk_ticket_clicked,
             on_new_ticket=self._start_new_helpdesk_ticket,
@@ -311,20 +257,33 @@ class LayoutMixin:
             on_refresh=self._refresh_helpdesk,
             on_filter_changed=self._apply_helpdesk_filters,
         )
-        self.ui.main_stacked_widget.addWidget(self.helpdesk_tab)
         self.ui.sidebar_list.clear()
-        self.ui.sidebar_list.addItems(
-            [
-                "Risks",
-                "Opportunities",
-                "Matrix",
-                "Top history",
-                "Actions",
-                "Assessments",
-                "Members",
-                "Help Desk",
-            ]
-        )
+
+        for label, tab in (
+            ("Risks", self.risks_tab),
+            ("Opportunities", self.opps_tab),
+            ("Matrix", self.matrix_tab),
+            ("Top history", self.top_tab),
+            ("Actions", self.actions_tab),
+            ("Assessments", self.assessments_tab),
+            ("Members", self.members_tab),
+            ("Help Desk", self.helpdesk_tab),
+        ):
+            stack.addWidget(tab)
+            self.ui.sidebar_list.addItem(label)
+        self.risks_table = self.risks_tab.table
+        self.risk_form = self.risks_tab.form
+        self.new_risk_btn = self.risks_tab.new_btn
+        self.editor_label = self.risks_tab.editor_label
+        self.opps_table = self.opps_tab.table
+        self.opp_form = self.opps_tab.form
+        self.new_opp_btn = self.opps_tab.new_btn
+        self.opp_editor_label = self.opps_tab.editor_label
+        self.risks_matrix_table = self.matrix_tab.risks_matrix_table
+        self.opps_matrix_table = self.matrix_tab.opps_matrix_table
+
+    def _connect_signals(self) -> None:
+
         # PySide signals are runtime descriptors and are invisible to Pylint.
         # pylint: disable=no-member
         self.project_list.itemSelectionChanged.connect(self._on_project_selected)
@@ -337,9 +296,3 @@ class LayoutMixin:
         self.new_project_btn.clicked.connect(self._create_new_project)
         self.delete_project_btn.clicked.connect(self._delete_current_project)
         # pylint: enable=no-member
-        if hasattr(self.top_tab, "top_period"):
-            self._on_top_period_changed(self.top_tab.top_period.currentText())
-        self.ui.sidebar_list.setCurrentRow(0)
-        app = cast(QApplication | None, QApplication.instance())
-        if app:
-            app.installEventFilter(window)

@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (  # pylint: disable=no-name-in-module
     QStyledItemDelegate,
     QStyleOptionViewItem,
     QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )  # pylint: disable=no-name-in-module
@@ -417,6 +418,22 @@ def setup_readonly_table(table: QTableWidget, *, excel_delegate: bool = False) -
         table.setItemDelegate(ExcelSelectionDelegate(table))
 
 
+def set_header_tooltips(table: QTableWidget, tooltips: Iterable[str]) -> None:
+    """Give each existing horizontal header item its tooltip, column by column."""
+    for col, text in enumerate(tooltips):
+        if (header_item := table.horizontalHeaderItem(col)) is not None:
+            header_item.setToolTip(text)
+
+
+def fill_table(table: QTableWidget, rows: Iterable[Iterable[QTableWidgetItem]]) -> None:
+    """Replace the table's contents with one row of items per entry in `rows`."""
+    grid = [list(cells) for cells in rows]
+    table.setRowCount(len(grid))
+    for row, cells in enumerate(grid):
+        for col, item in enumerate(cells):
+            table.setItem(row, col, item)
+
+
 class RiskForm(QWidget):
 
     STATUS_CHOICES = ["concept", "active", "closed", "deleted", "happened"]
@@ -551,7 +568,7 @@ class RiskForm(QWidget):
         to reduce accidental "soft delete" attempts by non-managers.
         """
         allowed = bool(allowed)
-        if getattr(self, "_allow_deleted_status", True) == allowed:
+        if self._allow_deleted_status == allowed:
             return
         self._allow_deleted_status = allowed
         current = (self.status.currentText() or "").strip()
@@ -750,30 +767,36 @@ class RiskForm(QWidget):
         response_at: str | None = None,
         occurred_at: str | None = None,
     ) -> None:
-        # Block signals during programmatic set
-        """Set values."""
-        widgets: list[QWidget] = [
+        # Loading values is not an edit: silence every input the dirty tracking
+        # watches, or opening the window would look like unsaved changes.
+        quiet = (
             self.code,
             self.title,
             self.category,
+            self.document_url,
             self.description,
             self.threat,
             self.triggers,
+            self.mitigation_plan,
             self.identified_at,
+            self.status_changed_at,
             self.response_at,
             self.occurred_at,
-        ]
-        for widget in widgets:
+            self.owner_user_id,
+            self.p,
+            self.i,
+            self.impact_cost,
+            self.impact_time,
+            self.impact_scope,
+            self.impact_quality,
+            self.status,
+        )
+        for widget in quiet:
             widget.blockSignals(True)
-        self.owner_user_id.blockSignals(True)
-        self.p.blockSignals(True)
-        self.i.blockSignals(True)
-        self.status.blockSignals(True)
         self.code.setText(code or "")
         self.title.setText(title or "")
         self.category.setText(category or "")
         self._set_owner_value(owner_user_id)
-        # status combo
         st = (status or "concept").strip() or "concept"
         idx = self.status.findText(st)
         if idx >= 0:
@@ -781,34 +804,31 @@ class RiskForm(QWidget):
         else:
             self.status.setEditText(st)
         self.p.setValue(int(probability))
-        self.impact_cost.setValue(
-            int(impact_cost) if impact_cost is not None else int(impact)
-        )
-        self.impact_time.setValue(
-            int(impact_time) if impact_time is not None else int(impact)
-        )
-        self.impact_scope.setValue(
-            int(impact_scope) if impact_scope is not None else int(impact)
-        )
-        self.impact_quality.setValue(
-            int(impact_quality) if impact_quality is not None else int(impact)
-        )
+        for spin, value in (
+            (self.impact_cost, impact_cost),
+            (self.impact_time, impact_time),
+            (self.impact_scope, impact_scope),
+            (self.impact_quality, impact_quality),
+        ):
+            spin.setValue(int(value if value is not None else impact))
         self._recompute_overall_impact()
-        self.description.setPlainText(description or "")
-        self.threat.setPlainText(threat or "")
-        self.triggers.setPlainText(triggers or "")
-        self.mitigation_plan.setPlainText(mitigation_plan or "")
+        for text_edit, text in (
+            (self.description, description),
+            (self.threat, threat),
+            (self.triggers, triggers),
+            (self.mitigation_plan, mitigation_plan),
+        ):
+            text_edit.setPlainText(text or "")
         self.document_url.setText(document_url or "")
-        self._set_date(self.identified_at, identified_at)
-        self._set_date(self.status_changed_at, status_changed_at)
-        self._set_date(self.response_at, response_at)
-        self._set_date(self.occurred_at, occurred_at)
-        for widget in widgets:
+        for date_edit, stamp in (
+            (self.identified_at, identified_at),
+            (self.status_changed_at, status_changed_at),
+            (self.response_at, response_at),
+            (self.occurred_at, occurred_at),
+        ):
+            self._set_date(date_edit, stamp)
+        for widget in quiet:
             widget.blockSignals(False)
-        self.owner_user_id.blockSignals(False)
-        self.p.blockSignals(False)
-        self.i.blockSignals(False)
-        self.status.blockSignals(False)
 
     def _submit(self) -> None:
         payload = self.get_payload()

@@ -5,6 +5,7 @@ versions trip over uuid.UUID here when building the schema.
 """
 
 import uuid
+from collections.abc import Mapping
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -12,7 +13,7 @@ from fastapi import HTTPException, Query
 from sqlalchemy import or_
 from sqlalchemy.sql import Select
 
-from riskapp_server.db.session import RiskStatus
+from riskapp_server.db.models import RiskStatus
 
 
 def _escape_like(value: str) -> str:
@@ -107,7 +108,7 @@ def apply_item_filters(
     from_date: date | None,
     to_date: date | None,
 ) -> Select:
-    """Apply item filters."""
+    """Apply every filter that is set; deleted items need status=deleted."""
     min_score, max_score = normalize_score_range(min_score, max_score)
     status_values = [s.lower() for s in csv_list(status)]
     include_deleted = RiskStatus.deleted.value in status_values
@@ -162,3 +163,28 @@ def apply_item_filters(
         stmt = stmt.where(model.score <= int(max_score))
 
     return stmt
+
+
+_FILTER_FIELDS = (
+    "search",
+    "item_type",
+    "min_score",
+    "max_score",
+    "status",
+    "category",
+    "owner_user_id",
+    "from_date",
+    "to_date",
+)
+
+
+def apply_filter_params(
+    stmt: Select, model: type[Any], filters: Mapping[str, Any]
+) -> Select:
+    """``apply_item_filters`` driven by a mapping such as ``vars(ItemFilterParams)``."""
+    return apply_item_filters(
+        stmt,
+        model,
+        **{name: filters.get(name) for name in _FILTER_FIELDS},
+        owner_unassigned=bool(filters.get("owner_unassigned")),
+    )

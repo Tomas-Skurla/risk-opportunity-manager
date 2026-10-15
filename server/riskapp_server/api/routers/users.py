@@ -20,7 +20,8 @@ from riskapp_server.core.config import (
     RATE_LIMIT_MAX_KEYS,
 )
 from riskapp_server.core.rate_limit import InMemorySlidingWindowLimiter
-from riskapp_server.db.session import PasswordResetToken, User, get_db, utcnow
+from riskapp_server.db.models import PasswordResetToken, User, utcnow
+from riskapp_server.db.session import get_db
 from riskapp_server.schemas.models import (
     ChangePasswordIn,
     PasswordResetConfirmIn,

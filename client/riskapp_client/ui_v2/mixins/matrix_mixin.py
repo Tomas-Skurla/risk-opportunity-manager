@@ -5,11 +5,11 @@ Computes and renders 5x5 count matrices from current risks/opportunities.
 
 from __future__ import annotations
 
-import contextlib
 from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING, Any
 
 from PySide6.QtWidgets import QTableWidget, QTableWidgetItem
+from riskapp_client.ui_v2.tabs.matrix_tab import matrix_kinds
 
 if TYPE_CHECKING:
     from riskapp_client.ui_v2.tabs.matrix_tab import MatrixTab
@@ -27,8 +27,7 @@ class MatrixMixin:
     _mk_item: Callable[..., QTableWidgetItem]
 
     def _on_matrix_kind_changed(self, text: str) -> None:
-        with contextlib.suppress(AttributeError, RuntimeError, ValueError):
-            self.matrix_tab.set_kind(text)
+        self.matrix_tab.set_kind(text)
         self._refresh_matrix()
 
     def _render_matrix(
@@ -52,30 +51,22 @@ class MatrixMixin:
         pid = self.current_project_id
         if not pid:
             return
-        try:
-            kind = (self.matrix_tab.kind_combo.currentText() or "Risks").strip().lower()
-        except AttributeError, RuntimeError, ValueError:
-            kind = "risks"
-        if kind == "opportunities":
-            opps = self._call_backend(
-                "Backend error", self.backend.list_opportunities, pid
-            )
-            if opps is None:
-                return
-            self._render_matrix(self.opps_matrix_table, opps)
-        elif kind == "both":
-            risks = self._call_backend("Backend error", self.backend.list_risks, pid)
-            if risks is None:
-                return
-            opps = self._call_backend(
-                "Backend error", self.backend.list_opportunities, pid
-            )
-            if opps is None:
-                return
+        show_risks, show_opps = matrix_kinds(self.matrix_tab.kind_combo.currentText())
+        risks = (
+            self._call_backend("Backend error", self.backend.list_risks, pid)
+            if show_risks
+            else []
+        )
+        if risks is None:
+            return
+        opps = (
+            self._call_backend("Backend error", self.backend.list_opportunities, pid)
+            if show_opps
+            else []
+        )
+        if opps is None:
+            return
+        if show_risks:
             self._render_matrix(self.risks_matrix_table, risks)
+        if show_opps:
             self._render_matrix(self.opps_matrix_table, opps)
-        else:
-            risks = self._call_backend("Backend error", self.backend.list_risks, pid)
-            if risks is None:
-                return
-            self._render_matrix(self.risks_matrix_table, risks)

@@ -7,23 +7,20 @@ from typing import TYPE_CHECKING, Any, cast
 
 from PySide6.QtCore import QObject
 from PySide6.QtWidgets import QLabel, QListWidget, QProgressBar, QPushButton
-from riskapp_client.domain.background_job_contracts import (
-    BackendFactory,
-    BackgroundJobBackend,
-)
 from riskapp_client.ui_v2.workers import (
     AutomaticSyncScheduler,
     BackgroundJobRunner,
 )
 
 if TYPE_CHECKING:
+    from riskapp_client.domain.domain_models import Backend
     from riskapp_client.ui_v2.tabs.top_history_tab import TopHistoryTab
 
 
 class BackgroundJobsMixin:
     """Own the worker runner and reflect its state in the status bar."""
 
-    backend: Any
+    backend: Backend
     background_progress: QProgressBar
     cancel_background_btn: QPushButton
     conflicts_btn: QPushButton
@@ -44,26 +41,9 @@ class BackgroundJobsMixin:
         auto_sync_max_backoff_seconds: int = 300,
         auto_sync_initial_delay_seconds: int = 5,
     ) -> None:
-        candidate_factory = getattr(self.backend, "create_background_backend", None)
-        factory: BackendFactory
-        if callable(candidate_factory):
-            owns_backend = True
-            factory = cast(BackendFactory, candidate_factory)
-        else:
-            owns_backend = False
-            # Test or alternate backends without SQLite can still run outside
-            # the event loop. Production OfflineFirstBackend always supplies a
-            # factory which constructs a worker-owned LocalStore.
-            shared_backend = self.backend
-
-            def shared_backend_factory() -> BackgroundJobBackend:
-                return cast(BackgroundJobBackend, shared_backend)
-
-            factory = shared_backend_factory
-
         self._background_jobs = BackgroundJobRunner(
-            factory,
-            owns_backend=owns_backend,
+            self.backend.create_background_backend,
+            owns_backend=True,
             parent=cast(QObject, self),
         )
         self._background_jobs.busy_changed.connect(self._on_background_busy_changed)
@@ -79,10 +59,8 @@ class BackgroundJobsMixin:
         )
 
     def _start_automatic_sync_scheduler(self) -> None:
-        available = getattr(self.backend, "can_auto_sync", None)
-        if callable(available) and not bool(available()):
-            return
-        self._automatic_sync_scheduler.start()
+        if self.backend.can_auto_sync():
+            self._automatic_sync_scheduler.start()
 
     def _schedule_automatic_sync(self) -> None:
         self._automatic_sync_scheduler.request_soon()
@@ -122,11 +100,9 @@ class BackgroundJobsMixin:
             if kind == "sync":
                 self.project_list.setEnabled(False)
             self.sync_btn.setEnabled(False)
-            if hasattr(self, "conflicts_btn"):
-                self.conflicts_btn.setEnabled(False)
-            if hasattr(self, "top_tab"):
-                self.top_tab.snapshot_btn.setEnabled(False)
-                self.top_tab.refresh_top_btn.setEnabled(False)
+            self.conflicts_btn.setEnabled(False)
+            self.top_tab.snapshot_btn.setEnabled(False)
+            self.top_tab.refresh_top_btn.setEnabled(False)
             label = {
                 "sync": "Synchronizing",
                 "automatic_sync": "Synchronizing automatically",
@@ -136,8 +112,7 @@ class BackgroundJobsMixin:
             self.sync_status.setText(f"Sync: {label}…")
         else:
             self.project_list.setEnabled(True)
-            if hasattr(self, "top_tab"):
-                self.top_tab.refresh_top_btn.setEnabled(True)
+            self.top_tab.refresh_top_btn.setEnabled(True)
             self._update_sync_status()
             self._apply_permissions()
 

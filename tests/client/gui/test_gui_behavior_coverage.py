@@ -129,6 +129,23 @@ class GuiBackend:
             ),
         ]
 
+    def create_background_backend(self) -> GuiBackend:
+        return self
+
+    @staticmethod
+    def close() -> None:
+        """This in-memory test backend has no resources to release."""
+
+    @staticmethod
+    def can_auto_sync() -> bool:
+        return True
+
+    def export_authenticated_remote(self):
+        return self.remote
+
+    def list_sync_projects(self):
+        return self.list_projects()
+
     def list_projects(self):
         return [self.project]
 
@@ -316,7 +333,7 @@ class GuiBackend:
     def can_sync():
         return True
 
-    def sync_project(self, _project_id):
+    def sync_project(self, project_id, *, should_cancel=None, progress=None):
         return {
             "pushed": 2,
             "conflicts": 0,
@@ -361,6 +378,11 @@ class GuiBackend:
 
 
 # pylint: enable=unused-argument
+def _action_targets(window) -> list[str]:
+    table = window.actions_tab.actions_table
+    return [table.item(row, 3).text() for row in range(table.rowCount())]
+
+
 def _window(qtbot):
     backend = GuiBackend()
     window = MainWindow(backend)
@@ -408,6 +430,8 @@ def test_real_window_risk_and_opportunity_crud(monkeypatch, qtbot) -> None:
     window._commit_editor_changes(refresh=True)
     assert ("update_risk", "risk-1") in backend.calls
     assert window._editor_dirty is False
+    # A rename committed without pressing Save must also reach the Actions tab.
+    assert "risk: Updated outage" in _action_targets(window)
 
     window._start_new_risk()
     window._save_risk(
@@ -431,6 +455,7 @@ def test_real_window_risk_and_opportunity_crud(monkeypatch, qtbot) -> None:
     window._opp_editor_dirty = True
     window._commit_opp_editor_changes(refresh=True)
     assert ("update_opportunity", "opp-1") in backend.calls
+    assert "opp: Updated automation" in _action_targets(window)
 
     window._start_new_opportunity()
     window._save_opportunity(
@@ -527,8 +552,8 @@ def test_scored_entity_helpers_permissions_and_export(monkeypatch, qtbot) -> Non
     assert exports == [("/tmp/interview.csv", ["risk-1", "risk-2"])]
 
     assert window._owner_filter_value(object()) == (None, False)
-    window.filter_owner.setCurrentIndex(1)
-    assert window._owner_filter_value(window.filter_owner) == (None, True)
+    window.risks_tab.filter_owner.setCurrentIndex(1)
+    assert window._owner_filter_value(window.risks_tab.filter_owner) == (None, True)
 
     window.current_role = "member"
     warnings: list[str] = []
@@ -729,6 +754,17 @@ def test_history_snapshot_periods_and_auto_snapshot(monkeypatch, qtbot) -> None:
         lambda _parent, _title, message, *_args: messages.append(message),
     )
 
+    # Offline refresh must not start a worker that tries to reconnect for history.
+    with monkeypatch.context() as offline:
+        offline.setattr(backend, "remote", None)
+        start_job = Mock()
+        offline.setattr(window, "_start_background_job", start_job)
+        window._refresh_top_history()
+        start_job.assert_not_called()
+        assert window.top_tab.top_table.rowCount() == 0
+        assert "Offline:" in window.top_tab.top_report.text()
+
+    # Once connected again, the same refresh loads the server's history.
     window._refresh_top_history()
     qtbot.waitUntil(lambda: not window._background_jobs.is_busy)
     assert window.top_tab.top_table.rowCount() == 2

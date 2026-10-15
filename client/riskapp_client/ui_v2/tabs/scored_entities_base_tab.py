@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 from riskapp_client.domain.scored_entity_fields import ALL_STATUSES
 from riskapp_client.services.entity_filters import ANY_STATUS
 from riskapp_client.ui_v2.components.custom_gui_widgets import (
+    set_header_tooltips,
     setup_readonly_table,
 )
 from riskapp_client.ui_v2.ui.ui_scored_entities_tab import (
@@ -56,24 +57,19 @@ class ScoredEntitiesTab(QWidget):
         self.ui.table.setSizePolicy(
             QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Maximum
         )
-        if (header_item := self.ui.table.horizontalHeaderItem(0)) is not None:
-            header_item.setToolTip("Code: A unique identifier or short reference")
-        if (header_item := self.ui.table.horizontalHeaderItem(1)) is not None:
-            header_item.setToolTip("Title: The name or brief summary")
-        if (header_item := self.ui.table.horizontalHeaderItem(2)) is not None:
-            header_item.setToolTip("Category: The classification or grouping")
-        if (header_item := self.ui.table.horizontalHeaderItem(3)) is not None:
-            header_item.setToolTip("Status: The current lifecycle state")
-        if (header_item := self.ui.table.horizontalHeaderItem(4)) is not None:
-            header_item.setToolTip("Owner: The team member assigned to manage this")
-        if (header_item := self.ui.table.horizontalHeaderItem(5)) is not None:
-            header_item.setToolTip(
-                "Probability: The likelihood of this occurring (1-5)"
-            )
-        if (header_item := self.ui.table.horizontalHeaderItem(6)) is not None:
-            header_item.setToolTip("Impact: The severity if this occurs (1-5)")
-        if (header_item := self.ui.table.horizontalHeaderItem(7)) is not None:
-            header_item.setToolTip("Score: Calculated as Probability × Impact (1-25)")
+        set_header_tooltips(
+            self.ui.table,
+            [
+                "Code: A unique identifier or short reference",
+                "Title: The name or brief summary",
+                "Category: The classification or grouping",
+                "Status: The current lifecycle state",
+                "Owner: The team member assigned to manage this",
+                "Probability: The likelihood of this occurring (1-5)",
+                "Impact: The severity if this occurs (1-5)",
+                "Score: Calculated as Probability × Impact (1-25)",
+            ],
+        )
         self.ui.filter_search.setToolTip("Search by Code, Title, or Description")
         self.ui.filter_min_score.setToolTip("Filter by minimum score")
         self.ui.filter_max_score.setToolTip("Filter by maximum score")
@@ -144,24 +140,9 @@ class ScoredEntitiesTab(QWidget):
         self.table = self.ui.table
         self.form = self.ui.form
         self.form.on_submit = on_save_item
-        # Override the hardcoded "Save Risk" label for non-risk entities
-        # and prevent retranslateUi from reverting it.
         self._entity_label = entity_label_singular.capitalize()
         self.form.btn.setText(f"Save {self._entity_label}")
-        _original_retranslate = self.form.ui.retranslateUi
-        _btn = self.form.btn
-        _label = self._entity_label
-
-        # Match the generated Ui_Form callback's keyword parameter name.
-        # pylint: disable-next=invalid-name
-        def _patched_retranslate(Form: QWidget) -> None:
-            _original_retranslate(Form)
-            _btn.setText(f"Save {_label}")
-
-        # Generated Qt methods are intentionally replaceable at runtime.
-        cast(Any, self.form.ui).retranslateUi = _patched_retranslate
-        if hasattr(self.form, "track_dirty_state"):
-            self.form.track_dirty_state(on_mark_dirty)
+        self.form.track_dirty_state(on_mark_dirty)
         self.new_btn = self.ui.new_btn
         self.delete_btn = self.ui.delete_btn
         self.filter_search = self.ui.filter_search

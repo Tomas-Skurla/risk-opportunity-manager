@@ -6,7 +6,10 @@ from collections.abc import Callable
 
 from PySide6.QtWidgets import QAbstractScrollArea, QHeaderView, QSizePolicy, QWidget
 
-from riskapp_client.ui_v2.components.custom_gui_widgets import setup_readonly_table
+from riskapp_client.ui_v2.components.custom_gui_widgets import (
+    set_header_tooltips,
+    setup_readonly_table,
+)
 from riskapp_client.ui_v2.ui.ui_assessments_tab import Ui_Form as Ui_AssessmentsTab
 
 
@@ -37,18 +40,17 @@ class AssessmentsTab(QWidget):
         self.ui.splitter.setStretchFactor(0, 3)
         self.ui.splitter.setStretchFactor(1, 1)
         self.ui.splitter.setSizes([75000, 25000])
-        tooltips = {
-            0: "Assessor: The team member who submitted this assessment",
-            1: "P: The assessed Probability (1-5)",
-            2: "I: The assessed Impact (1-5)",
-            3: "Score: Calculated as Probability × Impact (1-25)",
-            4: "Notes: Additional context provided by the assessor",
-            5: "Updated: When this assessment was last modified",
-        }
-        for col, text in tooltips.items():
-            header_item = self.assessments_table.horizontalHeaderItem(col)
-            if header_item is not None:
-                header_item.setToolTip(text)
+        set_header_tooltips(
+            self.assessments_table,
+            [
+                "Assessor: The team member who submitted this assessment",
+                "P: The assessed Probability (1-5)",
+                "I: The assessed Impact (1-5)",
+                "Score: Calculated as Probability × Impact (1-25)",
+                "Notes: Additional context provided by the assessor",
+                "Updated: When this assessment was last modified",
+            ],
+        )
         # PySide exposes bound signals dynamically to Pylint.
         # pylint: disable-next=no-member
         self.ui.assess_save_btn.clicked.connect(on_save_assessment)

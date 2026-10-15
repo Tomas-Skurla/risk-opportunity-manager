@@ -8,7 +8,8 @@ from sqlalchemy.orm import Session
 
 from riskapp_server.auth.service import get_current_user
 from riskapp_server.core.permissions import ensure_member, require_min_role
-from riskapp_server.db.session import Role, User, get_db
+from riskapp_server.db.models import Role, User
+from riskapp_server.db.session import get_db
 from riskapp_server.schemas.models import (
     SyncPullRequest,
     SyncPullResponse,

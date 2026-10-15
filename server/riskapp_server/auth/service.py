@@ -27,7 +27,8 @@ from riskapp_server.core.config import (
     TOKEN_HASH_KEY,
 )
 from riskapp_server.core.password_policy import validate_password
-from riskapp_server.db.session import RefreshToken, User, get_db, utcnow
+from riskapp_server.db.models import RefreshToken, User, utcnow
+from riskapp_server.db.session import get_db
 
 logger = logging.getLogger("riskapp_server.auth")
 
@@ -52,9 +53,6 @@ def create_access_token(user_id: str) -> str:
         SECRET_KEY,
         algorithm=ALGORITHM,
     )
-
-
-create_token = create_access_token
 
 
 def hash_bearer_secret(raw: str) -> str:

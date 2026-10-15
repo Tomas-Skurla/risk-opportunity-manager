@@ -3,22 +3,25 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any, Protocol, TypedDict
+from typing import Any, Protocol
 
 from riskapp_client.domain.domain_models import Project
-
-
-class SyncCallbacks(TypedDict, total=False):
-    """Cooperative callbacks supported by production synchronization."""
-
-    should_cancel: Callable[[], bool]
-    progress: Callable[[str], None]
 
 
 class BackgroundJobBackend(Protocol):
     """Stable job operations; payloads retain the existing JSON-shaped results."""
 
     def list_projects(self) -> list[Project]: ...
+
+    def list_sync_projects(self) -> list[Project]:
+        """Refresh projects for automatic sync without falling back to the cache."""
+        ...
+
+    def export_authenticated_remote(self) -> object | None: ...
+
+    def close(self) -> None:
+        """Release resources in the thread that created this backend."""
+        ...
 
     def sync_project(
         self,
