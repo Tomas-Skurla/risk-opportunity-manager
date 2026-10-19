@@ -33,7 +33,7 @@ ecdsa==0.19.2
     # via python-jose
 email-validator==2.3.0
     # via -r server/requirements.in
-fastapi==0.143.0
+fastapi==0.143.2
     # via -r server/requirements.in
 h11==0.16.0
     # via uvicorn
@@ -55,11 +55,11 @@ pyasn1==0.6.4
     #   rsa
 pycparser==3.11
     # via cffi
-pydantic==2.14.0
+pydantic==2.14.1
     # via
     #   -r server/requirements.in
     #   fastapi
-pydantic-core==2.50.0
+pydantic-core==2.50.1
     # via pydantic
 python-dotenv==1.2.4
     # via uvicorn
