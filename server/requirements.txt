@@ -49,8 +49,9 @@ markupsafe==3.0.4
     # via mako
 opentelemetry-api==1.45.1
     # via fastapi
-pyasn1==0.6.4
+pyasn1==0.6.5
     # via
+    #   -r server/requirements.in
     #   python-jose
     #   rsa
 pycparser==3.11
