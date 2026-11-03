@@ -9,7 +9,7 @@ pytest-asyncio>=1.4.1,<2
 pytest-cov>=7.1.0,<8
 pytest-qt>=4.5.0,<5
 # FastAPI/Starlette's in-process TestClient uses the maintained HTTPX2 client.
-httpx2>=2.13.1,<3
+httpx2>=2.16.0,<3
 
 ruff>=0.17.3,<1
 black>=26.10.1,<27
